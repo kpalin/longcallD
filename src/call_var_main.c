@@ -71,18 +71,22 @@ const struct option call_var_opt [] = {
     { "alt-ratio", 1, NULL, 'a' },
     { "min-mapq", 1, NULL, 'M'}, // map quality
     { "min-bq", 1, NULL, 'B'}, // base quality
-    { "max-cov", 1, NULL, 'C'}, // total coverage
+    { "max-cov", 1, NULL, 0}, // total coverage; long-only, 'C' is --out-cram
     // { "max-ploidy", 1, NULL, 'p' },
 
     { "max-xgap", 1, NULL, 'x' },
     { "win-size", 1, NULL, 'w'},
-    { "noisy-rat", 1, NULL, 'j' },
-    { "noisy-flank", 1, NULL, 'f' },
-    { "merge-dis", 1, NULL, 'D'},
-    { "end-clip", 1, NULL, 'c' },
-    { "clip-flank", 1, NULL, 'F' },
+    // Long-only below: each of these previously carried a short code that either
+    // collided with a different option ('c' with --min-cov, 'C' with --out-cram)
+    // or was absent from opt_str entirely ('F'), so the option silently did the
+    // wrong thing or fell through to `default`. --noisy-rat, --noisy-flank and
+    // --full-read are gone: their backing fields were retired from
+    // call_var_opt_t and their call sites now read opt->min_af / opt->min_dp,
+    // so there is nothing left for them to set.
+    { "merge-dis", 1, NULL, 0},
+    { "end-clip", 1, NULL, 0},
+    { "clip-flank", 1, NULL, 0},
     { "hap-read", 1, NULL, 'p' },
-    { "full-read", 1, NULL, 'f' },
 
     { "threads", 1, NULL, 't' },
     { "help", 0, NULL, 'h' },
@@ -502,6 +506,9 @@ static int collect_regions_from_region_list(call_var_opt_t *opt, call_var_pl_t *
             last_tid = tid;
         }
     }
+    // n_reg_chunks may have reached m_reg_chunks on the last iteration, so make
+    // sure the slot we are about to inspect exists before reading n_regions.
+    reg_chunks_realloc(pl);
     if (pl->reg_chunks[pl->n_reg_chunks].n_regions > 0) pl->n_reg_chunks++;
     hts_itr_destroy(iter);
     // Print the region_chunks
@@ -623,6 +630,9 @@ static int collect_regions(call_var_pl_t *pl, call_var_opt_t *opt, int n_regions
             pl->n_reg_chunks++;
         }
     }
+    // n_reg_chunks may have reached m_reg_chunks on the last iteration, so make
+    // sure the slot we are about to inspect exists before reading n_regions.
+    reg_chunks_realloc(pl);
     if (pl->reg_chunks[pl->n_reg_chunks].n_regions > 0) pl->n_reg_chunks++;
 
     // Print the region_chunks
@@ -754,12 +764,58 @@ static void call_var_pl_open_fa_bam(call_var_opt_t *opt, call_var_pl_t *pl, char
     }
 }
 
+// Is this @PG ID already used by some line in the header?
+static int pg_id_is_taken(bam_hdr_t *header, int n_pg, const char *id) {
+    for (int i = 0; i < n_pg; ++i) {
+        const char *nm = sam_hdr_line_name(header, "PG", i);
+        if (nm != NULL && strcmp(nm, id) == 0) return 1;
+    }
+    return 0;
+}
+
+// Add exactly one @PG record describing this run.
+//
+// sam_hdr_add_pg() appends one @PG per *leaf* of the header's existing PP
+// chain, so an input header whose chain has 87 leaves gained 87 identical
+// longcallD records (measured on the bundled ONT test data). Instead, chain a
+// single record to the last @PG line present.
+static void add_longcalld_pg_line(bam_hdr_t *header) {
+    int n_pg = sam_hdr_count_lines(header, "PG");
+    if (n_pg < 0) n_pg = 0;
+
+    // Pick a collision-free ID: "longcallD", else "longcallD.1", ...
+    char id[32];
+    snprintf(id, sizeof(id), "%s", PROG);
+    for (int i = 1; i < 100000 && pg_id_is_taken(header, n_pg, id); ++i)
+        snprintf(id, sizeof(id), "%s.%d", PROG, i);
+
+    // Keep CL bounded; an unbounded command line makes the header unpleasant
+    // for downstream tools and some parsers cope badly with very long records.
+    char cl_buf[4096]; const char *cl = CMD;
+    if (cl != NULL && strlen(cl) >= sizeof(cl_buf)) {
+        snprintf(cl_buf, sizeof(cl_buf), "%.*s...", (int)(sizeof(cl_buf) - 4), cl);
+        cl = cl_buf;
+    }
+
+    const char *pp = n_pg > 0 ? sam_hdr_line_name(header, "PG", n_pg - 1) : NULL;
+    int r;
+    if (pp != NULL && cl != NULL)
+        r = sam_hdr_add_line(header, "PG", "ID", id, "PN", PROG, "VN", LONGCALLD_VERSION, "CL", cl, "PP", pp, NULL);
+    else if (pp != NULL)
+        r = sam_hdr_add_line(header, "PG", "ID", id, "PN", PROG, "VN", LONGCALLD_VERSION, "PP", pp, NULL);
+    else if (cl != NULL)
+        r = sam_hdr_add_line(header, "PG", "ID", id, "PN", PROG, "VN", LONGCALLD_VERSION, "CL", cl, NULL);
+    else
+        r = sam_hdr_add_line(header, "PG", "ID", id, "PN", PROG, "VN", LONGCALLD_VERSION, NULL);
+    if (r < 0) _err_error_exit("Fail to add @PG line to bam header.\n");
+}
+
 static void call_var_pl_write_bam_header(call_var_opt_t *opt, bam_hdr_t *header) {
     if (opt->out_aln_is_cram) {
         if (hts_set_fai_filename(opt->out_aln_fp, opt->ref_fa_fn) != 0) _err_error_exit("Failed to set reference file for output CRAM encoding: %s\n", opt->ref_fa_fn);
     }
     hts_set_threads(opt->out_aln_fp, opt->n_threads);
-    if (sam_hdr_add_pg(header, PROG, "VN", LONGCALLD_VERSION, "CL", CMD, NULL) < 0) _err_error_exit("Fail to add PG line to bam header.\n");
+    add_longcalld_pg_line(header);
     if (sam_hdr_write(opt->out_aln_fp, header) < 0) _err_error_exit("Failed to write BAM header.\n");
 }
 
@@ -877,7 +933,7 @@ static void call_var_usage(void) {//main usage
     fprintf(stderr, "    -a --alt-ratio FLOAT  min. alt. read ratio for candidate variant [%.2f]\n", LONGCALLD_MIN_CAND_AF);
     fprintf(stderr, "    -M --min-mapq    INT  min. mapping quality score to be used [%d]\n", LONGCALLD_MIN_CAND_MQ);
     fprintf(stderr, "    -B --min-bq      INT  min. base quality score to be used [%d]\n", LONGCALLD_MIN_CAND_BQ);
-    fprintf(stderr, "    -C --max-cov     INT  max. total read coverage for candidate variant [%d]\n", LONGCALLD_MAX_NOISY_REG_COV);
+    fprintf(stderr, "       --max-cov     INT  max. total read coverage for candidate variant [%d]\n", LONGCALLD_MAX_NOISY_REG_COV);
     // fprintf(stderr, "    -p --max-ploidy  INT  max. ploidy [%d]\n", LONGCALLD_DEF_PLOID);
     fprintf(stderr, "  Low allele-frequency mosaic/somatic variant calling: (effective when -s/--mosaic/--somatic is used)\n");
     // fprintf(stderr, "    --alpha          INT  alpha value of beta-binomial distribution [%d]\n", LONGCALLD_SOMATIC_BETA_ALPHA);
@@ -911,7 +967,10 @@ static void call_var_usage(void) {//main usage
 
 int call_var_main(int argc, char *argv[]) {
     // _err_cmd("%s\n", CMD);
-    const char *opt_str = "r:T:E:X:o:O:ml:Hb:C:S:sc:d:M:B:a:n:x:w:D:j:L:f:p:g:t:hvV:";
+    // 'L' takes no argument (--input-is-list); it was "L:" here while the option
+    // table said no_argument, so `-L ref.fa bam_list.txt` ate ref.fa as -L's
+    // operand. 'D', 'j' and 'f' are gone along with the options that used them.
+    const char *opt_str = "r:T:E:X:o:O:ml:Hb:C:S:sc:d:M:B:a:n:x:w:Lp:g:t:hvV:";
     int c, op_idx; call_var_opt_t *opt = call_var_init_para(); char *s;
     double realtime0 = realtime();
     // first round of getopt_long() to parse preset options
@@ -956,6 +1015,10 @@ int call_var_main(int argc, char *argv[]) {
                     else if (strcmp(call_var_opt[op_idx].name, "out-var-rnames") == 0) opt->output_var_rnames = 1;
                     else if (strcmp(call_var_opt[op_idx].name, "out-sv-rnames") == 0) opt->output_sv_rnames = 1;
                     else if (strcmp(call_var_opt[op_idx].name, "out-som-var-rnames") == 0) opt->output_somatic_var_rnames = 1;
+                    else if (strcmp(call_var_opt[op_idx].name, "max-cov") == 0) opt->max_noisy_reg_cov = atoi(optarg);
+                    else if (strcmp(call_var_opt[op_idx].name, "merge-dis") == 0) opt->noisy_reg_merge_dis = atoi(optarg);
+                    else if (strcmp(call_var_opt[op_idx].name, "end-clip") == 0) opt->end_clip_reg = atoi(optarg);
+                    else if (strcmp(call_var_opt[op_idx].name, "clip-flank") == 0) opt->end_clip_reg_flank_win = atoi(optarg);
                     break;
             case 's': opt->out_somatic = 1; break;
             case 'm': opt->out_methylation = 1; break;
@@ -982,12 +1045,15 @@ int call_var_main(int argc, char *argv[]) {
             // case 'F': opt->end_clip_reg_flank_win = atoi(optarg); break;
             case 'g': if (strcmp(optarg, "right") == 0 || strcmp(optarg, "r") == 0) opt->gap_aln = LONGCALLD_GAP_RIGHT_ALN;
                       else if (strcmp(optarg, "left") == 0 || strcmp(optarg, "l") == 0) opt->gap_aln = LONGCALLD_GAP_LEFT_ALN;
-                      else _err_error_exit("\'-a/--gap-aln\' can only be \'left\'/\'l\' or \'right\'/\'r\'\n"); // call_var_usage();
+                      else _err_error_exit("\'-g/--gap-aln\' can only be \'left\'/\'l\' or \'right\'/\'r\'\n"); // call_var_usage();
+                      break; // without this, --gap-aln fell through to -t and set n_threads = atoi("left") = 0
             case 't': opt->n_threads = atoi(optarg); break;
             case 'h': call_var_free_para(opt); call_var_usage();
             case 'v': fprintf(stdout, "%s\n", LONGCALLD_VERSION); call_var_free_para(opt); return 0;
             case 'V': LONGCALLD_VERBOSE = atoi(optarg); break;
-            default: call_var_free_para(opt); return 0;
+            // getopt_long has already printed what went wrong; exit non-zero so a
+            // mistyped option cannot look like a successful run that produced no VCF.
+            default: call_var_free_para(opt); return 1;
         }
     }
 
