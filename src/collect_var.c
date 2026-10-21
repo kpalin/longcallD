@@ -433,6 +433,69 @@ int classify_var_cate(const call_var_opt_t *opt, char *ref_seq, hts_pos_t ref_be
     // return LONGCALLD_CLEAN_HET_VAR;
 }
 
+// Tally alt/non-alt reads per (sample, haplotype) for every candidate variant
+// in the chunk.
+//
+// With phasing shared across samples, haplotype index h denotes the same
+// parental chromosome in both, so these counts form a grid of comparable slots:
+// (normal,H1), (normal,H2), (tumour,H1), (tumour,H2), plus an unphased bucket at
+// h == 0 holding reads that are real evidence about the sample but silent about
+// which chromosome copy.
+//
+// Aggregated read-major, walking each read's variant range, rather than
+// variant-major through chunk->read_var_cr. Two reasons: the cgranges is
+// destroyed by bam_chunk_mid_free() at the end of step 1's first pass, and the
+// read haplotypes are not final until flip_variant_hap() has run during
+// stitching, which is later still. Read-major needs only read_var_profile,
+// chunk->haps and chunk->phase_sets, all of which survive to that point, so the
+// tallies can be built where they are consumed and are guaranteed to reflect the
+// final phasing.
+//
+// Derived on demand rather than maintained beside the pooled counters in the hot
+// counting path, so the pooled single-sample numbers stay bit-identical by
+// construction: there is no second counting path to keep in step.
+//
+// How these relate to the pooled counters, measured on the bundled HiFi file
+// (569 variants, LONGCALLD_SLOTCHK=1):
+//   * alt agrees with cand_var_t.alle_covs[1] at all 569 sites. That is the
+//     number the somatic decision turns on, so it is the one that matters.
+//   * alt+ref agrees with cand_var_t.total_cov at 543 sites and is one lower at
+//     25 and two lower at one. The pooled counter credits every read spanning
+//     the site, including reads with no allele entry in their read_var_profile
+//     (the variant was discovered later, inside a noisy region); these slots
+//     count only reads that actually have an allele call there. "Reads
+//     informative at this site" is the denominator a per-haplotype VAF wants, so
+//     the difference is definitional and deliberate, not drift.
+void collect_all_var_slot_counts(bam_chunk_t *chunk) {
+    if (chunk->n_cand_vars <= 0 || chunk->read_var_profile == NULL) return;
+    if (chunk->var_slots != NULL) { free(chunk->var_slots); chunk->var_slots = NULL; }
+    chunk->var_slots = (var_slot_counts_t*)calloc(chunk->n_cand_vars, sizeof(var_slot_counts_t));
+    chunk->n_var_slots = chunk->n_cand_vars;
+    int n_samples = chunk->n_samples > 0 ? chunk->n_samples : 1;
+    for (int i = 0; i < chunk->n_cand_vars; ++i) chunk->var_slots[i].n_samples = n_samples;
+
+    for (int k = 0; k < chunk->n_reads; ++k) {
+        int read_i = chunk->ordered_read_ids[k];
+        if (chunk->is_skipped[read_i]) continue;
+        read_var_profile_t *p1 = chunk->read_var_profile + read_i;
+        if (p1->start_var_idx < 0 || p1->end_var_idx < 0) continue;
+
+        int smp = chunk->read_sample_idx != NULL ? chunk->read_sample_idx[read_i] : 0;
+        if (smp < 0 || smp >= n_samples) continue;
+        int hap = chunk->haps[read_i];
+        if (hap < 0 || hap >= LONGCALLD_N_HAP_SLOTS) hap = 0;
+        if (chunk->phase_sets[read_i] <= 0) hap = 0; // a haplotype with no phase block anchors nothing
+
+        for (int var_i = p1->start_var_idx; var_i <= p1->end_var_idx; ++var_i) {
+            if (var_i < 0 || var_i >= chunk->n_cand_vars) continue;
+            int alle = p1->alleles[var_i - p1->start_var_idx];
+            if (alle == 1)      chunk->var_slots[var_i].alt[smp][hap]++;
+            else if (alle == 0) chunk->var_slots[var_i].ref[smp][hap]++;
+            else                chunk->var_slots[var_i].oth[smp][hap]++; // -1 third allele, -2 low-qual alt
+        }
+    }
+}
+
 void copy_var(cand_var_t *to_var, cand_var_t *from_var) {
     to_var->pos = from_var->pos; to_var->var_type = from_var->var_type;
     to_var->total_cov = from_var->total_cov; to_var->low_qual_cov = from_var->low_qual_cov;
@@ -1465,6 +1528,10 @@ int cal_var_QUAL1(int ref_depth, int alt_depth, double logp, double log1p, int m
 // 2) merge variants with the overlapping pos & ref_len (e.g., ACGT -> A, ACGTCGT) XXX
 // 3) extend phase blocks if possible, e.g., if ≥ 1 read supports the longer phase block
 int make_variants(const call_var_opt_t *opt, bam_chunk_t *chunk, var_t **_var) {
+    // Per-(sample, haplotype) tallies for this chunk's variants. Built here
+    // because read haplotypes are only final after flip_variant_hap() has run
+    // during stitching, which happens between step 1's two passes.
+    collect_all_var_slot_counts(chunk);
     int n_cand_vars = chunk->n_cand_vars;
     if (n_cand_vars <= 0) return 0;
     char *ref_seq = chunk->ref_seq; hts_pos_t ref_beg = chunk->ref_beg;
@@ -1561,6 +1628,20 @@ int make_variants(const call_var_opt_t *opt, bam_chunk_t *chunk, var_t **_var) {
         }
         var->vars[i].DP = cand_vars[cand_i].total_cov;
         for (int j = 0; j < cand_vars[cand_i].n_uniq_alles; ++j) var->vars[i].AD[j] = cand_vars[cand_i].alle_covs[j];
+        // LONGCALLD_SLOTCHK=1 dumps the per-(sample, haplotype) tallies beside the
+        // pooled counters, so the two can be cross-checked on real data. See
+        // eval/test_slot_counts.sh. Off unless the variable is set.
+        if (chunk->var_slots != NULL && getenv("LONGCALLD_SLOTCHK") != NULL) {
+            var_slot_counts_t *sc = chunk->var_slots + cand_i;
+            int tot_dp = 0, tot_alt = 0; // across all samples, so the columns mean the same thing in both modes
+            for (int smp = 0; smp < sc->n_samples; ++smp) { tot_dp += smp_dp(sc, smp); tot_alt += smp_alt(sc, smp); }
+            fprintf(stderr, "SLOTCHK\t%" PRId64 "\t%d\t%d\t%d\t%d", var->vars[i].pos,
+                    cand_vars[cand_i].total_cov, cand_vars[cand_i].alle_covs[1], tot_dp, tot_alt);
+            for (int smp = 0; smp < sc->n_samples; ++smp)
+                for (int h = 0; h < LONGCALLD_N_HAP_SLOTS; ++h)
+                    fprintf(stderr, "\t%d/%d/%d", sc->alt[smp][h], sc->ref[smp][h], sc->oth[smp][h]);
+            fprintf(stderr, "\n");
+        }
         if (var->vars[i].AD[1] > 0) { // collect alt_read_i from read_var_profile
             var->vars[i].alt_read_i = (int*)malloc(var->vars[i].AD[1] * sizeof(int));
             int alt_read_i_idx = 0;

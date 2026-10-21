@@ -1528,6 +1528,7 @@ void bam_chunk_post_free(bam_chunk_t *chunk, const struct call_var_opt_t *opt) {
         if (chunk->down_ovlp_read_i[i] != NULL) free(chunk->down_ovlp_read_i[i]);
     }
     free(chunk->bam_read_off);
+    free(chunk->var_slots);
     free(chunk->n_up_ovlp_reads); free(chunk->n_down_ovlp_reads); free(chunk->n_up_ovlp_skip_reads); free(chunk->n_down_ovlp_skip_reads);
     free(chunk->up_ovlp_read_i); free(chunk->down_ovlp_read_i);
     if (opt->out_aln_fp != NULL && opt->refine_bam) bam_chunk_free_digar(chunk);

@@ -34,13 +34,6 @@
 #define LONGCALLD_MAX_VAR_RATIO_PER_READ 0.05 // skip reads with n_var / ref_span > 5% 
 #define LONGCALLD_MAX_READ_DEPTH 500 // vars with >500 reads will be skipped
 #define LONGCALLD_MAX_NOISY_REG_COV 1000 // regions with >1000 reads will be skipped
-
-// Sample indices for paired calling. The positional input is the tumour (the
-// sample of interest); -N supplies the matched normal. VCF column order is
-// chosen separately at write time.
-#define LONGCALLD_SAMPLE_TUMOR  0
-#define LONGCALLD_SAMPLE_NORMAL 1
-#define LONGCALLD_MAX_SAMPLES   2
 #define LONGCALLD_NOISY_END_CLIP 30 // 100 // >= 100 bp clipping on both ends will be considered as long clipping
 #define LONGCALLD_NOISY_END_CLIP_WIN 100 // 100 bp next to the long end-clipping will be considered as low-quality region
 #define LONGCALLD_NOISY_REG_MERGE_DIS 500 // 500 bp, merge noisy regions within 500 bp

@@ -46,6 +46,15 @@ typedef struct var_site_t {
     uint8_t *alt_seq; // only used for mismatch/insertion, deletion:NULL
 } var_site_t;
 
+// Sample indices for paired calling. The positional input is the tumour (the
+// sample of interest); -N supplies the matched normal. VCF column order is
+// chosen separately at write time.
+#define LONGCALLD_SAMPLE_TUMOR  0
+#define LONGCALLD_SAMPLE_NORMAL 1
+#define LONGCALLD_MAX_SAMPLES   2
+// Haplotype slots per sample: 0 = unphased, 1 = H1, 2 = H2 (diploid).
+#define LONGCALLD_N_HAP_SLOTS   3
+
 // used for machine learning augmentation
 typedef struct cand_somatic_var_aux_info_t {
     // int is_somatic; // 1: somatic, 0: artifact

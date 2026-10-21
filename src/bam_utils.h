@@ -42,6 +42,40 @@ typedef struct {
     int qlen; uint8_t *bseq, *qual; // copy from bam1_t
 } digar_t; // detailed CIGAR for each read
 
+// Per-sample, per-haplotype allele tallies for one candidate variant.
+//
+// With phasing shared across samples, haplotype index h means the same parental
+// chromosome in both, so these form a 2x2 grid of comparable slots --
+// (normal,H1), (normal,H2), (tumour,H1), (tumour,H2) -- plus an unphased bucket
+// at h == 0. A somatic mutation arises on one chromosome copy in one clone, so
+// it should occupy exactly one of those four slots, and a tumour one.
+//
+// Derived on demand from read_var_cr / read_var_profile rather than maintained
+// beside the pooled counters in the hot counting path. That costs one pass over
+// the reads overlapping the variant -- the same walk collect_somatic_var_aux_info()
+// already does -- and in exchange the pooled single-sample numbers stay
+// bit-identical by construction, because there is no second counting path to
+// keep in step.
+typedef struct var_slot_counts_t {
+    int alt[LONGCALLD_MAX_SAMPLES][LONGCALLD_N_HAP_SLOTS]; // read_var_profile allele 1
+    int ref[LONGCALLD_MAX_SAMPLES][LONGCALLD_N_HAP_SLOTS]; // allele 0
+    // Reads that are neither: allele -1 (some third allele) and -2 (alt, but the
+    // base failed the quality floor). They are kept apart rather than folded
+    // into ref, both because calling a low-quality alt "reference" is actively
+    // misleading and because alt+ref must stay the same denominator the pooled
+    // total_cov uses, or the per-haplotype VAF would be computed against a
+    // larger base than the pooled one.
+    int oth[LONGCALLD_MAX_SAMPLES][LONGCALLD_N_HAP_SLOTS];
+    int n_samples;
+} var_slot_counts_t;
+
+// Depth and alt count for one slot, and for a whole sample (summed over
+// haplotypes, including the unphased bucket).
+static inline int slot_dp(const var_slot_counts_t *c, int s, int h) { return c->alt[s][h] + c->ref[s][h]; }
+static inline int smp_alt(const var_slot_counts_t *c, int s) { return c->alt[s][0] + c->alt[s][1] + c->alt[s][2]; }
+static inline int smp_dp(const var_slot_counts_t *c, int s) { return slot_dp(c,s,0) + slot_dp(c,s,1) + slot_dp(c,s,2); }
+static inline int slot_oth(const var_slot_counts_t *c, int s, int h) { return c->oth[s][h]; }
+
 typedef struct bam_chunk_t {
     // input
     // tid = pl->reg_chunks[reg_chunk_i].reg_tids[reg_i] 
@@ -82,7 +116,9 @@ typedef struct bam_chunk_t {
     // n_cand_vars: including candidate germline variants and somatic variants
     // for germline variants, including clean region and noisy region
     // for somatic, only non-noisy regions, we don't call somatic variants in noisy regions (for now)
-    int n_cand_vars; cand_var_t *cand_vars; int *var_i_to_cate;
+    int n_cand_vars; cand_var_t *cand_vars;
+    int *var_i_to_cate;
+    var_slot_counts_t *var_slots; int n_var_slots; // size: n_cand_vars; paired mode only
     read_var_profile_t *read_var_profile; cgranges_t *read_var_cr;
     cgranges_t *var_noisy_read_cov_cr, *var_noisy_read_err_cr;
     int *var_noisy_read_marks, var_noisy_read_mark_id;
@@ -212,6 +248,8 @@ aln_out_t *aln_out_init(htsFile *fp, bam_hdr_t *hdr, int is_cram, int no_reorder
 void aln_out_push(aln_out_t *o, bam1_t *b, const char *tname);
 void aln_out_flush(aln_out_t *o);
 void aln_out_free(aln_out_t *o);
+
+void collect_all_var_slot_counts(bam_chunk_t *chunk);
 
 // Does this run need chunk->read_names[] populated?
 //
