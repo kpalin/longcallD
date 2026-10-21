@@ -485,9 +485,11 @@ void collect_all_var_slot_counts(bam_chunk_t *chunk) {
         int hap = chunk->haps[read_i];
         if (hap < 0 || hap >= LONGCALLD_N_HAP_SLOTS) hap = 0;
         if (chunk->phase_sets[read_i] <= 0) hap = 0; // a haplotype with no phase block anchors nothing
+        hts_pos_t ps = hap != 0 ? chunk->phase_sets[read_i] : 0;
 
         for (int var_i = p1->start_var_idx; var_i <= p1->end_var_idx; ++var_i) {
             if (var_i < 0 || var_i >= chunk->n_cand_vars) continue;
+            if (ps > 0 && chunk->var_slots[var_i].ps == 0) chunk->var_slots[var_i].ps = ps;
             int alle = p1->alleles[var_i - p1->start_var_idx];
             if (alle == 1)      chunk->var_slots[var_i].alt[smp][hap]++;
             else if (alle == 0) chunk->var_slots[var_i].ref[smp][hap]++;
@@ -507,6 +509,20 @@ void collect_all_var_slot_counts(bam_chunk_t *chunk) {
 // Haplotype exclusivity alone is NOT enough to call something somatic: a
 // germline het also puts its alt on a single haplotype. It is the sample axis
 // that separates "alt on h in the tumour only" from "alt on h in both".
+// Does this slot carry real evidence for the alt, as opposed to a stray read?
+//
+// Distinct from the max_hap_alt test, which asks whether a slot is CLEAN. Using
+// one threshold for both conflates "no contamination here" with "the variant is
+// present here", and at > 0 the latter fires on one or two error reads: on the
+// bundled data that produced six NORMAL_ONLY calls backed by 1-3 reads at 7-13%
+// within-haplotype fraction, which is noise, not a germline variant the tumour
+// lost.
+static int slot_has_alt(const var_slot_counts_t *sc, int s, int h, const call_var_opt_t *opt) {
+    int a = sc->alt[s][h], d = slot_dp(sc, s, h);
+    if (a < opt->min_alt_dp || d <= 0) return 0;
+    return (double)a / d >= opt->min_af;
+}
+
 static void classify_paired_var(const call_var_opt_t *opt, var1_t *v) {
     const var_slot_counts_t *sc = &v->slots;
     const int N = LONGCALLD_SAMPLE_NORMAL, T = LONGCALLD_SAMPLE_TUMOR;
@@ -541,8 +557,8 @@ static void classify_paired_var(const call_var_opt_t *opt, var1_t *v) {
         int o = 3 - h;
         int t_h = sc->alt[T][h], t_o = sc->alt[T][o];
         int n_h = sc->alt[N][h], n_o = sc->alt[N][o];
-        int normal_has_it = (n_h > opt->max_hap_alt || n_o > opt->max_hap_alt);
-        int tumor_has_it  = (t_h > opt->max_hap_alt || t_o > opt->max_hap_alt);
+        int normal_has_it = slot_has_alt(sc, N, h, opt) || slot_has_alt(sc, N, o, opt);
+        int tumor_has_it  = slot_has_alt(sc, T, h, opt) || slot_has_alt(sc, T, o, opt);
 
         // In both samples: inherited. This is the common case, and it is also
         // why haplotype exclusivity alone cannot establish somatic status -- a
@@ -577,7 +593,7 @@ static void classify_paired_var(const call_var_opt_t *opt, var1_t *v) {
             // The normal has it and the tumour does not. If the tumour has lost
             // that chromosome copy the absence is copy number, not a
             // disagreement between the samples.
-            int nh = (n_h > opt->max_hap_alt) ? h : o;
+            int nh = slot_has_alt(sc, N, h, opt) ? h : o;
             if (slot_dp(sc, T, nh) * 4 < slot_dp(sc, T, 3 - nh))
                 v->paired_class = LONGCALLD_PAIRED_LOH;
             else
@@ -1747,7 +1763,14 @@ int make_variants(const call_var_opt_t *opt, bam_chunk_t *chunk, var_t **_var) {
         // travels with the verdict rather than being recomputed.
         if (chunk->var_slots != NULL) {
             var->vars[i].slots = chunk->var_slots[cand_i];
-            if (chunk->n_samples > 1) classify_paired_var(opt, var->vars + i);
+            if (chunk->n_samples > 1) {
+                classify_paired_var(opt, var->vars + i);
+                // A somatic variant is never a phasing anchor, so it carries no
+                // phase_set of its own -- but it was decided on a real phase
+                // block's haplotypes, and must say which.
+                if (var->vars[i].PS == 0 && !var->vars[i].is_unphased_call)
+                    var->vars[i].PS = chunk->var_slots[cand_i].ps;
+            }
         }
         // LONGCALLD_SLOTCHK=1 dumps the per-(sample, haplotype) tallies beside the
         // pooled counters, so the two can be cross-checked on real data. See

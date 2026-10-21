@@ -66,6 +66,12 @@ typedef struct var_slot_counts_t {
     // total_cov uses, or the per-haplotype VAF would be computed against a
     // larger base than the pooled one.
     int oth[LONGCALLD_MAX_SAMPLES][LONGCALLD_N_HAP_SLOTS];
+    // Phase block the contributing reads belong to. A variant excluded from
+    // phasing -- which every somatic variant is, since anchoring is restricted
+    // to sites that are germline het in the normal -- never gets a phase_set of
+    // its own, yet it is still decided on that block's haplotypes and must
+    // report its PS.
+    hts_pos_t ps;
     int n_samples;
 } var_slot_counts_t;
 

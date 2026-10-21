@@ -54,6 +54,12 @@ void write_vcf_header(bam_hdr_t *hdr, struct call_var_opt_t *opt) {
     bcf_hdr_append(vcf_hdr, "##FILTER=<ID=LowQual,Description=\"Low quality variant\">");
     bcf_hdr_append(vcf_hdr, "##FILTER=<ID=RefCall,Description=\"Reference call\">");
     bcf_hdr_append(vcf_hdr, "##FILTER=<ID=NoCall,Description=\"Site has depth=0 resulting in no call\">");
+    if (opt->n_samples > 1) {
+        bcf_hdr_append(vcf_hdr, "##FILTER=<ID=NormalOnly,Description=\"Present in the normal but not the tumour; treated as false\">");
+        bcf_hdr_append(vcf_hdr, "##FILTER=<ID=LowDP,Description=\"Too little depth in one sample to classify\">");
+        bcf_hdr_append(vcf_hdr, "##FILTER=<ID=Ambiguous,Description=\"Evidence fits no tumour/normal class cleanly\">");
+        bcf_hdr_append(vcf_hdr, "##FILTER=<ID=Unphased,Description=\"Classified on pooled per-sample counts; no usable haplotype grid here\">");
+    }
 
     // INFO fields
     bcf_hdr_append(vcf_hdr, "##INFO=<ID=END,Number=1,Type=Integer,Description=\"End position of the variant described in this record\">");
@@ -70,6 +76,13 @@ void write_vcf_header(bam_hdr_t *hdr, struct call_var_opt_t *opt) {
     bcf_hdr_append(vcf_hdr, "##INFO=<ID=TSDPOS1,Number=A,Type=Integer,Description=\"Start position of first target site duplication on CHROM\">");
     bcf_hdr_append(vcf_hdr, "##INFO=<ID=TSDPOS2,Number=A,Type=Integer,Description=\"Start position of second target site duplication on CHROM\">");
     bcf_hdr_append(vcf_hdr, "##INFO=<ID=REPNAME,Number=A,Type=String,Description=\"Repeat name\">");
+    if (opt->n_samples > 1) {
+        bcf_hdr_append(vcf_hdr, "##INFO=<ID=NORMALONLY,Number=0,Type=Flag,Description=\"Seen in the normal and not the tumour\">");
+        bcf_hdr_append(vcf_hdr, "##INFO=<ID=LOH,Number=0,Type=Flag,Description=\"Normal-only because the tumour has lost that chromosome copy\">");
+        bcf_hdr_append(vcf_hdr, "##INFO=<ID=SOMHAP,Number=1,Type=Integer,Description=\"Tumour haplotype carrying the somatic alt (1 or 2)\">");
+        bcf_hdr_append(vcf_hdr, "##INFO=<ID=HAPVAF,Number=1,Type=Float,Description=\"Alt fraction within that haplotype; estimates purity x cancer-cell fraction, unlike the pooled VAF which reads purity/2 for a clonal het\">");
+        bcf_hdr_append(vcf_hdr, "##INFO=<ID=SPV,Number=1,Type=Float,Description=\"Fisher exact p, the somatic slot against the other three\">");
+    }
     // bcf_hdr_append(vcf_hdr, "##INFO=<ID=REPCLSFAM,Number=1,Type=String,Description=\"Repeat class/family\">");
 
     // FORMAT fields
@@ -82,9 +95,23 @@ void write_vcf_header(bam_hdr_t *hdr, struct call_var_opt_t *opt) {
     bcf_hdr_append(vcf_hdr, "##FORMAT=<ID=PS,Number=1,Type=Integer,Description=\"Phase set\">");
     // per-sample variant supporting read IDs
     bcf_hdr_append(vcf_hdr, "##FORMAT=<ID=ALTREADS,Number=.,Type=String,Description=\"IDs of reads supporting the variant\">");
+    if (opt->n_samples > 1) {
+        bcf_hdr_append(vcf_hdr, "##FORMAT=<ID=HDP,Number=2,Type=Integer,Description=\"Depth on haplotype 1 and 2\">");
+        bcf_hdr_append(vcf_hdr, "##FORMAT=<ID=HAD,Number=2,Type=Integer,Description=\"Alt depth on haplotype 1 and 2\">");
+    }
 
-    // Add sample
-    bcf_hdr_add_sample(vcf_hdr, sample_name);
+    // Add samples. Across both columns, HDP/HAD are the four-slot grid the
+    // paired verdict was decided on, so a disputed call can be re-litigated
+    // from the VCF alone rather than by re-piling the BAM.
+    if (opt->n_samples > 1) {
+        // NORMAL first, then TUMOR: the GATK/Strelka convention.
+        bcf_hdr_add_sample(vcf_hdr, opt->sample_names != NULL && opt->sample_names[LONGCALLD_SAMPLE_NORMAL] != NULL
+                                    ? opt->sample_names[LONGCALLD_SAMPLE_NORMAL] : "NORMAL");
+        bcf_hdr_add_sample(vcf_hdr, opt->sample_names != NULL && opt->sample_names[LONGCALLD_SAMPLE_TUMOR] != NULL
+                                    ? opt->sample_names[LONGCALLD_SAMPLE_TUMOR] : "TUMOR");
+    } else {
+        bcf_hdr_add_sample(vcf_hdr, sample_name);
+    }
     bcf_hdr_add_sample(vcf_hdr, NULL); // Finalize sample list
 
     // Write header to file
@@ -92,6 +119,57 @@ void write_vcf_header(bam_hdr_t *hdr, struct call_var_opt_t *opt) {
         fprintf(stderr, "Error: Could not write VCF header.\n");
     }
     opt->vcf_hdr = vcf_hdr;
+}
+
+// FILTER column for a paired call. More than one can apply, so they are
+// semicolon-joined the way the VCF spec intends.
+static void append_paired_filter(kstring_t *ks, const var1_t *v) {
+    int n = 0;
+    switch (v->paired_class) {
+        case LONGCALLD_PAIRED_NORMAL_ONLY:
+        case LONGCALLD_PAIRED_LOH:   kputs("NormalOnly", ks); n++; break;
+        case LONGCALLD_PAIRED_LOWDP: kputs("LowDP", ks); n++; break;
+        case LONGCALLD_PAIRED_AMBIG: kputs("Ambiguous", ks); n++; break;
+        default: break; // SOMATIC and GERMLINE pass
+    }
+    // A call made without a usable haplotype grid rests on weaker evidence, so
+    // say so rather than blending the two regimes into one PASS.
+    if (v->is_unphased_call && v->paired_class != LONGCALLD_PAIRED_LOWDP) {
+        if (n++) kputc(';', ks);
+        kputs("Unphased", ks);
+    }
+    if (n == 0) kputs("PASS", ks);
+}
+
+// One sample's FORMAT fields, from the slot grid.
+//
+// Genotype is read off the evidence rather than inherited from the pooled
+// consensus: in a tumour/normal pair the two samples genuinely can differ, and
+// reporting the pooled genotype twice would hide exactly what the caller is
+// for.
+static void append_paired_sample(kstring_t *ks, const struct call_var_opt_t *opt,
+                                 const var1_t *v, int smp, int want_ps) {
+    const var_slot_counts_t *sc = &v->slots;
+    int dp = smp_dp(sc, smp), alt = smp_alt(sc, smp);
+    int d1 = slot_dp(sc, smp, 1), d2 = slot_dp(sc, smp, 2);
+    int min_hap_dp = (smp == LONGCALLD_SAMPLE_NORMAL) ? opt->min_normal_hap_dp : opt->min_tumor_hap_dp;
+    int phased = (d1 >= min_hap_dp && d2 >= min_hap_dp);
+
+    if (dp == 0) {
+        kputs("./.", ks);
+    } else if (phased) {
+        kputw(sc->alt[smp][1] > opt->max_hap_alt ? 1 : 0, ks);
+        kputc('|', ks);
+        kputw(sc->alt[smp][2] > opt->max_hap_alt ? 1 : 0, ks);
+    } else {
+        double af = (double)alt / dp;
+        if (af > opt->max_af)      kputs("1/1", ks);
+        else if (af >= opt->min_af) kputs("0/1", ks);
+        else                        kputs("0/0", ks);
+    }
+    ksprintf(ks, ":%d:%d,%d:%.3f:%d", dp, dp - alt, alt, dp > 0 ? (double)alt / dp : 0.0, v->GQ);
+    if (want_ps) ksprintf(ks, ":%" PRId64, v->PS);
+    ksprintf(ks, ":%d,%d:%d,%d", d1, d2, sc->alt[smp][1], sc->alt[smp][2]);
 }
 
 int write_var_to_vcf(var_t *vars, const struct call_var_opt_t *opt, bam_chunk_t *chunk) {
@@ -178,11 +256,27 @@ int write_var_to_vcf(var_t *vars, const struct call_var_opt_t *opt, bam_chunk_t 
         }
         
         // Write QUAL, FILTER, INFO
-        len += snprintf(buffer + len, buf_m - len, "\t%d\tPASS\t", var.QUAL);
+        if (opt->n_samples > 1) {
+            kstring_t fks = KS_INITIALIZE;
+            append_paired_filter(&fks, &var);
+            len += snprintf(buffer + len, buf_m - len, "\t%d\t%s\t", var.QUAL, fks.s ? fks.s : "PASS");
+            ks_free(&fks);
+        } else {
+            len += snprintf(buffer + len, buf_m - len, "\t%d\tPASS\t", var.QUAL);
+        }
         if (var.is_clean) len += snprintf(buffer + len, buf_m - len, "CLEAN;");
-        if (var.is_somatic) len += snprintf(buffer + len, buf_m - len, "SOMATIC;");
+        if (opt->n_samples > 1) {
+            if (var.paired_class == LONGCALLD_PAIRED_SOMATIC) len += snprintf(buffer + len, buf_m - len, "SOMATIC;");
+            if (var.paired_class == LONGCALLD_PAIRED_NORMAL_ONLY || var.paired_class == LONGCALLD_PAIRED_LOH)
+                len += snprintf(buffer + len, buf_m - len, "NORMALONLY;");
+            if (var.paired_class == LONGCALLD_PAIRED_LOH) len += snprintf(buffer + len, buf_m - len, "LOH;");
+        } else if (var.is_somatic) len += snprintf(buffer + len, buf_m - len, "SOMATIC;");
         if (var.te_seq_i >= 0) len += snprintf(buffer + len, buf_m - len, "MEI;");
         len += snprintf(buffer + len, buf_m - len, "END=%" PRId64 "", var.pos + var.ref_len - 1);
+        if (opt->n_samples > 1 && var.paired_class == LONGCALLD_PAIRED_SOMATIC) {
+            if (var.som_hap > 0) len += snprintf(buffer + len, buf_m - len, ";SOMHAP=%d", var.som_hap);
+            len += snprintf(buffer + len, buf_m - len, ";HAPVAF=%.4f;SPV=%.3g", var.hap_vaf, var.paired_pval);
+        }
         if (var.is_sv) { 
             len += snprintf(buffer + len, buf_m - len, ";%s;%s", SVTYPE, SVLEN);
             if (var.tsd_len > 0) {
@@ -196,59 +290,80 @@ int write_var_to_vcf(var_t *vars, const struct call_var_opt_t *opt, bam_chunk_t 
         len += snprintf(buffer + len, buf_m - len, "\t");
 
         // Write FORMAT and Genotype Data
-        int gt1 = var.GT[0], gt2 = var.GT[1];
-        int is_hom = gt1 == gt2; int gt_seperator = '|';
-        if (var.PS == 0) {
-            gt_seperator = '/';
-            if (gt1 > gt2) { int tmp = gt1; gt1 = gt2; gt2 = tmp;  }
-        }
-        // add SVREADS to FORMAT if outputting supporting read names for SVs
-        len += snprintf(buffer + len, buf_m - len, "GT:DP:AD:VAF:GQ");
-        if (is_hom == 0 && var.PS != 0) len += snprintf(buffer + len, buf_m - len, ":PS");
-        if (opt->output_var_rnames || (var.is_sv && (opt->output_sv_rnames)) || (var.is_somatic && opt->output_somatic_var_rnames)) {
-            len += snprintf(buffer + len, buf_m - len, ":ALTREADS");
-        }
-        len += snprintf(buffer + len, buf_m - len, "\t");
-
-        // GT:DP
-        len += snprintf(buffer + len, buf_m - len, "%d%c%d:%d:", gt1, gt_seperator, gt2, var.DP);
-        // AD
-        for (int j = 0; j < 1 + var.n_alt_allele; j++) {
-            if (j > 0) len += snprintf(buffer + len, buf_m - len, ",");
-            len += snprintf(buffer + len, buf_m - len, "%d", var.AD[j]);
-        }
-        // VAF
-        for (int j = 0; j < var.n_alt_allele; j++) {
-            if (j == 0) len += snprintf(buffer + len, buf_m - len, ":");
-            if (j > 0) len += snprintf(buffer + len, buf_m - len, ",");
-            float vaf = (float)var.AD[j+1] / var.DP;
-            len += snprintf(buffer + len, buf_m - len, "%.3f", vaf);
-        }
-        // GQ
-        len += snprintf(buffer + len, buf_m - len, ":%d", var.GQ);
-        // PS
-        if (is_hom == 0 && var.PS != 0) 
-            len += snprintf(buffer + len, buf_m - len, ":%" PRId64 "", var.PS);
-        // ALTREADS: output_var_rnames for all variants, output_sv_rnames for SVs, output_somatic_var_rnames for somatic SVs
-        // if (var.is_sv && (opt->output_sv_rnames || (opt->output_somatic_var_rnames && var.is_somatic))) {
-        if (opt->output_var_rnames || (var.is_sv && (opt->output_sv_rnames)) || (var.is_somatic && opt->output_somatic_var_rnames)) {
-            // check if the buffer is large enough for read names
-            int n_reads_needed = 0; // 
-            for (int i = 0; i < var.AD[1]; ++i)
-                n_reads_needed += strlen(chunk->read_names[var.alt_read_i[i]]) + 1;
-            if (len + n_reads_needed >= buf_m) {
-                buf_m = len + n_reads_needed + 1024;
+        if (opt->n_samples > 1) {
+            // Two sample columns, NORMAL then TUMOR. Built in a kstring so the
+            // doubled per-sample block cannot overrun the record buffer: the
+            // old hand-rolled growth check only accounted for REF+ALT.
+            int want_ps = (var.PS != 0);
+            kstring_t sks = KS_INITIALIZE;
+            kputs("GT:DP:AD:VAF:GQ", &sks);
+            if (want_ps) kputs(":PS", &sks);
+            kputs(":HDP:HAD", &sks);
+            kputc('\t', &sks);
+            append_paired_sample(&sks, opt, &var, LONGCALLD_SAMPLE_NORMAL, want_ps);
+            kputc('\t', &sks);
+            append_paired_sample(&sks, opt, &var, LONGCALLD_SAMPLE_TUMOR, want_ps);
+            if (len + (int)sks.l + 2 >= buf_m) {
+                buf_m = len + (int)sks.l + 1024;
                 buffer = (char*)realloc(buffer, buf_m);
             }
-            len += snprintf(buffer + len, buf_m - len, ":");
-            if (var.AD[1] > 0) {
-                for (int i = 0; i < var.AD[1]; ++i) {
-                    if (i > 0) len += snprintf(buffer + len, buf_m - len, ",");
-                    int alt_read_i = var.alt_read_i[i];
-                    len += snprintf(buffer + len, buf_m - len, "%s", chunk->read_names[alt_read_i]);
+            len += snprintf(buffer + len, buf_m - len, "%s", sks.s);
+            ks_free(&sks);
+        } else {
+            int gt1 = var.GT[0], gt2 = var.GT[1];
+            int is_hom = gt1 == gt2; int gt_seperator = '|';
+            if (var.PS == 0) {
+                gt_seperator = '/';
+                if (gt1 > gt2) { int tmp = gt1; gt1 = gt2; gt2 = tmp;  }
+            }
+            // add SVREADS to FORMAT if outputting supporting read names for SVs
+            len += snprintf(buffer + len, buf_m - len, "GT:DP:AD:VAF:GQ");
+            if (is_hom == 0 && var.PS != 0) len += snprintf(buffer + len, buf_m - len, ":PS");
+            if (opt->output_var_rnames || (var.is_sv && (opt->output_sv_rnames)) || (var.is_somatic && opt->output_somatic_var_rnames)) {
+                len += snprintf(buffer + len, buf_m - len, ":ALTREADS");
+            }
+            len += snprintf(buffer + len, buf_m - len, "\t");
+
+            // GT:DP
+            len += snprintf(buffer + len, buf_m - len, "%d%c%d:%d:", gt1, gt_seperator, gt2, var.DP);
+            // AD
+            for (int j = 0; j < 1 + var.n_alt_allele; j++) {
+                if (j > 0) len += snprintf(buffer + len, buf_m - len, ",");
+                len += snprintf(buffer + len, buf_m - len, "%d", var.AD[j]);
+            }
+            // VAF
+            for (int j = 0; j < var.n_alt_allele; j++) {
+                if (j == 0) len += snprintf(buffer + len, buf_m - len, ":");
+                if (j > 0) len += snprintf(buffer + len, buf_m - len, ",");
+                float vaf = (float)var.AD[j+1] / var.DP;
+                len += snprintf(buffer + len, buf_m - len, "%.3f", vaf);
+            }
+            // GQ
+            len += snprintf(buffer + len, buf_m - len, ":%d", var.GQ);
+            // PS
+            if (is_hom == 0 && var.PS != 0) 
+                len += snprintf(buffer + len, buf_m - len, ":%" PRId64 "", var.PS);
+            // ALTREADS: output_var_rnames for all variants, output_sv_rnames for SVs, output_somatic_var_rnames for somatic SVs
+            // if (var.is_sv && (opt->output_sv_rnames || (opt->output_somatic_var_rnames && var.is_somatic))) {
+            if (opt->output_var_rnames || (var.is_sv && (opt->output_sv_rnames)) || (var.is_somatic && opt->output_somatic_var_rnames)) {
+                // check if the buffer is large enough for read names
+                int n_reads_needed = 0; // 
+                for (int i = 0; i < var.AD[1]; ++i)
+                    n_reads_needed += strlen(chunk->read_names[var.alt_read_i[i]]) + 1;
+                if (len + n_reads_needed >= buf_m) {
+                    buf_m = len + n_reads_needed + 1024;
+                    buffer = (char*)realloc(buffer, buf_m);
                 }
-            } else { // for SVs without read support, output "." for SVREADS
-                len += snprintf(buffer + len, buf_m - len, ".");
+                len += snprintf(buffer + len, buf_m - len, ":");
+                if (var.AD[1] > 0) {
+                    for (int i = 0; i < var.AD[1]; ++i) {
+                        if (i > 0) len += snprintf(buffer + len, buf_m - len, ",");
+                        int alt_read_i = var.alt_read_i[i];
+                        len += snprintf(buffer + len, buf_m - len, "%s", chunk->read_names[alt_read_i]);
+                    }
+                } else { // for SVs without read support, output "." for SVREADS
+                    len += snprintf(buffer + len, buf_m - len, ".");
+                }
             }
         }
         len += snprintf(buffer + len, buf_m - len, "\n");
