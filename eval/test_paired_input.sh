@@ -95,6 +95,38 @@ for mode in -X -N; do
   done
 done
 
+# ---------------------------------------------------------------------------
+# Phasing is anchored only on variants that look germline heterozygous in the
+# NORMAL sample.
+#
+# That is what makes haplotype index h denote the same parental chromosome in
+# both samples: a tumour-only variant would otherwise define a "haplotype" that
+# exists only in the tumour, and comparing slot (T,h) against slot (N,h) would
+# be comparing two different things. Variants are still *called* in both
+# samples; this only governs what the phasing is anchored on.
+#
+# Driving --min-normal-phase-dp to an unreachable value makes every variant
+# ineligible, so phasing must collapse while calling continues. If phasing
+# survived that, the filter would not be wired into it at all.
+# ---------------------------------------------------------------------------
+n_phased() { samtools view "$1" | awk '{if(/HP:i:/ && /PS:i:/) n++} END{print n+0}'; }
+
+"$BIN" call "$REF" "$T/half_a.bam" -N "$T/half_b.bam" -t 1 -b "$T/ph_def.bam" -o "$T/ph_def.vcf" >/dev/null 2>&1
+chk "paired: phasing happens with the default threshold" yes     "$([[ $(n_phased "$T/ph_def.bam") -gt 0 ]] && echo yes || echo no)"
+chk "paired: variants are called with the default threshold" yes     "$([[ $(grep -vc '^#' "$T/ph_def.vcf") -gt 0 ]] && echo yes || echo no)"
+
+"$BIN" call "$REF" "$T/half_a.bam" -N "$T/half_b.bam" -t 1 --min-normal-phase-dp 100000 \
+    -b "$T/ph_none.bam" -o "$T/ph_none.vcf" >/dev/null 2>&1
+chk "paired: no eligible variant means no phasing" 0 "$(n_phased "$T/ph_none.bam")"
+chk "paired: calling survives with nothing to phase on" yes     "$([[ $(grep -vc '^#' "$T/ph_none.vcf") -gt 0 ]] && echo yes || echo no)"
+chk "paired: no eligible variant still exits cleanly" 0     "$("$BIN" call "$REF" "$T/half_a.bam" -N "$T/half_b.bam" -t 1 --min-normal-phase-dp 100000 -o /dev/null >/dev/null 2>&1; echo $?)"
+
+# The option must not touch single-sample behaviour at all.
+"$BIN" call "$REF" "$HIFI" -t 1 --min-normal-phase-dp 100000 -b "$T/ss_opt.bam" -o /dev/null >/dev/null 2>&1
+"$BIN" call "$REF" "$HIFI" -t 1 -b "$T/ss_noopt.bam" -o /dev/null >/dev/null 2>&1
+chk "single sample ignores --min-normal-phase-dp" same \
+    "$([[ "$(samtools view "$T/ss_opt.bam" | md5sum)" == "$(samtools view "$T/ss_noopt.bam" | md5sum)" ]] && echo same || echo differs)"
+
 echo
 if [[ $fail -eq 0 ]]; then echo "  paired input: all $pass assertions passed"; exit 0
 else echo "  paired input: $fail of $((pass+fail)) assertions FAILED"; exit 1; fi

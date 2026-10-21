@@ -88,6 +88,7 @@ const struct option call_var_opt [] = {
     { "end-clip", 1, NULL, 0},
     { "clip-flank", 1, NULL, 0},
     { "no-reorder", 0, NULL, 0},
+    { "min-normal-phase-dp", 1, NULL, 0},
     { "no-out-aln-passthrough", 0, NULL, 0},
     { "hap-read", 1, NULL, 'p' },
 
@@ -167,6 +168,7 @@ call_var_opt_t *call_var_init_para(void) {
     opt->min_alt_dp = LONGCALLD_MIN_ALT_DP;
     opt->min_af = LONGCALLD_MIN_CAND_AF;
     opt->max_af = LONGCALLD_MAX_CAND_AF;
+    opt->min_normal_phase_dp = 4;
     opt->max_noisy_reg_cov = LONGCALLD_MAX_NOISY_REG_COV;
     // somatic/mosaic var
     opt->min_somatic_dis_to_var = LONGCALLD_MIN_SOMATIC_DIS_TO_VAR;
@@ -1036,6 +1038,9 @@ static void call_var_usage(void) {//main usage
     fprintf(stderr, "    -X --extra-bam  FILE  extra input BAM/CRAM file(s) of the same sample for variant calling []\n");
     fprintf(stderr, "    -N --normal     FILE  matched normal BAM/CRAM file(s); the positional input is then\n");
     fprintf(stderr, "                          treated as the tumour. Can be used multiple times. []\n");
+    fprintf(stderr, "       --min-normal-phase-dp INT\n");
+    fprintf(stderr, "                          with -N, min. normal-sample depth for a variant to be used for\n");
+    fprintf(stderr, "                          phasing [%d]\n", 4);
     fprintf(stderr, "                          can be used multiple times, e.g., -X bam1 -X bam2\n");
     fprintf(stderr, "    --autosome-XY         only call variants on autosomes and sex chromosomes, e.g., (chr){1-22,XY} [default]\n");
     // fprintf(stderr, "                          if not found, all chromosomes/contigs will be processed automatically\n");
@@ -1166,6 +1171,7 @@ int call_var_main(int argc, char *argv[]) {
                     else if (strcmp(call_var_opt[op_idx].name, "end-clip") == 0) opt->end_clip_reg = atoi(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "clip-flank") == 0) opt->end_clip_reg_flank_win = atoi(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "no-reorder") == 0) opt->no_reorder = 1;
+                    else if (strcmp(call_var_opt[op_idx].name, "min-normal-phase-dp") == 0) opt->min_normal_phase_dp = atoi(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "no-out-aln-passthrough") == 0) opt->out_aln_passthrough = 0;
                     break;
             case 's': opt->out_somatic = 1; break;

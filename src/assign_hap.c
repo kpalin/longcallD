@@ -475,26 +475,67 @@ int iter_update_var_hap_to_cons_alle(const call_var_opt_t *opt, bam_chunk_t *chu
 // read's PS was assigned using a fake HET (HOM) var
 // goal: 1) assign haplotype + phase set to all reads
 //       2) variant calling based on clustered reads
+// In paired mode, only variants that look germline heterozygous in the NORMAL
+// sample may drive haplotype assignment.
+//
+// This is what makes the haplotype index mean the same parental chromosome in
+// both samples. A tumour-only variant has near-zero normal VAF: if it were
+// allowed to drive phasing it would define a "haplotype" that exists only in
+// the tumour, and the four-slot somatic test -- which compares slot (T,h)
+// against slot (N,h) -- would be comparing two different things.
+//
+// Variants are still *called* in both samples; this only governs which ones the
+// phasing is anchored on.
+static int var_is_phasing_eligible(const call_var_opt_t *opt, bam_chunk_t *chunk, int var_i) {
+    if (chunk->n_samples <= 1 || chunk->var_slots == NULL) return 1;
+    const var_slot_counts_t *sc = chunk->var_slots + var_i;
+    int dp = smp_dp(sc, LONGCALLD_SAMPLE_NORMAL);
+    if (dp < opt->min_normal_phase_dp) return 0; // too little normal evidence to anchor on
+    double af = (double)smp_alt(sc, LONGCALLD_SAMPLE_NORMAL) / dp;
+    return (af >= opt->min_af && af <= opt->max_af);
+}
+
 int assign_hap_based_on_germline_het_vars_kmeans(const call_var_opt_t *opt, bam_chunk_t *chunk, int target_var_cate) {
     read_var_profile_t *p = chunk->read_var_profile;
+    // Per-sample allele tallies for the eligibility test below. The haplotype
+    // dimension is meaningless this early -- that is what we are about to
+    // compute -- but the per-sample totals it needs are not.
+    if (chunk->n_samples > 1) collect_all_var_slot_counts(chunk);
     int n_valid_vars = 0, *valid_var_idx = (int*)malloc(chunk->n_cand_vars * sizeof(int));
     int *var_is_valid = (int*)calloc(chunk->n_cand_vars, sizeof(int));
+    // Every variant in the target category must still have its hap profile
+    // allocated, because init_assign_read_hap_based_on_cons_alle() walks a
+    // read's whole variant range and selects on exactly that category --
+    // excluding a variant from the list below without initialising it leaves
+    // hap_to_cons_alle NULL and the scorer dereferences it. So the two lists are
+    // kept apart: all_cate_idx is what gets initialised, valid_var_idx is what
+    // the phasing is anchored on.
+    int n_all_cate = 0, *all_cate_idx = (int*)malloc(chunk->n_cand_vars * sizeof(int));
+    int n_skipped_not_germline = 0;
     for (int i = 0; i < chunk->n_cand_vars; ++i) {
         if ((chunk->var_i_to_cate[i] & target_var_cate) == 0) continue;
+        all_cate_idx[n_all_cate++] = i;
+        if (!var_is_phasing_eligible(opt, chunk, i)) { n_skipped_not_germline++; continue; }
         valid_var_idx[n_valid_vars++] = i;
         var_is_valid[i] = 1;
     }
-    if (n_valid_vars == 0) {
-        free(valid_var_idx); free(var_is_valid);
-        return 0;
-    }
+    if (LONGCALLD_VERBOSE >= 2 && n_skipped_not_germline > 0)
+        fprintf(stderr, "[%s] %s:%" PRIi64 "-%" PRIi64 ": %d variant(s) not germline-het in the normal, excluded from phasing\n",
+                __func__, chunk->tname, chunk->reg_beg, chunk->reg_end, n_skipped_not_germline);
     int *var_i_to_cate = chunk->var_i_to_cate;
     cand_var_t *cand_vars = chunk->cand_vars;
     cgranges_t *read_var_cr = chunk->read_var_cr;
     int64_t ovlp_i, ovlp_n, *ovlp_b = 0, max_b = 0;
 
     read_init_hap_phase_set(chunk);
-    var_init_hap_profile_cons_allele(opt, cand_vars, valid_var_idx, n_valid_vars, var_i_to_cate);
+    // Unconditional, and before the early return: make_variants() reads
+    // hap_to_cons_alle for every variant in the target category, so they must
+    // all be initialised even when none of them is eligible to anchor phasing.
+    var_init_hap_profile_cons_allele(opt, cand_vars, all_cate_idx, n_all_cate, var_i_to_cate);
+    if (n_valid_vars == 0) {
+        free(valid_var_idx); free(var_is_valid); free(all_cate_idx);
+        return 0;
+    }
 
     // 1st loop: var-wise loop
     int init_var_i = select_init_var(cand_vars, valid_var_idx, n_valid_vars, var_i_to_cate);
@@ -547,7 +588,7 @@ int assign_hap_based_on_germline_het_vars_kmeans(const call_var_opt_t *opt, bam_
     }
     // update PS for read & var after all iterations
     update_read_phase_set(chunk, var_is_valid, p, cand_vars);
-    free(valid_var_idx); free(var_is_valid);
+    free(valid_var_idx); free(var_is_valid); free(all_cate_idx);
     return 0;
 }
 

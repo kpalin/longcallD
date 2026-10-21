@@ -150,6 +150,7 @@ typedef struct call_var_opt_t {
     // filters for variant calling
     int max_ploid, min_mq, min_bq, min_dp, min_alt_dp;
     double min_af, max_af;
+    int min_normal_phase_dp; // paired mode: min normal depth for a variant to drive phasing
     // somatic/mosaic variant
     int min_somatic_dis_to_var, min_somatic_dis_to_homopolymer_indel_error, min_somatic_dis_to_seq_error, min_somatic_alt_dp, min_somatic_te_dp, min_somatic_hap_dp;
     double min_somatic_log_beta_binom, min_somatic_fisher_pval; //, max_somatic_alt_af; // 0.01~0.1
