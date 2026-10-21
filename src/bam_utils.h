@@ -200,6 +200,7 @@ typedef struct aln_out_t {
     int32_t last_tid; hts_pos_t last_pos;  // last record emitted, for the monotonicity check
     int64_t n_written;
     int64_t n_unrefined_supp; // supplementary records written without CIGAR refinement
+    uint8_t seen_unplaced;    // an unmapped (tid < 0) record has been written; nothing placed may follow
 } aln_out_t;
 
 aln_out_t *aln_out_init(htsFile *fp, bam_hdr_t *hdr, int is_cram, int no_reorder, hts_pos_t window);

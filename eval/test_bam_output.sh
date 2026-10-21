@@ -90,6 +90,65 @@ for rt in hifi ont; do
       "$([[ "$(samtools view "$T/${rt}_t1_r.bam" | md5sum)" == "$(samtools view "$T/${rt}_t4_r.bam" | md5sum)" ]] && echo same || echo differs)"
 done
 
+# ---------------------------------------------------------------------------
+# Output completeness: reads on excluded contigs and unmapped reads.
+#
+# The bundled test files are chr11-only with no unmapped reads, so the pipeline
+# visits every record and the gap is invisible. Synthesise a file that does have
+# both, since without the passthrough pass the output BAM is a region-restricted
+# subset rather than a drop-in replacement for the input.
+# ---------------------------------------------------------------------------
+HIFI=$ROOT/test_data/HG002_chr11_hifi_test.bam
+
+mk_mixed() {  # $1=output bam; excluded contigs sort AFTER kept ones (normal GRCh38 layout)
+  { samtools view --no-PG -H "$HIFI"
+    samtools view "$HIFI"
+    samtools view "$HIFI" | head -5 | awk 'BEGIN{OFS="\t"}{$1=$1"_M"; $3="chrM"; $4=100+NR*20; $5=60; print}'
+    samtools view "$HIFI" | head -5 | awk 'BEGIN{OFS="\t"}{$1=$1"_D"; $3="chr1_KI270706v1_random"; $4=200+NR*20; $5=60; print}'
+    samtools view "$HIFI" | head -3 | awk 'BEGIN{OFS="\t"}{$1=$1"_U"; $2=4; $3="*"; $4=0; $5=0; $6="*"; $7="*"; $8=0; $9=0; print}'
+  } | samtools sort -o "$1" - 2>/dev/null
+  samtools index "$1"
+}
+
+mk_reversed() {  # $1=output bam; chrM declared BEFORE chr11, so appending it cannot stay sorted
+  { printf '@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:chrM\tLN:16569\n@SQ\tSN:chr11\tLN:135086622\n'
+    samtools view "$HIFI" | head -5 | awk 'BEGIN{OFS="\t"}{$1=$1"_M"; $3="chrM"; $4=100+NR*20; $5=60; print}'
+    samtools view "$HIFI"
+  } | samtools sort -o "$1" - 2>/dev/null
+  samtools index "$1"
+}
+
+mk_mixed "$T/mixed.bam"
+n_mixed=$(samtools view -c "$T/mixed.bam")
+
+"$BIN" call --refine-aln "$REF" "$T/mixed.bam" -t 1 -b "$T/pass.bam" -o /dev/null >/dev/null 2>&1
+chk "passthrough keeps every input record" "$n_mixed" "$(samtools view -c "$T/pass.bam")"
+chk "passthrough output still coordinate-sorted" 0 "$(samtools view "$T/pass.bam" | awk '$3!="*"{if($3==p3 && $4<p4) n++; p3=$3;p4=$4} END{print n+0}')"
+chk "passthrough output says SO:coordinate" "SO:coordinate" "$(samtools view --no-PG -H "$T/pass.bam" | grep -oE 'SO:[a-z]+' | head -1)"
+rm -f "$T/pass.bam.bai"; samtools index "$T/pass.bam" 2>/dev/null
+chk "passthrough output indexes" yes "$([[ -f $T/pass.bam.bai ]] && echo yes || echo no)"
+chk "excluded-contig records are present" "10" \
+    "$(( $(samtools view -c "$T/pass.bam" chrM) + $(samtools view -c "$T/pass.bam" chr1_KI270706v1_random) ))"
+chk "unmapped records are present" 3 "$(samtools view -c -f 4 "$T/pass.bam")"
+chk "passthrough records carry no HP/PS" 0 \
+    "$(samtools view "$T/pass.bam" chrM chr1_KI270706v1_random | grep -cE 'HP:i:|PS:i:')"
+chk "unmapped records carry no HP/PS" 0 "$(samtools view -f 4 "$T/pass.bam" | grep -cE 'HP:i:|PS:i:')"
+chk "unmapped records come last" 0 "$(samtools view "$T/pass.bam" | awk '{if($3=="*") seen=1; else if(seen) n++} END{print n+0}')"
+chk "qname+flag multiset preserved" same \
+    "$([[ "$(samtools view "$T/mixed.bam" | awk '{print $1"_"$2}' | sort | md5sum)" == "$(samtools view "$T/pass.bam" | awk '{print $1"_"$2}' | sort | md5sum)" ]] && echo same || echo differs)"
+
+# Opting out must drop exactly those records and stay sorted.
+"$BIN" call --refine-aln --no-out-aln-passthrough "$REF" "$T/mixed.bam" -t 1 -b "$T/nopass.bam" -o /dev/null >/dev/null 2>&1
+chk "--no-out-aln-passthrough omits them" "$((n_mixed - 13))" "$(samtools view -c "$T/nopass.bam")"
+
+# A header that interleaves excluded and kept contigs cannot be both complete
+# and sorted; keep the reads and say so.
+mk_reversed "$T/rev.bam"
+n_rev=$(samtools view -c "$T/rev.bam")
+"$BIN" call --refine-aln "$REF" "$T/rev.bam" -t 1 -b "$T/rev.out.bam" -o /dev/null >/dev/null 2>&1
+chk "interleaved header: records still all kept" "$n_rev" "$(samtools view -c "$T/rev.out.bam")"
+chk "interleaved header: declares SO:unsorted" "SO:unsorted" "$(samtools view --no-PG -H "$T/rev.out.bam" | grep -oE 'SO:[a-z]+' | head -1)"
+
 echo
 if [[ $fail -eq 0 ]]; then echo "  BAM output: all $pass assertions passed"; exit 0
 else echo "  BAM output: $fail of $((pass+fail)) assertions FAILED"; exit 1; fi

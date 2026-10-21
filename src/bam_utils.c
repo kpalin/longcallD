@@ -1980,15 +1980,27 @@ aln_out_t *aln_out_init(htsFile *fp, bam_hdr_t *hdr, int is_cram, int no_reorder
 // Emit one record, checking that the file stays coordinate-sorted. "Silently
 // invalid BAM" is not an acceptable outcome, so a violation is fatal.
 static void aln_out_emit(aln_out_t *o, bam1_t *b, const char *tname) {
-    if (!o->no_reorder && o->last_tid >= 0 &&
-        (b->core.tid < o->last_tid || (b->core.tid == o->last_tid && b->core.pos < o->last_pos))) {
-        _err_error_exit("Output alignment went backwards at %s:%" PRId64 " %s (previous record was tid %d pos %" PRId64 "). "
-                        "The reorder window (%" PRId64 " bp) was too small.\n",
-                        tname ? tname : "?", b->core.pos+1, bam_get_qname(b), o->last_tid, o->last_pos+1, o->window);
+    // Unplaced records (tid < 0) sort after every placed one, so they are
+    // exempt from the position check but must all come last.
+    if (b->core.tid < 0) {
+        o->seen_unplaced = 1;
+    } else {
+        if (!o->no_reorder && o->seen_unplaced) {
+            _err_error_exit("Placed record %s at %s:%" PRId64 " written after an unmapped record; "
+                            "unmapped records must come last.\n",
+                            bam_get_qname(b), tname ? tname : "?", b->core.pos+1);
+        }
+        if (!o->no_reorder && o->last_tid >= 0 &&
+            (b->core.tid < o->last_tid || (b->core.tid == o->last_tid && b->core.pos < o->last_pos))) {
+            _err_error_exit("Output alignment went backwards at %s:%" PRId64 " %s (previous record was tid %d pos %" PRId64 "). "
+                            "The reorder window (%" PRId64 " bp) was too small.\n",
+                            tname ? tname : "?", b->core.pos+1, bam_get_qname(b), o->last_tid, o->last_pos+1, o->window);
+        }
     }
     if (sam_write1(o->fp, o->hdr, b) < 0)
         _err_error_exit("Failed to write BAM record. %s:%" PRId64 " %s\n", tname ? tname : "?", b->core.pos+1, bam_get_qname(b));
-    o->last_tid = b->core.tid; o->last_pos = b->core.pos; o->n_written++;
+    if (b->core.tid >= 0) { o->last_tid = b->core.tid; o->last_pos = b->core.pos; }
+    o->n_written++;
 }
 
 // Drop the first n buffered records (already emitted).
@@ -2007,7 +2019,11 @@ void aln_out_flush(aln_out_t *o) {
 void aln_out_push(aln_out_t *o, bam1_t *b, const char *tname) {
     // Nothing can move, so there is nothing to reorder: write straight through
     // and avoid a copy per record. The sortedness check still applies.
-    if (o->window == 0) { aln_out_emit(o, b, tname); return; }
+    // Unplaced records never need reordering either.
+    if (o->window == 0 || b->core.tid < 0) {
+        if (b->core.tid < 0) aln_out_flush(o); // everything buffered is placed, so it precedes this
+        aln_out_emit(o, b, tname); return;
+    }
 
     // A new reference means everything buffered is already behind us.
     if (o->n_buf > 0 && o->buf[0]->core.tid != b->core.tid) aln_out_flush(o);

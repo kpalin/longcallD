@@ -87,6 +87,7 @@ const struct option call_var_opt [] = {
     { "end-clip", 1, NULL, 0},
     { "clip-flank", 1, NULL, 0},
     { "no-reorder", 0, NULL, 0},
+    { "no-out-aln-passthrough", 0, NULL, 0},
     { "hap-read", 1, NULL, 'p' },
 
     { "threads", 1, NULL, 't' },
@@ -223,7 +224,7 @@ call_var_opt_t *call_var_init_para(void) {
     opt->max_gq = 60; opt->max_qual = 60;
     opt->out_vcf = NULL; opt->vcf_hdr = NULL; opt->out_vcf_fn = NULL; opt->out_vcf_type = 'v'; opt->no_vcf_header = 0; opt->out_amb_base = 0;
     opt->out_aln_fp = NULL; opt->out_aln_is_cram = 0; opt->refine_bam = 0;
-    opt->aln_out = NULL; opt->no_reorder = 0;
+    opt->aln_out = NULL; opt->no_reorder = 0; opt->out_aln_passthrough = 1;
     opt->out_somatic = 0; opt->out_methylation = 0;
     // opt->verbose = 0;
     return opt;
@@ -815,6 +816,63 @@ static void add_longcalld_pg_line(bam_hdr_t *header) {
     if (r < 0) _err_error_exit("Fail to add @PG line to bam header.\n");
 }
 
+// Is the header partitioned so that every contig we skip sorts after every
+// contig we process? If so, the skipped contigs' records can simply be appended
+// after the pipeline's output and the file stays coordinate-sorted. GRCh38
+// headers are laid out this way (chr1..chrY, then chrM, randoms, decoys), but
+// nothing guarantees it.
+static int passthrough_keeps_sort_order(call_var_opt_t *opt, bam_hdr_t *header) {
+    int last_kept = -1;
+    for (int i = 0; i < header->n_targets; ++i) {
+        if (!skip_target_region(opt, header->target_name[i])) last_kept = i;
+    }
+    for (int i = 0; i < last_kept; ++i) {
+        if (skip_target_region(opt, header->target_name[i])) return 0; // skipped contig sorts before a kept one
+    }
+    return 1;
+}
+
+// Stream the records the region pipeline never visits: those on contigs the
+// target filter excludes, and unmapped reads. Without this the output is a
+// region-restricted subset rather than a drop-in replacement for the input,
+// which is not what "output the realigned reads" should mean.
+//
+// Our HP/PS are stripped: these reads were never phased, so carrying a tag over
+// from the input would misattribute someone else's phasing to us.
+static int64_t write_passthrough_records(call_var_opt_t *opt, bam_hdr_t *header) {
+    int64_t n = 0;
+    bam1_t *b = bam_init1();
+    for (int i = 0; i < opt->n_in_bam_fn; ++i) {
+        samFile *in_bam = opt->bams[i]; hts_idx_t *idx = opt->idxs[i];
+        if (in_bam == NULL || idx == NULL) continue;
+        for (int t = 0; t < header->n_targets; ++t) {
+            if (!skip_target_region(opt, header->target_name[t])) continue;
+            hts_itr_t *iter = sam_itr_queryi(idx, t, 0, header->target_len[t]);
+            if (iter == NULL) continue;
+            while (sam_itr_next(in_bam, iter, b) >= 0) {
+                uint8_t *hp = bam_aux_get(b, "HP"); if (hp != NULL) bam_aux_del(b, hp);
+                uint8_t *ps = bam_aux_get(b, "PS"); if (ps != NULL) bam_aux_del(b, ps);
+                aln_out_push(opt->aln_out, b, header->target_name[t]);
+                n++;
+            }
+            hts_itr_destroy(iter);
+        }
+        // Unmapped reads with no coordinate; these sort after everything placed.
+        hts_itr_t *iter = sam_itr_queryi(idx, HTS_IDX_NOCOOR, 0, 0);
+        if (iter != NULL) {
+            while (sam_itr_next(in_bam, iter, b) >= 0) {
+                uint8_t *hp = bam_aux_get(b, "HP"); if (hp != NULL) bam_aux_del(b, hp);
+                uint8_t *ps = bam_aux_get(b, "PS"); if (ps != NULL) bam_aux_del(b, ps);
+                aln_out_push(opt->aln_out, b, "*");
+                n++;
+            }
+            hts_itr_destroy(iter);
+        }
+    }
+    bam_destroy1(b);
+    return n;
+}
+
 static void call_var_pl_write_bam_header(call_var_opt_t *opt, bam_hdr_t *header) {
     if (opt->out_aln_is_cram) {
         if (hts_set_fai_filename(opt->out_aln_fp, opt->ref_fa_fn) != 0) _err_error_exit("Failed to set reference file for output CRAM encoding: %s\n", opt->ref_fa_fn);
@@ -825,6 +883,13 @@ static void call_var_pl_write_bam_header(call_var_opt_t *opt, bam_hdr_t *header)
     // Say what we actually produce. With the reorder buffer the output really is
     // coordinate-sorted; with --no-reorder it is not, and claiming otherwise is
     // how --refine-aln used to emit a file that samtools index rejected.
+    if (opt->out_aln_passthrough && !opt->no_reorder && !passthrough_keeps_sort_order(opt, header)) {
+        _err_warning("This header interleaves excluded contigs with processed ones, so appending the "
+                     "excluded records keeps every read but cannot keep the file sorted; declaring "
+                     "SO:unsorted. Use --all-ctg to process everything, or "
+                     "--no-out-aln-passthrough to drop those records instead.\n");
+        opt->no_reorder = 1;
+    }
     if (opt->no_reorder) {
         if (sam_hdr_update_hd(header, "SO", "unsorted", "GO", "none") < 0)
             _err_warning("Failed to set @HD SO:unsorted in the output header.\n");
@@ -949,6 +1014,9 @@ static void call_var_usage(void) {//main usage
     fprintf(stderr, "                          note: multiple input BAM/CRAM files will be merged in SAM/BAM/CRAM output\n");
     fprintf(stderr, "    --refine-aln          refine alignment in SAM/BAM/CRAM output\n");
     fprintf(stderr, "                          output stays coordinate-sorted and indexable\n");
+    fprintf(stderr, "    --no-out-aln-passthrough\n");
+    fprintf(stderr, "                          omit reads on excluded contigs and unmapped reads from the\n");
+    fprintf(stderr, "                          alignment output (they are included by default)\n");
     fprintf(stderr, "    --no-reorder          do not re-sort refined records; output is written in input\n");
     fprintf(stderr, "                          order and the header declares SO:unsorted\n");
     fprintf(stderr, "    --out-var-rnames      output names of supporting reads in VCF FORMAT field for all variants [False]\n");
@@ -1048,6 +1116,7 @@ int call_var_main(int argc, char *argv[]) {
                     else if (strcmp(call_var_opt[op_idx].name, "end-clip") == 0) opt->end_clip_reg = atoi(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "clip-flank") == 0) opt->end_clip_reg_flank_win = atoi(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "no-reorder") == 0) opt->no_reorder = 1;
+                    else if (strcmp(call_var_opt[op_idx].name, "no-out-aln-passthrough") == 0) opt->out_aln_passthrough = 0;
                     break;
             case 's': opt->out_somatic = 1; break;
             case 'm': opt->out_methylation = 1; break;
@@ -1120,6 +1189,10 @@ int call_var_main(int argc, char *argv[]) {
     // start to work !!!
     pl.opt = opt;
     kt_pipeline(opt->pl_threads, call_var_worker_pipeline, &pl, 3);
+    if (opt->aln_out != NULL && opt->out_aln_passthrough) {
+        int64_t n_pass = write_passthrough_records(opt, pl.io_aux[0].headers[0]);
+        if (n_pass > 0) _err_info("Passed through %" PRId64 " reads on excluded contigs or without a mapping\n", n_pass);
+    }
     if (opt->aln_out != NULL) {
         if (opt->refine_bam && opt->aln_out->n_unrefined_supp > 0)
             _err_warning("%" PRId64 " supplementary alignment(s) were written with their original CIGAR: "
