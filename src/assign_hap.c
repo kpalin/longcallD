@@ -324,6 +324,11 @@ void update_read_phase_set(bam_chunk_t *chunk, int *var_is_valid, read_var_profi
         int read_i = chunk->ordered_read_ids[i];
         if (chunk->is_skipped[read_i]) continue;
         if (p[read_i].start_var_idx == -1) continue;
+        // A read with no haplotype assignment has no phase to belong to.
+        // Previously PS was derived from het-variant overlap alone, without
+        // consulting chunk->haps[], which is how reads ended up carrying PS and
+        // no HP.
+        if (chunk->haps[read_i] == 0) { chunk->phase_sets[read_i] = -1; continue; }
         hts_pos_t phase_set = -1;
         for (int var_i = p[read_i].start_var_idx; var_i <= p[read_i].end_var_idx; ++var_i) {
             if (var_is_valid[var_i] == 0) continue;

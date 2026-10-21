@@ -22,6 +22,8 @@ chk() {
 }
 # records that start before their predecessor on the same reference
 n_unsorted() { samtools view "$1" | awk '{if($3==p3 && $4<p4) n++; p3=$3; p4=$4} END{print n+0}'; }
+# records carrying exactly one of HP/PS -- the pair is meaningless alone
+n_half_phased() { samtools view "$1" | awk '{hp=/HP:i:/?1:0; ps=/PS:i:/?1:0; if(hp!=ps) n++} END{print n+0}'; }
 
 [[ -x $BIN ]] || { echo "no binary at $BIN; run make first" >&2; exit 1; }
 
@@ -43,6 +45,9 @@ for rt in hifi ont; do
       samtools index "$out" 2>/dev/null
       chk "$tag samtools index succeeds" yes "$([[ -f $out.bai ]] && echo yes || echo no)"
       chk "$tag conserves record count" "$n_in" "$(samtools view -c "$out")"
+      # Baseline before the fix: 1 HP-only + 5 PS-only on ONT, both read types
+      # affected equally with and without --refine-aln.
+      chk "$tag every record has both HP and PS or neither" 0 "$(n_half_phased "$out")"
     done
   done
 
@@ -52,6 +57,7 @@ for rt in hifi ont; do
   chk "$rt --no-reorder header says SO:unsorted" "SO:unsorted" \
       "$(samtools view --no-PG -H "$out" | grep -oE 'SO:[a-z]+' | head -1)"
   chk "$rt --no-reorder conserves record count" "$n_in" "$(samtools view -c "$out")"
+  chk "$rt --no-reorder keeps HP/PS joint" 0 "$(n_half_phased "$out")"
 
   # Reordering must not alter any record, only their order.
   chk "$rt reordered output has the same records as --no-reorder" same \

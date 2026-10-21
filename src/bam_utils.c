@@ -2067,7 +2067,14 @@ int write_processed_read_to_bam(const call_var_opt_t *opt, bam_chunk_t *chunk, b
     }
     // Add HP tag
     int hap = chunk->haps[read_i];
-    if (hap != 0) {
+    hts_pos_t ps = chunk->phase_sets[read_i];
+
+    // HP and PS are meaningless alone: a haplotype with no phase block to
+    // anchor it says nothing, and a phase set with no haplotype assignment says
+    // nothing either. Emit both or neither, decided once. Guarding them
+    // independently is what let 6 of 587 ONT records out with exactly one.
+    int emit_phase = (hap != 0 && ps > 0);
+    if (emit_phase) {
         // check if HP tag exists
         uint8_t *hp = bam_aux_get(read, "HP");
         if (hp != NULL) {
@@ -2079,13 +2086,12 @@ int write_processed_read_to_bam(const call_var_opt_t *opt, bam_chunk_t *chunk, b
             bam_aux_append(read, "HP", 'i', 4, (uint8_t *)&(hap));
         }
     } else {
-        // remove HP tag if hap is 0
+        // remove HP tag if we are not emitting a phase for this read
         uint8_t *hp = bam_aux_get(read, "HP");
         if (hp != NULL) bam_aux_del(read, hp);
     }
     // Add PS tag
-    hts_pos_t ps = chunk->phase_sets[read_i];
-    if (ps > 0) {
+    if (emit_phase) {
         // check if PS tag exists
         uint8_t *ps_tag = bam_aux_get(read, "PS");
         if (ps_tag != NULL) {
@@ -2097,7 +2103,7 @@ int write_processed_read_to_bam(const call_var_opt_t *opt, bam_chunk_t *chunk, b
             bam_aux_append(read, "PS", 'i', 4, (uint8_t *)&(ps));
         }
     } else {
-        // remove PS tag if ps is 0
+        // remove PS tag if we are not emitting a phase for this read
         uint8_t *ps_tag = bam_aux_get(read, "PS");
         if (ps_tag != NULL) bam_aux_del(read, ps_tag);
     }

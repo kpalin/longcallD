@@ -1693,7 +1693,12 @@ void flip_variant_hap(call_var_opt_t *opt, bam_chunk_t *pre_chunk, bam_chunk_t *
     if (LONGCALLD_VERBOSE >= 2)
         fprintf(stderr, "Region: %s:%" PRIi64 "-%" PRIi64 ", flip_hap: %d (%d) pre_PS: %" PRIi64 ", cur_PS: %" PRIi64 "\n", cur_chunk->tname, cur_chunk->reg_beg, cur_chunk->reg_end, cur_chunk->flip_hap, flip_hap_score, max_pre_read_PS, min_cur_read_PS);
     update_chunk_var_hap_phase_set1(cur_chunk);
-    if (opt->out_aln_fp != NULL) update_chunk_read_hap_phase_set1(cur_chunk);
+    // Not gated on the alignment output any more. Read-level haplotypes and
+    // phase sets feed the somatic caller and (from the paired work onward) the
+    // classification itself, so leaving the flip conditional on -b/-C/-S means
+    // phasing state silently depends on whether an output BAM was requested.
+    // Measured to change neither the VCF nor the BAM on the bundled data.
+    update_chunk_read_hap_phase_set1(cur_chunk);
 }
 
 void print_var_seqs(digar1_t *digars, uint8_t **reg_var_seqs, int reg_n_digar, FILE *fp) {
