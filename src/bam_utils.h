@@ -199,12 +199,23 @@ typedef struct aln_out_t {
     bam1_t **buf; int n_buf, m_buf;
     int32_t last_tid; hts_pos_t last_pos;  // last record emitted, for the monotonicity check
     int64_t n_written;
+    int64_t n_unrefined_supp; // supplementary records written without CIGAR refinement
 } aln_out_t;
 
 aln_out_t *aln_out_init(htsFile *fp, bam_hdr_t *hdr, int is_cram, int no_reorder, hts_pos_t window);
 void aln_out_push(aln_out_t *o, bam1_t *b, const char *tname);
 void aln_out_flush(aln_out_t *o);
 void aln_out_free(aln_out_t *o);
+
+// Does this run need chunk->read_names[] populated?
+//
+// Query names are needed to report supporting reads in the VCF, and also to let
+// a supplementary alignment inherit its read's HP/PS when writing the phased
+// alignment output. This predicate is used at all four sites that allocate,
+// grow, fill and free the array; they must agree, or the result is a leak or a
+// free of uninitialised pointers.
+#define need_read_names(opt) ((opt)->output_var_rnames || (opt)->output_sv_rnames || \
+                              (opt)->output_somatic_var_rnames || (opt)->out_aln_fp != NULL)
 
 // Is this record one that the variant caller takes into chunk->reads[]?
 //
@@ -233,6 +244,7 @@ static inline uint64_t bam_record_sig(const bam1_t *b) {
 }
 
 int write_read_to_bam(bam_chunk_t *chunk, const struct call_var_opt_t *opt, const struct call_var_io_aux_t *io_aux);
+int write_untagged_read_to_bam(bam_chunk_t *chunk, aln_out_t *out, bam1_t *read, void *phase_by_qname);
 void bam_chunk_mid_free(bam_chunk_t *chunk, const struct call_var_opt_t *opt);
 void bam_chunks_mid_free(bam_chunk_t *chunks, int n_chunks, const struct call_var_opt_t *opt);
 void bam_chunk_post_free(bam_chunk_t *chunk, const struct call_var_opt_t *opt);

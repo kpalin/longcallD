@@ -25,6 +25,24 @@ n_unsorted() { samtools view "$1" | awk '{if($3==p3 && $4<p4) n++; p3=$3; p4=$4}
 # records carrying exactly one of HP/PS -- the pair is meaningless alone
 n_half_phased() { samtools view "$1" | awk '{hp=/HP:i:/?1:0; ps=/PS:i:/?1:0; if(hp!=ps) n++} END{print n+0}'; }
 
+# tagged supplementary records whose HP/PS disagree with their own primary
+n_supp_disagree() {
+  samtools view "$1" | awk '
+    { hp=""; ps=""
+      for(i=12;i<=NF;i++){ if($i ~ /^HP:i:/){split($i,a,":"); hp=a[3]}
+                           if($i ~ /^PS:i:/){split($i,b,":"); ps=b[3]} }
+      if (and($2,2048)) { s_hp[$1]=hp; s_ps[$1]=ps }
+      else if (!and($2,256) && !and($2,4)) { p_hp[$1]=hp; p_ps[$1]=ps }
+    }
+    END { for (k in s_hp) if (s_hp[k]!="" && (s_hp[k]!=p_hp[k] || s_ps[k]!=p_ps[k])) n++
+          print n+0 }'
+}
+
+# secondary or unmapped records carrying our tags (they never should)
+n_sec_unmapped_tagged() {
+  samtools view "$1" | awk '(and($2,256) || and($2,4)) && (/HP:i:/ || /PS:i:/) {n++} END{print n+0}'
+}
+
 [[ -x $BIN ]] || { echo "no binary at $BIN; run make first" >&2; exit 1; }
 
 for rt in hifi ont; do
@@ -48,6 +66,10 @@ for rt in hifi ont; do
       # Baseline before the fix: 1 HP-only + 5 PS-only on ONT, both read types
       # affected equally with and without --refine-aln.
       chk "$tag every record has both HP and PS or neither" 0 "$(n_half_phased "$out")"
+      # Supplementary alignments inherit their read's primary phase; a
+      # supplementary whose primary is in another chunk gets nothing.
+      chk "$tag supplementary tags agree with their primary" 0 "$(n_supp_disagree "$out")"
+      chk "$tag secondary/unmapped records carry no HP/PS" 0 "$(n_sec_unmapped_tagged "$out")"
     done
   done
 

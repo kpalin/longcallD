@@ -6,6 +6,13 @@
 #include "collect_var.h"
 #include "call_var_main.h"
 #include "sdust.h"
+#include "khash.h"
+
+// qname -> the phase of that read's primary alignment, so a supplementary can
+// inherit it. KHASH_MAP_INIT_STR does not copy keys, and the keys here are
+// chunk->read_names[] entries, which outlive the map.
+typedef struct { int hap; hts_pos_t ps; } read_phase_t;
+KHASH_MAP_INIT_STR(rphase, read_phase_t)
 
 extern int LONGCALLD_VERBOSE;
 
@@ -1329,7 +1336,7 @@ int collect_digar_from_ref_seq(bam_chunk_t *chunk, int read_i, const struct call
 int bam_chunk_init0(bam_chunk_t *chunk, const struct call_var_opt_t *opt, int n_reads, int n_bam) {
     // input
     chunk->n_reads = 0; chunk->m_reads = n_reads; chunk->ordered_read_ids = (int*)malloc(n_reads * sizeof(int));
-    if (opt->output_var_rnames || opt->output_sv_rnames || opt->output_somatic_var_rnames) {
+    if (need_read_names(opt)) {
         chunk->read_names = (char**)malloc(n_reads * sizeof(char*));
         for (int i = 0; i < n_reads; i++) chunk->read_names[i] = NULL;
     }
@@ -1391,7 +1398,7 @@ int bam_chunk_realloc(bam_chunk_t *chunk, const struct call_var_opt_t *opt) {
     }
     chunk->var_noisy_read_mark_id = 0;
     chunk->reads = (bam1_t**)realloc(chunk->reads, m_reads * sizeof(bam1_t*));
-    if (opt->output_var_rnames || opt->output_sv_rnames || opt->output_somatic_var_rnames) 
+    if (need_read_names(opt)) 
         chunk->read_names = (char**)realloc(chunk->read_names, m_reads * sizeof(char*));
     chunk->ordered_read_ids = (int*)realloc(chunk->ordered_read_ids, m_reads * sizeof(int));
     for (int i = 0; i < chunk->n_bam; ++i) {
@@ -1522,7 +1529,7 @@ void bam_chunk_post_free(bam_chunk_t *chunk, const struct call_var_opt_t *opt) {
     free(chunk->ordered_read_ids);
     // save read_var_profile for output_sv_rnames or output_somatic_sv_rnames, which will be used in make_variants
     if (chunk->read_var_profile != NULL) free_read_var_profile(chunk->read_var_profile, chunk->n_reads);
-    if (opt->output_var_rnames || opt->output_sv_rnames || opt->output_somatic_var_rnames) {
+    if (need_read_names(opt)) {
         for (int i = 0; i < chunk->n_reads; i++) free(chunk->read_names[i]); 
         free(chunk->read_names);
     }
@@ -1705,7 +1712,7 @@ int collect_ref_seq_bam_main(const struct call_var_pl_t *pl, struct call_var_io_
             if (chunk->reads[chunk->n_reads]->core.pos+1 < min_read_beg) min_read_beg = chunk->reads[chunk->n_reads]->core.pos+1;
             if (bam_endpos(chunk->reads[chunk->n_reads]) > max_read_end) max_read_end = bam_endpos(chunk->reads[chunk->n_reads]);
             // check if read is overlapping with next region
-            if (opt->output_var_rnames || opt->output_sv_rnames || opt->output_somatic_var_rnames) {
+            if (need_read_names(opt)) {
                 chunk->read_names[chunk->n_reads] = strdup(bam_get_qname(chunk->reads[chunk->n_reads]));
             }
             chunk->read_sigs[chunk->n_reads] = bam_record_sig(chunk->reads[chunk->n_reads]);
@@ -1906,7 +1913,13 @@ int refine_bam1(bam_chunk_t *chunk, int read_i, bam1_t *b) {
     if (!(b->core.flag & BAM_FSUPPLEMENTARY)) {
         if ((new_cigar[0] & BAM_CIGAR_MASK) == BAM_CHARD_CLIP) new_cigar[0] = (new_cigar[0] & ~BAM_CIGAR_MASK) | BAM_CSOFT_CLIP;
         if ((new_cigar[new_n_cigar-1] & BAM_CIGAR_MASK) == BAM_CHARD_CLIP) new_cigar[new_n_cigar-1] = (new_cigar[new_n_cigar-1] & ~BAM_CIGAR_MASK) | BAM_CSOFT_CLIP;
-    } else { // TODO: handle supplementary alignments
+    } else {
+        // Deliberately not refined. refine_bam1() rebuilds the CIGAR from the
+        // read's digar, which describes the primary alignment: the H->S
+        // conversion above is only valid for a primary, and a supplementary's
+        // clipping must stay hard so the record remains a consistent member of
+        // the read's alignment set. Supplementary records are therefore written
+        // with their original CIGAR; the count is reported at end of run.
     }
     uint32_t *old_cigar = bam_get_cigar(b); int old_n_cigar = b->core.n_cigar;
     if (cigar_is_idential(old_cigar, old_n_cigar, new_cigar, new_n_cigar)) {
@@ -2029,13 +2042,34 @@ void aln_out_free(aln_out_t *o) {
     free(o);
 }
 
-int write_unprocessed_read_to_bam(bam_chunk_t *chunk, aln_out_t *out, bam1_t *read) {
-    // Not phased by us, so it must not carry our tags.
+// Records the caller did not phase itself: secondary, unmapped, low-MQ, and
+// supplementary alignments.
+//
+// A supplementary alignment is not an independent observation -- it is part of a
+// read whose primary alignment we did phase -- so when its read's primary is in
+// this same chunk it inherits that primary's HP/PS. Everything else has both
+// tags stripped, since a stale HP/PS from the input would be a lie about our
+// phasing. A supplementary whose primary lies in another chunk is not in the map
+// and so gets nothing, which is the safe answer rather than a guess.
+int write_untagged_read_to_bam(bam_chunk_t *chunk, aln_out_t *out, bam1_t *read, void *phase_by_qname) {
+    int hap = 0; hts_pos_t ps = 0;
+    if (phase_by_qname != NULL && (read->core.flag & BAM_FSUPPLEMENTARY) &&
+        !(read->core.flag & (BAM_FSECONDARY | BAM_FUNMAP))) {
+        khash_t(rphase) *h = (khash_t(rphase)*)phase_by_qname;
+        khiter_t k = kh_get(rphase, h, bam_get_qname(read));
+        if (k != kh_end(h)) { hap = kh_value(h, k).hap; ps = kh_value(h, k).ps; }
+        out->n_unrefined_supp++; // reported at end of run when --refine-aln is on
+    }
+
     uint8_t *hp = bam_aux_get(read, "HP");
     if (hp != NULL) bam_aux_del(read, hp);
-
     uint8_t *ps_tag = bam_aux_get(read, "PS");
     if (ps_tag != NULL) bam_aux_del(read, ps_tag);
+
+    if (hap != 0 && ps > 0) { // both or neither, as everywhere else
+        bam_aux_append(read, "HP", 'i', 4, (uint8_t *)&hap);
+        bam_aux_append(read, "PS", 'i', 4, (uint8_t *)&ps);
+    }
     aln_out_push(out, read, chunk->tname);
     return 0;
 }
@@ -2118,6 +2152,22 @@ int write_read_to_bam(bam_chunk_t *chunk, const struct call_var_opt_t *opt, cons
     int min_mapq = opt->min_mq;
     hts_pos_t reg_beg = chunk->reg_beg, reg_end = chunk->reg_end; int tid = chunk->tid;
     int global_read_i = 0;
+
+    // qname -> phase, over this chunk's phased primary reads.
+    khash_t(rphase) *phase_by_qname = NULL;
+    if (chunk->read_names != NULL) {
+        phase_by_qname = kh_init(rphase);
+        for (int ri = 0; ri < chunk->n_reads; ++ri) {
+            if (chunk->read_names[ri] == NULL) continue;
+            if (chunk->haps[ri] == 0 || chunk->phase_sets[ri] <= 0) continue;
+            int absent; khiter_t k = kh_put(rphase, phase_by_qname, chunk->read_names[ri], &absent);
+            if (absent) {
+                read_phase_t v; v.hap = chunk->haps[ri]; v.ps = chunk->phase_sets[ri];
+                kh_value(phase_by_qname, k) = v;
+            }
+        }
+    }
+
     for (int i = 0; i < chunk->n_bam; ++i) {
         samFile *in_bam = opt->bams[i]; bam_hdr_t *header = opt->headers[i]; hts_idx_t *idx = opt->idxs[i];
         // fprintf(stderr, "Write bam for region: %s:%" PRId64 "-%" PRId64 "\n", header->target_name[tid], reg_beg, reg_end);
@@ -2132,7 +2182,7 @@ int write_read_to_bam(bam_chunk_t *chunk, const struct call_var_opt_t *opt, cons
                 // fprintf(stderr, "read_i: %d, %s, %d, %ld\n", read_i, bam_get_qname(read), read->core.flag, read->core.pos+1);
                 if (!bam_record_is_callable(read, min_mapq)) {
                     if (skip_read_i >= chunk->n_up_ovlp_skip_reads[i]) {
-                        write_unprocessed_read_to_bam(chunk, opt->aln_out, read);
+                        write_untagged_read_to_bam(chunk, opt->aln_out, read, phase_by_qname);
                         n_out_reads++;
                     }
                     skip_read_i++;
@@ -2151,6 +2201,7 @@ int write_read_to_bam(bam_chunk_t *chunk, const struct call_var_opt_t *opt, cons
             bam_itr_destroy(iter); bam_destroy1(read);
         }
     }
+    if (phase_by_qname != NULL) kh_destroy(rphase, (khash_t(rphase)*)phase_by_qname);
     return n_out_reads;
 }
 

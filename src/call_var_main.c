@@ -1120,7 +1120,13 @@ int call_var_main(int argc, char *argv[]) {
     // start to work !!!
     pl.opt = opt;
     kt_pipeline(opt->pl_threads, call_var_worker_pipeline, &pl, 3);
-    if (opt->aln_out != NULL) { aln_out_free(opt->aln_out); opt->aln_out = NULL; } // flush before closing
+    if (opt->aln_out != NULL) {
+        if (opt->refine_bam && opt->aln_out->n_unrefined_supp > 0)
+            _err_warning("%" PRId64 " supplementary alignment(s) were written with their original CIGAR: "
+                         "--refine-aln rebuilds a CIGAR from the primary alignment's digar, which is not valid "
+                         "for a supplementary.\n", opt->aln_out->n_unrefined_supp);
+        aln_out_free(opt->aln_out); opt->aln_out = NULL; // flush before closing
+    }
     if (opt->out_aln_fp != NULL) hts_close(opt->out_aln_fp);
     if (opt->out_vcf != NULL) {
         if (opt->vcf_hdr != NULL) bcf_hdr_destroy(opt->vcf_hdr);
