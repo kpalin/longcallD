@@ -1756,7 +1756,7 @@ static inline kstring_t *get_md_from_digar(digar1_t *d, int n_digar, const char 
     // Calculate MD tag from CIGAR string
     kstring_t *MD_str = (kstring_t*)calloc(1, sizeof(kstring_t));
     hts_pos_t pos; // Start position in reference sequence
-    int eq_len = 0;
+    int eq_len = 0, prev_was_del = 0;
     for (int i = 0; i < n_digar; ++i) {
         int op = d[i].type, len = d[i].len;
         if (op == BAM_CEQUAL) {
@@ -1771,18 +1771,28 @@ static inline kstring_t *get_md_from_digar(digar1_t *d, int n_digar, const char 
             }
             eq_len = 0;
         } else if (op == BAM_CDEL) {
-            kputw(eq_len, MD_str);
-            kputc('^', MD_str);
+            // Consecutive D ops describe one contiguous deletion, so extend the
+            // run rather than starting a second "0^..." group. samtools calmd
+            // writes "^CC" where emitting each op separately gives "^C0^C".
+            if (!prev_was_del) {
+                kputw(eq_len, MD_str);
+                kputc('^', MD_str);
+            }
             for (int j = 0; j < len; ++j) {
                 pos = d[i].pos + j;
                 char ref_base = 'N';
                 if (pos >= ref_beg && pos < ref_end) ref_base = ref_seq[pos - ref_beg];
                 kputc(ref_base, MD_str);
             }
-            eq_len = 0;
+            eq_len = 0; prev_was_del = 1; continue;
         }
+        prev_was_del = 0;
     }
-    if (eq_len > 0) kputw(eq_len, MD_str);
+    // Unconditional: the MD grammar is [0-9]+(([A-Z]|\^[A-Z]+)[0-9]+)*, so the
+    // string must END with a number as well as start with one. Emitting this
+    // only when eq_len > 0 left a trailing "^A" whenever the alignment ended on
+    // a deletion or mismatch, which is not valid MD.
+    kputw(eq_len, MD_str);
     return MD_str;
 }
 
@@ -1790,6 +1800,7 @@ static inline kstring_t *get_cs_from_digar(digar1_t *d, int n_digar, const char 
     // Calculate cs tag from CIGAR string
     kstring_t *cs_str = (kstring_t*)calloc(1, sizeof(kstring_t));
     hts_pos_t pos; // Start position in reference sequence
+    int prev_was_del = 0;
     for (int i = 0; i < n_digar; ++i) {
         int op = d[i].type, len = d[i].len;
         if (op == BAM_CEQUAL) {
@@ -1808,14 +1819,21 @@ static inline kstring_t *get_cs_from_digar(digar1_t *d, int n_digar, const char 
                 kputc(ins_base, cs_str);
             }
         } else if (op == BAM_CDEL) {
-            kputc('-', cs_str);
+            // Same reasoning as get_md_from_digar(): consecutive D ops are one
+            // deletion, so "-cc" rather than "-c-c". NOTE: unverified against a
+            // reference implementation, because neither bundled test file
+            // carries a cs tag and update_bam1_tags() only rewrites cs when the
+            // input already had one.
+            if (!prev_was_del) kputc('-', cs_str);
             for (int j = 0; j < len; ++j) {
                 pos = d[i].pos + j;
                 char ref_base = 'n';
                 if (pos >= ref_beg && pos < ref_end) ref_base = tolower(ref_seq[pos - ref_beg]);
                 kputc(ref_base, cs_str);
             }
+            prev_was_del = 1; continue;
         }
+        prev_was_del = 0;
     }
     return cs_str;
 }

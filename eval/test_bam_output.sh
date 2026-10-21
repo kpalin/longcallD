@@ -91,6 +91,54 @@ for rt in hifi ont; do
 done
 
 # ---------------------------------------------------------------------------
+# Aux-tag integrity after CIGAR refinement.
+#
+# refine_bam1() performs hand-rolled surgery on b->data, and update_bam1_tags()
+# rewrites NM/MD/cs from the new alignment. Three things must hold: records whose
+# alignment did not change must come out byte-identical, only the derived tags may
+# change on records that did, and the rewritten values must be right -- checked
+# against samtools calmd, an independent implementation.
+# ---------------------------------------------------------------------------
+for rt in hifi ont; do
+  flag=""; [[ $rt == ont ]] && flag="--ont"
+  BAM=$ROOT/test_data/HG002_chr11_${rt}_test.bam
+  out=$T/${rt}_t1_r.bam   # already produced above, with --refine-aln at -t 1
+
+  # Pair by qname+flag and compare POS, CIGAR and the aux fields other than ours.
+  aux_of() { samtools view "$1" | awk '{a=""; for(i=12;i<=NF;i++) if($i !~ /^(HP|PS):i:/) a=a" "$i; print $1"_"$2"\t"$4"\t"$6"\t"a}' | sort; }
+  join -t$'\t' -j1 <(aux_of "$BAM") <(aux_of "$out") > "$T/${rt}.pair"
+
+  chk "$rt untouched alignments keep every aux tag byte-identical" 0 \
+      "$(awk -F'\t' '$2==$5 && $3==$6 && $4!=$7 {n++} END{print n+0}' "$T/${rt}.pair")"
+
+  # Only NM, MD and cs may differ where the alignment changed.
+  chk "$rt refined records change only NM/MD/cs" "" \
+      "$(awk -F'\t' '$2!=$5 || $3!=$6 {
+            n=split($4,a," "); m=split($7,b," "); delete iv; delete ov
+            for(i=1;i<=n;i++){split(a[i],x,":"); iv[x[1]]=a[i]}
+            for(i=1;i<=m;i++){split(b[i],y,":"); ov[y[1]]=b[i]}
+            for(k in iv) if (iv[k]!=ov[k] && k!="NM" && k!="MD" && k!="cs") bad[k]=1
+            for(k in ov) if (!(k in iv)) bad[k]=1
+            for(k in iv) if (!(k in ov)) bad[k]=1
+          } END{ for(k in bad) printf "%s ", k }' "$T/${rt}.pair")"
+
+  # NM/MD must agree with an independent implementation.
+  samtools calmd -b "$out" "$REF" 2>/dev/null > "$T/${rt}.calmd.bam"
+  tags_of() { samtools view "$1" | awk '{nm="";md=""; for(i=12;i<=NF;i++){if($i~/^NM:i:/)nm=$i; if($i~/^MD:Z:/)md=$i} print $1"_"$2"\t"nm"\t"md}' | sort; }
+  paste <(tags_of "$out") <(tags_of "$T/${rt}.calmd.bam") > "$T/${rt}.calmd.cmp"
+  chk "$rt NM agrees with samtools calmd" 0 \
+      "$(awk -F'\t' '$1==$4 && $2!=$5 {n++} END{print n+0}' "$T/${rt}.calmd.cmp")"
+  # Only compare MD where we emit one; MD is optional and absent from the HiFi input.
+  chk "$rt MD agrees with samtools calmd" 0 \
+      "$(awk -F'\t' '$1==$4 && $3!="" && $3!=$6 {n++} END{print n+0}' "$T/${rt}.calmd.cmp")"
+
+  # Methylation calls must survive untouched.
+  mm_of() { samtools view "$1" | awk '{m=""; for(i=12;i<=NF;i++) if($i~/^(MM|ML):/) m=m" "$i; print $1"_"$2"\t"m}' | sort; }
+  chk "$rt MM/ML tags unchanged" same \
+      "$([[ "$(mm_of "$BAM" | md5sum)" == "$(mm_of "$out" | md5sum)" ]] && echo same || echo differs)"
+done
+
+# ---------------------------------------------------------------------------
 # Output completeness: reads on excluded contigs and unmapped reads.
 #
 # The bundled test files are chr11-only with no unmapped reads, so the pipeline
