@@ -73,6 +73,41 @@ run_matrix() {   # $1=label $2=findings-pattern $3.. = launcher prefix
   done
 }
 
+# Two disjoint halves of the bundled HiFi file, to exercise the multi-input
+# paths (-X pools them as one sample, -N makes the second a matched normal).
+# Those paths have their own record->read_i arithmetic and their own k-way merge
+# in the writer, so they need sanitizing too.
+prepare_split() {
+  local B=$ROOT/test_data/HG002_chr11_hifi_test.bam
+  samtools view "$B" | awk '{print $1}' | sort -u > "$OUT/names"
+  local n; n=$(wc -l < "$OUT/names")
+  head -n $((n/2)) "$OUT/names" > "$OUT/n1"; tail -n +$((n/2+1)) "$OUT/names" > "$OUT/n2"
+  local i=0
+  for part in n1 n2; do
+    i=$((i+1))
+    { samtools view --no-PG -H "$B"; samtools view "$B" | grep -Fwf "$OUT/$part"; } \
+      | samtools sort -o "$OUT/split$i.bam" - 2>/dev/null
+    samtools index "$OUT/split$i.bam"
+  done
+}
+
+run_multi() {   # $1=label $2=findings-pattern $3.. = launcher prefix
+  local label=$1 pattern=$2; shift 2
+  local mode ec logf name
+  for mode in -X -N; do
+    name="$label multi ${mode}"
+    logf="$OUT/${label}_multi_${mode#-}.log"
+    "$@" ./bin/longcallD call --refine-aln "$REF" "$OUT/split1.bam" "$mode" "$OUT/split2.bam" \
+        -t 4 -b "$OUT/${label}_multi.bam" -o "$OUT/${label}_multi.vcf" >"$logf" 2>&1
+    ec=$?
+    if grep -qE "$pattern" "$logf"; then bad "$name -- $(grep -oE "$pattern" "$logf" | head -1)"
+    elif [[ $ec -ne 0 ]]; then bad "$name -- exit $ec"
+    else ok "$name"; fi
+  done
+}
+
+prepare_split
+
 log "=== ASan + UBSan (make san=1) ==="
 make clean >/dev/null 2>&1
 if ! make san=1 -j"$JOBS" >"$OUT/build_asan.log" 2>&1; then
@@ -82,6 +117,7 @@ else
   export UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1
   export ASAN_OPTIONS=detect_leaks=1
   run_matrix asan 'ERROR: (Address|Leak|Undefined)Sanitizer|runtime error|FATAL'
+  run_multi  asan 'ERROR: (Address|Leak|Undefined)Sanitizer|runtime error|FATAL'
 fi
 
 log "=== TSan (make san=thread) ==="
@@ -93,6 +129,7 @@ else
   unset UBSAN_OPTIONS ASAN_OPTIONS
   export TSAN_OPTIONS="halt_on_error=0:suppressions=$ROOT/eval/tsan.supp"
   run_matrix tsan 'WARNING: ThreadSanitizer|FATAL' setarch "$(uname -m)" -R
+  run_multi  tsan 'WARNING: ThreadSanitizer|FATAL' setarch "$(uname -m)" -R
 fi
 
 # Leave a normal build behind. Otherwise bin/longcallD is still the TSan binary,

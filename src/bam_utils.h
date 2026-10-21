@@ -63,6 +63,11 @@ typedef struct bam_chunk_t {
     cgranges_t *low_comp_cr; // tandem_rep_cr;
     int n_reads, m_reads; int *ordered_read_ids; // size: m_reads, for multiple input bams, merge sort reads by pos, end, NM, name
     uint64_t *read_sigs; // size: m_reads, identity of the record loaded at each read_i; see bam_record_sig()
+    uint8_t *read_sample_idx; // size: m_reads, which input sample each read came from
+    int *bam_read_off; // size: n_bam, the read_i at which each input file's reads start.
+                       // The loader fills chunk->reads in BAM-major order, so the writer
+                       // needs this to recover read_i while emitting in coordinate order.
+    int n_samples; int *n_sample_reads; // size: n_samples
     uint8_t is_invalid;  // loading this chunk failed; step 2 must not emit anything for it
     char **read_names; // size: m_reads, for output
     int n_bam; // for each input bam, record the number of region-overlapping reads

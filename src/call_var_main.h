@@ -34,6 +34,13 @@
 #define LONGCALLD_MAX_VAR_RATIO_PER_READ 0.05 // skip reads with n_var / ref_span > 5% 
 #define LONGCALLD_MAX_READ_DEPTH 500 // vars with >500 reads will be skipped
 #define LONGCALLD_MAX_NOISY_REG_COV 1000 // regions with >1000 reads will be skipped
+
+// Sample indices for paired calling. The positional input is the tumour (the
+// sample of interest); -N supplies the matched normal. VCF column order is
+// chosen separately at write time.
+#define LONGCALLD_SAMPLE_TUMOR  0
+#define LONGCALLD_SAMPLE_NORMAL 1
+#define LONGCALLD_MAX_SAMPLES   2
 #define LONGCALLD_NOISY_END_CLIP 30 // 100 // >= 100 bp clipping on both ends will be considered as long clipping
 #define LONGCALLD_NOISY_END_CLIP_WIN 100 // 100 bp next to the long end-clipping will be considered as low-quality region
 #define LONGCALLD_NOISY_REG_MERGE_DIS 500 // 500 bp, merge noisy regions within 500 bp
@@ -131,6 +138,16 @@ typedef struct call_var_opt_t {
     char *reg_bed_fn;
     char *sample_name;
     int n_in_bam_fn, m_in_bam_fn, input_is_list; char **in_bam_fns;
+    // Paired tumour/normal input. The -N files are appended to in_bam_fns only
+    // after set_bam_list_file() has finished reordering it, so sample identity
+    // is simply "index >= n_tumor_bam_fn" and cannot be scrambled by that
+    // reordering.
+    int n_normal_bam_fn, m_normal_bam_fn; char **normal_bam_fns;
+    int n_tumor_bam_fn;        // in_bam_fns[0 .. n_tumor_bam_fn-1] are the tumour/primary sample
+    int n_samples;             // 1 normally, 2 once a normal is supplied
+    int *bam_i_to_sample;      // size n_in_bam_fn
+    char **sample_names;       // size n_samples
+    uint8_t paired_mode;
     samFile **bams; bam_hdr_t **headers; hts_idx_t **idxs; // for write to output bam/cram
     uint8_t is_pb_hifi, is_ont; float strand_bias_pval; // for ONT reads
     // variant calling regions
@@ -206,6 +223,8 @@ typedef struct call_var_pl_t {
     int min_reg_chunks_per_run, max_reg_len_per_chunk;
     int reg_chunk_i, n_reg_chunks, m_reg_chunks; reg_chunks_t *reg_chunks;
     int n_threads;
+    // Per-sample read tallies, summed in step 2 (which is serial, so no atomics).
+    int64_t n_reads_per_sample[LONGCALLD_MAX_SAMPLES];
 } call_var_pl_t;
 
 struct bam_chunk_t;

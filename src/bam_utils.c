@@ -1341,6 +1341,7 @@ int bam_chunk_init0(bam_chunk_t *chunk, const struct call_var_opt_t *opt, int n_
         for (int i = 0; i < n_reads; i++) chunk->read_names[i] = NULL;
     }
     chunk->n_bam = n_bam;
+    chunk->bam_read_off = (int*)calloc(n_bam, sizeof(int));
     chunk->n_up_ovlp_reads = (int*)calloc(n_bam, sizeof(int)); chunk->n_up_ovlp_skip_reads = (int*)calloc(n_bam, sizeof(int));
     chunk->up_ovlp_read_i = (int**)malloc(n_bam * sizeof(int*));
     chunk->n_down_ovlp_reads = (int*)calloc(n_bam, sizeof(int)); chunk->n_down_ovlp_skip_reads = (int*)calloc(n_bam, sizeof(int));
@@ -1356,6 +1357,9 @@ int bam_chunk_init0(bam_chunk_t *chunk, const struct call_var_opt_t *opt, int n_
     chunk->qual_counts = (int*)calloc(256, sizeof(int));
     chunk->is_skipped = (uint8_t*)calloc(n_reads, sizeof(uint8_t));
     chunk->read_sigs = (uint64_t*)calloc(n_reads, sizeof(uint64_t));
+    chunk->read_sample_idx = (uint8_t*)calloc(n_reads, sizeof(uint8_t));
+    chunk->n_samples = opt->n_samples;
+    chunk->n_sample_reads = (int*)calloc(opt->n_samples > 0 ? opt->n_samples : 1, sizeof(int));
     chunk->is_invalid = 0;
     chunk->n_clean_agree_snps = (int*)malloc(n_reads * sizeof(int));
     chunk->n_clean_conflict_snps = (int*)malloc(n_reads * sizeof(int));
@@ -1407,6 +1411,7 @@ int bam_chunk_realloc(bam_chunk_t *chunk, const struct call_var_opt_t *opt) {
     }
     chunk->is_skipped = (uint8_t*)realloc(chunk->is_skipped, m_reads * sizeof(uint8_t));
     chunk->read_sigs = (uint64_t*)realloc(chunk->read_sigs, m_reads * sizeof(uint64_t));
+    chunk->read_sample_idx = (uint8_t*)realloc(chunk->read_sample_idx, m_reads * sizeof(uint8_t));
     chunk->n_clean_agree_snps = (int*)realloc(chunk->n_clean_agree_snps, m_reads * sizeof(int));
     chunk->n_clean_conflict_snps = (int*)realloc(chunk->n_clean_conflict_snps, m_reads * sizeof(int));
     chunk->is_ont_palindrome = (uint8_t*)realloc(chunk->is_ont_palindrome, m_reads * sizeof(uint8_t));
@@ -1418,7 +1423,7 @@ int bam_chunk_realloc(bam_chunk_t *chunk, const struct call_var_opt_t *opt) {
     for (int i = chunk->m_reads; i < m_reads; i++) {
         chunk->reads[i] = bam_init1();
         chunk->digars[i].n_digar = chunk->digars[i].m_digar = 0;
-        chunk->is_skipped[i] = 0; chunk->read_sigs[i] = 0;
+        chunk->is_skipped[i] = 0; chunk->read_sigs[i] = 0; chunk->read_sample_idx[i] = 0;
         chunk->phase_scores[i] = 0; chunk->haps[i] = 0; chunk->phase_sets[i] = -1;
         chunk->is_skipped_for_somatic[i] = 0;
     }
@@ -1449,6 +1454,10 @@ static void bam_chunk_clear_var_noisy_read_cache(bam_chunk_t *chunk) {
     chunk->var_noisy_read_mark_id = 0;
 }
 
+// UNUSED. Superseded by bam_chunk_post_free(); nothing calls this, and it has
+// already drifted out of sync with the fields the chunk actually owns. Left in
+// place rather than deleted as part of an unrelated change, but do not call it:
+// it would both miss newer allocations and double-free older ones.
 void bam_chunk_free(bam_chunk_t *chunk) {
     free(chunk->qual_counts);
     if (chunk->ref_seq != NULL) free(chunk->ref_seq);
@@ -1510,6 +1519,7 @@ void bam_chunk_post_free(bam_chunk_t *chunk, const struct call_var_opt_t *opt) {
     bam_chunk_clear_var_noisy_read_cache(chunk);
     free(chunk->is_skipped);
     free(chunk->read_sigs); // needed by write_read_to_bam in step 2, so not freed in mid_free
+    free(chunk->read_sample_idx); free(chunk->n_sample_reads);
     free(chunk->n_clean_agree_snps); free(chunk->n_clean_conflict_snps);
     free(chunk->is_ont_palindrome); free(chunk->is_skipped_for_somatic);
     free(chunk->haps); free(chunk->phase_sets); free(chunk->phase_scores);
@@ -1517,6 +1527,7 @@ void bam_chunk_post_free(bam_chunk_t *chunk, const struct call_var_opt_t *opt) {
         if (chunk->up_ovlp_read_i[i] != NULL) free(chunk->up_ovlp_read_i[i]);
         if (chunk->down_ovlp_read_i[i] != NULL) free(chunk->down_ovlp_read_i[i]);
     }
+    free(chunk->bam_read_off);
     free(chunk->n_up_ovlp_reads); free(chunk->n_down_ovlp_reads); free(chunk->n_up_ovlp_skip_reads); free(chunk->n_down_ovlp_skip_reads);
     free(chunk->up_ovlp_read_i); free(chunk->down_ovlp_read_i);
     if (opt->out_aln_fp != NULL && opt->refine_bam) bam_chunk_free_digar(chunk);
@@ -1680,6 +1691,10 @@ int collect_ref_seq_bam_main(const struct call_var_pl_t *pl, struct call_var_io_
     chunk->tid = tid; chunk->tname = io_aux->headers[0]->target_name[tid]; chunk->reg_beg = reg_beg; chunk->reg_end = reg_end;
     hts_pos_t min_read_beg = reg_beg, max_read_end = reg_end;
     for (int i = 0; i < io_aux->n_bam; ++i) {
+        // Where this file's reads begin in chunk->reads[]. write_read_to_bam()
+        // emits in coordinate order across files, so it needs this to map a
+        // record back to the read_i the loader gave it.
+        chunk->bam_read_off[i] = chunk->n_reads;
         // create iterator for the region
         hts_itr_t *iter = sam_itr_queryi(io_aux->idxs[i], tid, reg_beg-1, reg_end); // (reg_beg-1, reg_end] ==> [reg_beg, reg_end]
         if (iter == NULL) {
@@ -1716,6 +1731,14 @@ int collect_ref_seq_bam_main(const struct call_var_pl_t *pl, struct call_var_io_
                 chunk->read_names[chunk->n_reads] = strdup(bam_get_qname(chunk->reads[chunk->n_reads]));
             }
             chunk->read_sigs[chunk->n_reads] = bam_record_sig(chunk->reads[chunk->n_reads]);
+            // Each input file belongs to exactly one sample, and the per-BAM loop
+            // fills chunk->reads with one monotonic counter, so every read_i
+            // carries its sample origin without any extra bookkeeping.
+            {
+                int smp = opt->bam_i_to_sample != NULL ? opt->bam_i_to_sample[i] : 0;
+                chunk->read_sample_idx[chunk->n_reads] = (uint8_t)smp;
+                if (smp >= 0 && smp < chunk->n_samples) chunk->n_sample_reads[smp]++;
+            }
             chunk->n_reads++;
             if (chunk->n_reads == chunk->m_reads) bam_chunk_realloc(chunk, opt);
         }
@@ -2185,9 +2208,10 @@ int write_read_to_bam(bam_chunk_t *chunk, const struct call_var_opt_t *opt, cons
     int n_out_reads = 0;
     int min_mapq = opt->min_mq;
     hts_pos_t reg_beg = chunk->reg_beg, reg_end = chunk->reg_end; int tid = chunk->tid;
-    int global_read_i = 0;
+    int n_bam = chunk->n_bam;
 
-    // qname -> phase, over this chunk's phased primary reads.
+    // qname -> phase, over this chunk's phased primary reads, so a
+    // supplementary alignment can inherit its read's HP/PS.
     khash_t(rphase) *phase_by_qname = NULL;
     if (chunk->read_names != NULL) {
         phase_by_qname = kh_init(rphase);
@@ -2202,40 +2226,72 @@ int write_read_to_bam(bam_chunk_t *chunk, const struct call_var_opt_t *opt, cons
         }
     }
 
-    for (int i = 0; i < chunk->n_bam; ++i) {
-        samFile *in_bam = opt->bams[i]; bam_hdr_t *header = opt->headers[i]; hts_idx_t *idx = opt->idxs[i];
-        // fprintf(stderr, "Write bam for region: %s:%" PRId64 "-%" PRId64 "\n", header->target_name[tid], reg_beg, reg_end);
-        hts_itr_t *iter = sam_itr_queryi(idx, tid, reg_beg-1, reg_end); // (reg_beg-1, reg_end] ==> [reg_beg, reg_end]
-        if (iter == NULL) {
-            _err_warning("Failed to create iterator for region: %s:%" PRId64 "-%" PRId64 ". Skipping.\n", header->target_name[tid], reg_beg, reg_end);
-        } else {
-            // load bam records
-            bam1_t *read = bam_init1();
-            int read_i = 0, skip_read_i = 0;
-            while (sam_itr_next(in_bam, iter, read) >= 0) {
-                // fprintf(stderr, "read_i: %d, %s, %d, %ld\n", read_i, bam_get_qname(read), read->core.flag, read->core.pos+1);
-                if (!bam_record_is_callable(read, min_mapq)) {
-                    if (skip_read_i >= chunk->n_up_ovlp_skip_reads[i]) {
-                        write_untagged_read_to_bam(chunk, opt->aln_out, read, phase_by_qname);
-                        n_out_reads++;
-                    }
-                    skip_read_i++;
-                    // fprintf(stderr, "skip %s\n", bam_get_qname(read));
-                    continue;
-                }
-                // check if read is overlapping with previous region
-                if (read_i >= chunk->n_up_ovlp_reads[i]) {
-                    // start_to_output = 1; // start to output reads
-                    // fprintf(stderr, "output %d %s\n", global_read_i, bam_get_qname(read));
-                    write_processed_read_to_bam(opt, chunk, header, read, global_read_i);
-                    n_out_reads++;
-                }
-                read_i++; global_read_i++;
-            }
-            bam_itr_destroy(iter); bam_destroy1(read);
+    // Emit records in coordinate order across all input files.
+    //
+    // Iterating one file to exhaustion before starting the next -- which is what
+    // this used to do -- groups the output by input file, so position jumps
+    // backwards at every file boundary. With two bundled halves as -X inputs that
+    // was a measured 185 kb back-jump, producing a BAM that claimed
+    // SO:coordinate and that samtools index rejected.
+    //
+    // chunk->reads[] is still filled in BAM-major order, so read_i is recovered
+    // as bam_read_off[i] + (this file's callable ordinal). The per-read signature
+    // check in write_processed_read_to_bam() verifies that arithmetic on every
+    // record, which is what makes this safe to restructure.
+    hts_itr_t **iters = (hts_itr_t**)calloc(n_bam, sizeof(hts_itr_t*));
+    bam1_t **cur = (bam1_t**)calloc(n_bam, sizeof(bam1_t*));
+    int *have = (int*)calloc(n_bam, sizeof(int));
+    int *read_i = (int*)calloc(n_bam, sizeof(int));        // callable reads seen in this file
+    int *skip_read_i = (int*)calloc(n_bam, sizeof(int));   // filtered-out reads seen in this file
+
+    for (int i = 0; i < n_bam; ++i) {
+        bam_hdr_t *header = opt->headers[i];
+        iters[i] = sam_itr_queryi(opt->idxs[i], tid, reg_beg-1, reg_end);
+        if (iters[i] == NULL) {
+            _err_warning("Failed to create iterator for region: %s:%" PRId64 "-%" PRId64 ". Skipping.\n",
+                         header->target_name[tid], reg_beg, reg_end);
+            continue;
         }
+        cur[i] = bam_init1();
+        have[i] = (sam_itr_next(opt->bams[i], iters[i], cur[i]) >= 0);
     }
-    if (phase_by_qname != NULL) kh_destroy(rphase, (khash_t(rphase)*)phase_by_qname);
+
+    for (;;) {
+        // Pick the file whose pending record sorts first; ties go to the lower
+        // file index, so the output is deterministic.
+        int pick = -1;
+        for (int i = 0; i < n_bam; ++i) {
+            if (!have[i]) continue;
+            if (pick < 0) { pick = i; continue; }
+            if (cur[i]->core.tid < cur[pick]->core.tid ||
+                (cur[i]->core.tid == cur[pick]->core.tid && cur[i]->core.pos < cur[pick]->core.pos)) pick = i;
+        }
+        if (pick < 0) break;
+
+        bam1_t *read = cur[pick];
+        if (!bam_record_is_callable(read, min_mapq)) {
+            if (skip_read_i[pick] >= chunk->n_up_ovlp_skip_reads[pick]) {
+                write_untagged_read_to_bam(chunk, opt->aln_out, read, phase_by_qname);
+                n_out_reads++;
+            }
+            skip_read_i[pick]++;
+        } else {
+            if (read_i[pick] >= chunk->n_up_ovlp_reads[pick]) {
+                write_processed_read_to_bam(opt, chunk, opt->headers[pick], read,
+                                            chunk->bam_read_off[pick] + read_i[pick]);
+                n_out_reads++;
+            }
+            read_i[pick]++;
+        }
+        have[pick] = (sam_itr_next(opt->bams[pick], iters[pick], read) >= 0);
+    }
+
+    for (int i = 0; i < n_bam; ++i) {
+        if (iters[i] != NULL) bam_itr_destroy(iters[i]);
+        if (cur[i] != NULL) bam_destroy1(cur[i]);
+    }
+    free(iters); free(cur); free(have); free(read_i); free(skip_read_i);
+    if (phase_by_qname != NULL) kh_destroy(rphase, phase_by_qname);
     return n_out_reads;
 }
 

@@ -48,6 +48,7 @@ const struct option call_var_opt [] = {
 
     { "exclude-ctg", 1, NULL, 'E'},
     { "extra-bam", 1, NULL, 'X'},
+    { "normal", 1, NULL, 'N'},
     { "input-is-list", 0, NULL, 'L'},
 
     // short options
@@ -150,6 +151,9 @@ call_var_opt_t *call_var_init_para(void) {
     opt->ref_fa_fn = NULL; opt->ref_fa_fai_fn = NULL; opt->reg_bed_fn = NULL;
     opt->input_is_list = 0; opt->n_in_bam_fn = 1; opt->m_in_bam_fn = 4; opt->in_bam_fns = (char**)malloc(4 * sizeof(char*));
     for (int i = 0; i < 4; i++) opt->in_bam_fns[i] = NULL;
+    opt->n_normal_bam_fn = 0; opt->m_normal_bam_fn = 0; opt->normal_bam_fns = NULL;
+    opt->n_tumor_bam_fn = 0; opt->n_samples = 1; opt->bam_i_to_sample = NULL;
+    opt->sample_names = NULL; opt->paired_mode = 0;
 
     opt->is_pb_hifi = 1; opt->is_ont = 0;
     opt->only_autosome = 0; opt->only_autosome_XY = 1; 
@@ -236,6 +240,15 @@ void call_var_free_para(call_var_opt_t *opt) {
         if (opt->in_bam_fns[i] != NULL) free(opt->in_bam_fns[i]);
     }
     free(opt->in_bam_fns);
+    if (opt->normal_bam_fns != NULL) {
+        for (int i = 0; i < opt->n_normal_bam_fn; ++i) free(opt->normal_bam_fns[i]); // NULL once moved
+        free(opt->normal_bam_fns);
+    }
+    free(opt->bam_i_to_sample);
+    if (opt->sample_names != NULL) {
+        for (int i = 0; i < opt->n_samples; ++i) free(opt->sample_names[i]);
+        free(opt->sample_names);
+    }
     if (opt->bams != NULL) {
         for (int i = 0; i < opt->n_in_bam_fn; ++i) {
             if (opt->bams[i]) {
@@ -380,6 +393,39 @@ void set_extra_input_bam(call_var_opt_t *opt, char *fn) {
     }
     opt->in_bam_fns[opt->n_in_bam_fn] = retrieve_full_url(fn);
     opt->n_in_bam_fn++;
+}
+
+void set_normal_input_bam(call_var_opt_t *opt, char *fn) {
+    if (opt->n_normal_bam_fn >= opt->m_normal_bam_fn) {
+        opt->m_normal_bam_fn = opt->m_normal_bam_fn ? opt->m_normal_bam_fn * 2 : 4;
+        opt->normal_bam_fns = (char**)realloc(opt->normal_bam_fns, opt->m_normal_bam_fn * sizeof(char*));
+    }
+    opt->normal_bam_fns[opt->n_normal_bam_fn++] = retrieve_full_url(fn);
+}
+
+// Append the -N files to in_bam_fns and build bam_i_to_sample.
+//
+// Must run AFTER set_bam_list_file(), which permutes in_bam_fns: doing it
+// earlier would scramble which index belongs to which sample. Appending the
+// normals last makes the mapping a single comparison and keeps it that way.
+void finalise_sample_layout(call_var_opt_t *opt) {
+    opt->n_tumor_bam_fn = opt->n_in_bam_fn;
+    for (int i = 0; i < opt->n_normal_bam_fn; ++i) {
+        if (opt->n_in_bam_fn >= opt->m_in_bam_fn) {
+            opt->m_in_bam_fn *= 2;
+            opt->in_bam_fns = (char**)realloc(opt->in_bam_fns, opt->m_in_bam_fn * sizeof(char*));
+        }
+        opt->in_bam_fns[opt->n_in_bam_fn++] = opt->normal_bam_fns[i];
+        opt->normal_bam_fns[i] = NULL; // ownership moved
+    }
+    opt->n_samples = opt->n_normal_bam_fn > 0 ? 2 : 1;
+    opt->bam_i_to_sample = (int*)malloc(opt->n_in_bam_fn * sizeof(int));
+    for (int i = 0; i < opt->n_in_bam_fn; ++i)
+        opt->bam_i_to_sample[i] = (i < opt->n_tumor_bam_fn) ? LONGCALLD_SAMPLE_TUMOR : LONGCALLD_SAMPLE_NORMAL;
+    if (opt->n_samples > 1) {
+        opt->paired_mode = 1;
+        _err_info("Paired input: %d tumour file(s), %d normal file(s)\n", opt->n_tumor_bam_fn, opt->n_normal_bam_fn);
+    }
 }
 
 void set_bam_list_file(call_var_opt_t *opt, char *fn) {
@@ -949,6 +995,8 @@ static void *call_var_worker_pipeline(void *shared, int step, void *in) { // kt_
         for (int i = 0; i < s->n_chunks; ++i) {
             bam_chunk_t *c = s->chunks + i;
             if (c->is_invalid) { var_free(s->vars + i); continue; }
+            for (int smp = 0; smp < c->n_samples && smp < LONGCALLD_MAX_SAMPLES; ++smp)
+                pl->n_reads_per_sample[smp] += c->n_sample_reads[smp];
             n_out_vars += write_var_to_vcf(s->vars+i, pl->opt, c);
             if (pl->opt->out_aln_fp != NULL) n_out_reads += write_read_to_bam(c, pl->opt, pl->io_aux);
             var_free(s->vars + i);  // free output
@@ -986,6 +1034,8 @@ static void call_var_usage(void) {//main usage
     fprintf(stderr, "    -L --input-is-list    input file is a list of BAM/CRAM files of the same sample\n");
     fprintf(stderr, "                          each line is a file path, e.g., longcallD call -L ref.fa bam_list.txt\n");
     fprintf(stderr, "    -X --extra-bam  FILE  extra input BAM/CRAM file(s) of the same sample for variant calling []\n");
+    fprintf(stderr, "    -N --normal     FILE  matched normal BAM/CRAM file(s); the positional input is then\n");
+    fprintf(stderr, "                          treated as the tumour. Can be used multiple times. []\n");
     fprintf(stderr, "                          can be used multiple times, e.g., -X bam1 -X bam2\n");
     fprintf(stderr, "    --autosome-XY         only call variants on autosomes and sex chromosomes, e.g., (chr){1-22,XY} [default]\n");
     // fprintf(stderr, "                          if not found, all chromosomes/contigs will be processed automatically\n");
@@ -1066,7 +1116,7 @@ int call_var_main(int argc, char *argv[]) {
     // 'L' takes no argument (--input-is-list); it was "L:" here while the option
     // table said no_argument, so `-L ref.fa bam_list.txt` ate ref.fa as -L's
     // operand. 'D', 'j' and 'f' are gone along with the options that used them.
-    const char *opt_str = "r:T:E:X:o:O:ml:Hb:C:S:sc:d:M:B:a:n:x:w:Lp:g:t:hvV:";
+    const char *opt_str = "r:T:E:X:N:o:O:ml:Hb:C:S:sc:d:M:B:a:n:x:w:Lp:g:t:hvV:";
     int c, op_idx; call_var_opt_t *opt = call_var_init_para(); char *s;
     double realtime0 = realtime();
     // first round of getopt_long() to parse preset options
@@ -1122,6 +1172,7 @@ int call_var_main(int argc, char *argv[]) {
             case 'm': opt->out_methylation = 1; break;
             case 'E': set_exclude_ctg(opt, optarg); break;
             case 'X': set_extra_input_bam(opt, optarg); break;
+            case 'N': set_normal_input_bam(opt, optarg); break;
             case 'b': opt->out_aln_fp = hts_open(optarg, "wb"); opt->out_aln_is_cram = 0; break;
             case 'C': opt->out_aln_fp = hts_open(optarg, "wc"); opt->out_aln_is_cram = 1; break;
             case 'S': opt->out_aln_fp = hts_open(optarg, "w"); opt->out_aln_is_cram = 0; break;
@@ -1162,6 +1213,7 @@ int call_var_main(int argc, char *argv[]) {
         if (opt->input_is_list) set_bam_list_file(opt, argv[optind++]);
         else opt->in_bam_fns[0] = retrieve_full_url(argv[optind++]);
     }
+    finalise_sample_layout(opt);
     // check if hifi and ont are both set
     if (opt->is_pb_hifi && opt->is_ont) _err_error_exit("Cannot set both --hifi and --ont\n");
     if (opt->only_autosome && opt->only_autosome_XY) _err_error_exit("Cannot set both --autosome and --autosome-XY\n");
@@ -1188,7 +1240,13 @@ int call_var_main(int argc, char *argv[]) {
     if (opt->out_vcf != NULL && (opt->out_vcf_type == 'z' || opt->no_vcf_header == 0)) write_vcf_header(pl.io_aux[0].headers[0], opt);
     // start to work !!!
     pl.opt = opt;
+    memset(pl.n_reads_per_sample, 0, sizeof(pl.n_reads_per_sample));
     kt_pipeline(opt->pl_threads, call_var_worker_pipeline, &pl, 3);
+    if (opt->n_samples > 1) {
+        _err_info("Reads used for calling: tumour %" PRId64 ", normal %" PRId64 "\n",
+                  pl.n_reads_per_sample[LONGCALLD_SAMPLE_TUMOR],
+                  pl.n_reads_per_sample[LONGCALLD_SAMPLE_NORMAL]);
+    }
     if (opt->aln_out != NULL && opt->out_aln_passthrough) {
         int64_t n_pass = write_passthrough_records(opt, pl.io_aux[0].headers[0]);
         if (n_pass > 0) _err_info("Passed through %" PRId64 " reads on excluded contigs or without a mapping\n", n_pass);
