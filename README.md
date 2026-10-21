@@ -50,6 +50,7 @@ man ./longcallD.1
 - [Usage](#usage)
   - [Variant calling with PacBio HiFi/Nanopore long reads](#variant-calling-with-pacbio-hifinanopore-long-reads)
   - [Multiple input BAM/CRAM files of the same sample](#multiple-input-bamcram-files-of-the-same-sample)
+  - [Paired tumor/normal somatic calling](#paired-tumornormal-somatic-calling)
   - [Low-allele-fraction mosaic variant calling](#low-allele-fraction-mosaic-variant-calling)
   - [Region-specific variant calling](#region-specific-variant-calling)
   - [Output phased (\& refined) long-read BAM/CRAM](#output-phased--refined-long-read-bamcram)
@@ -142,8 +143,72 @@ or
 longcallD call -t16 ref.fa sample_part1.bam -X sample_part2.bam -X sample_part3.bam > sample.vcf
 ```
 
+### Paired tumor/normal somatic calling
+With a matched normal, `longcallD paired` calls somatic variants by comparing the two samples
+**per haplotype** rather than per sample:
+```
+longcallD paired -t16 ref.fa tumor.bam normal.bam > paired.vcf
+```
+The normal can also be given with `-N/--normal`, which can be repeated.
+
+Both samples are phased **together**, on variants that look germline heterozygous in the normal.
+Haplotype index `h` therefore means the same parental chromosome in both samples, which gives four
+comparable slots -- (normal,H1), (normal,H2), (tumor,H1), (tumor,H2). A somatic mutation arises on
+one chromosome copy in one clone, so it must occupy **exactly one** of them, and a tumor one.
+
+Haplotype exclusivity on its own is not enough: a germline heterozygous variant also puts its alt
+on a single haplotype. It is the sample axis that distinguishes "alt on `h` in the tumor only" from
+"alt on `h` in both".
+
+The VCF has two sample columns, `NORMAL` then `TUMOR`:
+
+| Field | Meaning |
+|---|---|
+| `FILTER=PASS` | somatic or germline |
+| `FILTER=NormalOnly` | present in the normal but not the tumor; treated as false |
+| `FILTER=LowDP` | too little depth in one sample to classify |
+| `FILTER=Ambiguous` | fits no class cleanly |
+| `FILTER=Unphased` | decided on pooled counts; no usable haplotype grid at this site |
+| `INFO/SOMATIC` | somatic |
+| `INFO/NORMALONLY`, `INFO/LOH` | normal-only, and whether the tumor has lost that copy |
+| `INFO/SOMHAP` | which tumor haplotype carries the alt |
+| `INFO/HAPVAF` | alt fraction **within that haplotype** |
+| `INFO/SPV` | Fisher exact p, that slot against the other three |
+| `FORMAT/HDP`, `FORMAT/HAD` | per-haplotype depth and alt depth |
+
+`HAPVAF` is reported instead of the pooled VAF because the pooled figure for a clonal heterozygous
+somatic variant is `purity/2`, confounding purity, ploidy and cellular fraction. The
+within-haplotype fraction estimates purity x cancer-cell-fraction directly: a clonal variant reads
+1.0 where the pooled VAF would read about 0.25.
+
+Across the two columns, `HDP` and `HAD` are the grid the verdict was decided on, so a disputed call
+can be checked from the VCF alone:
+```
+chr11 1258300 . T A 60 PASS CLEAN;SOMATIC;SOMHAP=1;HAPVAF=1.0000;SPV=4.91e-07
+  GT:DP:AD:VAF:GQ:PS:HDP:HAD
+  NORMAL  0|0:14:14,0:0.000:60:1246687:6,8:0,0
+  TUMOR   1|0:16:9,7:0.438:60:1246687:7,9:7,0
+```
+Variants seen **only in the normal** are flagged rather than dropped, so `bcftools view -f PASS`
+excludes them while they stay available for inspection.
+
+To write each sample's phased reads to its own file, `-b/-C/-S` carries the tumor and
+`--out-normal-bam/-cram/-sam` the normal. Both use the same phase sets, so phasing is consistent
+between them:
+```
+longcallD paired -t16 ref.fa tumor.bam normal.bam \
+    -b tumor.phased.bam --out-normal-bam normal.phased.bam > paired.vcf
+```
+
+Useful thresholds: `--min-normal-dp`/`--min-tumor-dp` (depth floor before classifying at all),
+`--min-normal-hap-dp`/`--min-tumor-hap-dp` (per-haplotype floor for the four-slot test),
+`--max-hap-alt` (alt reads tolerated in a slot that should be clean), `--som-pval`, and
+`--min-normal-phase-dp` (normal depth needed for a variant to anchor phasing).
+Run `longcallD paired` with no arguments for the full list.
+
 ### Low-allele-fraction mosaic variant calling
 With `-s`, longcallD will detect both germline and low-allele-fraction somatic/mosaic variants.
+This is *single-sample* mosaic detection, distinct from the matched tumor/normal calling above.
 
 For each somatic/mosaic variant, a `SOMATIC` tag will be added to the INFO field in the output VCF.
 ```

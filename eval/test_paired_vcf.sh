@@ -44,8 +44,13 @@ build "$T/n2" "$T/normal_inj.bam" 1.0
 "$BIN" call --som-pval $PVAL "$REF" "$T/tumor_clean.bam" -N "$T/normal_inj.bam" -t 1 -o "$T/normonly.vcf" 2>/dev/null
 
 # ------------------------------------------------------------- structure ---
-chk "two sample columns, normal first" "NORMAL TUMOR" \
+# Column names come from each sample's own @RG SM. Both halves of the bundled
+# file carry SM:HG002, so they collide and are suffixed rather than emitted
+# twice -- bcftools rejects a duplicate-sample VCF outright.
+chk "two sample columns, normal first" "HG002_N HG002_T" \
     "$(grep '^#CHROM' "$T/paired.vcf" | cut -f10,11 | tr '\t' ' ')"
+chk "the column names are distinct" distinct \
+    "$(grep '^#CHROM' "$T/paired.vcf" | awk '{print ($10==$11) ? "same" : "distinct"}')"
 chk "bcftools accepts the header" 0 "$(bcftools view -h "$T/paired.vcf" >/dev/null 2>&1; echo $?)"
 for tag in NormalOnly LowDP Ambiguous Unphased; do
   chk "FILTER $tag is declared" 1 "$(grep -c "##FILTER=<ID=$tag," "$T/paired.vcf")"

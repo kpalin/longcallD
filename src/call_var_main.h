@@ -149,6 +149,7 @@ typedef struct call_var_opt_t {
     int n_samples;             // 1 normally, 2 once a normal is supplied
     int *bam_i_to_sample;      // size n_in_bam_fn
     char **sample_names;       // size n_samples
+    char *tumor_name, *normal_name; // explicit VCF column names, if given
     uint8_t paired_mode;
     samFile **bams; bam_hdr_t **headers; hts_idx_t **idxs; // for write to output bam/cram
     uint8_t is_pb_hifi, is_ont; float strand_bias_pval; // for ONT reads
@@ -248,6 +249,8 @@ typedef struct call_var_step_t {
 } call_var_step_t;
 
 int call_var_main(int argc, char *argv[]);
+int paired_var_main(int argc, char *argv[]);
+int call_var_main_mode(int argc, char *argv[], int paired_cli);
 void var_free(var_t *v);
 void var1_free(var1_t *v);
 

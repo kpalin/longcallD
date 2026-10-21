@@ -169,6 +169,31 @@ chk "with only -b, no normal read leaks in" 0 \
 chk "--out-normal-bam without -N is refused" 1 \
     "$("$BIN" call "$REF" "$HIFI" -t 1 --out-normal-bam "$T/nope.bam" -o /dev/null >/dev/null 2>&1; echo $?)"
 
+# ---------------------------------------------------------------------------
+# The `paired` subcommand.
+# ---------------------------------------------------------------------------
+chk "paired is listed as a subcommand" 1 "$("$BIN" 2>&1 | grep -c '^ *paired ')"
+chk "paired shows a tumour/normal synopsis" 1 \
+    "$("$BIN" paired 2>&1 | grep -c 'paired \[options\] <ref.fa> <tumor')"
+"$BIN" paired "$REF" "$T/half_a.bam" "$T/half_b.bam" -t 1 -o "$T/sub.vcf" >/dev/null 2>&1
+chk "paired takes the normal as its third operand" 1 \
+    "$(grep -c '^#CHROM.*NORMAL\|^#CHROM' "$T/sub.vcf" 2>/dev/null | head -1)"
+chk "paired emits two sample columns" 2 \
+    "$(grep '^#CHROM' "$T/sub.vcf" | awk '{print NF-9}')"
+chk "paired also accepts -N" 0 \
+    "$("$BIN" paired "$REF" "$T/half_a.bam" -N "$T/half_b.bam" -t 1 -o /dev/null >/dev/null 2>&1; echo $?)"
+chk "paired without a normal is refused" 1 \
+    "$("$BIN" paired "$REF" "$T/half_a.bam" -t 1 -o /dev/null >/dev/null 2>&1; echo $?)"
+# Both halves carry SM:HG002, so the names collide and must be disambiguated
+# rather than emitted twice -- bcftools rejects a duplicate-sample VCF.
+chk "colliding sample names are suffixed" "HG002_N HG002_T" \
+    "$(grep '^#CHROM' "$T/sub.vcf" | cut -f10,11 | tr '\t' ' ')"
+"$BIN" paired --tumor-name T1 --normal-name N1 "$REF" "$T/half_a.bam" "$T/half_b.bam" -t 1 -o "$T/named.vcf" >/dev/null 2>&1
+chk "--tumor-name/--normal-name override them" "N1 T1" \
+    "$(grep '^#CHROM' "$T/named.vcf" | cut -f10,11 | tr '\t' ' ')"
+chk "the named VCF is still valid to bcftools" 0 \
+    "$(bcftools view -h "$T/named.vcf" >/dev/null 2>&1; echo $?)"
+
 echo
 if [[ $fail -eq 0 ]]; then echo "  paired input: all $pass assertions passed"; exit 0
 else echo "  paired input: $fail of $((pass+fail)) assertions FAILED"; exit 1; fi

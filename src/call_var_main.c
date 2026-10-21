@@ -99,6 +99,9 @@ const struct option call_var_opt [] = {
     { "out-normal-bam", 1, NULL, 0},
     { "out-normal-cram", 1, NULL, 0},
     { "out-normal-sam", 1, NULL, 0},
+    { "tumor-name", 1, NULL, 0},
+    { "tumour-name", 1, NULL, 0},
+    { "normal-name", 1, NULL, 0},
     { "hap-read", 1, NULL, 'p' },
 
     { "threads", 1, NULL, 't' },
@@ -164,6 +167,7 @@ call_var_opt_t *call_var_init_para(void) {
     opt->n_normal_bam_fn = 0; opt->m_normal_bam_fn = 0; opt->normal_bam_fns = NULL;
     opt->n_tumor_bam_fn = 0; opt->n_samples = 1; opt->bam_i_to_sample = NULL;
     opt->sample_names = NULL; opt->paired_mode = 0;
+    opt->tumor_name = NULL; opt->normal_name = NULL;
 
     opt->is_pb_hifi = 1; opt->is_ont = 0;
     opt->only_autosome = 0; opt->only_autosome_XY = 1; 
@@ -279,6 +283,7 @@ void call_var_free_para(call_var_opt_t *opt) {
         free(opt->bams); free(opt->idxs); free(opt->headers);
     }
     if (opt->sample_name) free(opt->sample_name);
+    free(opt->tumor_name); free(opt->normal_name);
     // if (opt->region_list) free(opt->region_list);
     if (opt->n_exc_tnames > 0) {
         for (int i = 0; i < opt->n_exc_tnames; ++i) free(opt->exc_tnames[i]);
@@ -842,6 +847,44 @@ static void call_var_pl_open_fa_bam(call_var_opt_t *opt, call_var_pl_t *pl, char
             }
         }
     }
+    // Per-sample VCF column names. Each sample's name comes from its own
+    // first input's @RG SM, not from the first input overall, or both columns
+    // would be labelled with the tumour's name. A duplicate-sample VCF is
+    // rejected by bcftools outright, so a collision is resolved rather than
+    // emitted.
+    if (opt->n_samples > 1) {
+        opt->sample_names = (char**)calloc(opt->n_samples, sizeof(char*));
+        for (int smp = 0; smp < opt->n_samples; ++smp) {
+            if (opt->sample_names[smp] != NULL) continue;
+            for (int j = 0; j < opt->n_in_bam_fn; ++j) {
+                if (opt->bam_i_to_sample[j] != smp) continue;
+                opt->sample_names[smp] = extract_sample_name_from_bam_header(pl->io_aux[0].headers[j]);
+                break;
+            }
+            if (opt->sample_names[smp] == NULL)
+                opt->sample_names[smp] = strdup(smp == LONGCALLD_SAMPLE_NORMAL ? "NORMAL" : "TUMOR");
+        }
+        if (opt->tumor_name != NULL) {
+            free(opt->sample_names[LONGCALLD_SAMPLE_TUMOR]);
+            opt->sample_names[LONGCALLD_SAMPLE_TUMOR] = strdup(opt->tumor_name);
+        }
+        if (opt->normal_name != NULL) {
+            free(opt->sample_names[LONGCALLD_SAMPLE_NORMAL]);
+            opt->sample_names[LONGCALLD_SAMPLE_NORMAL] = strdup(opt->normal_name);
+        }
+        if (strcmp(opt->sample_names[LONGCALLD_SAMPLE_TUMOR], opt->sample_names[LONGCALLD_SAMPLE_NORMAL]) == 0) {
+            _err_warning("Tumour and normal report the same sample name '%s'; suffixing them _T and _N. "
+                         "Use --tumor-name/--normal-name to choose your own.\n", opt->sample_names[LONGCALLD_SAMPLE_TUMOR]);
+            for (int smp = 0; smp < 2; ++smp) {
+                char *old_nm = opt->sample_names[smp];
+                char *nm = (char*)malloc(strlen(old_nm) + 3);
+                sprintf(nm, "%s_%c", old_nm, smp == LONGCALLD_SAMPLE_NORMAL ? 'N' : 'T');
+                free(old_nm); opt->sample_names[smp] = nm;
+            }
+        }
+        _err_info("VCF sample columns: %s (normal), %s (tumour)\n",
+                  opt->sample_names[LONGCALLD_SAMPLE_NORMAL], opt->sample_names[LONGCALLD_SAMPLE_TUMOR]);
+    }
     // collect regions
     if (collect_regions(pl, opt, n_regions, regions) <= 0) {
         if (n_regions > 0) _err_warning("No valid regions found in the alignment file. Processing the entire alignment file.\n");
@@ -1068,12 +1111,20 @@ static void *call_var_worker_pipeline(void *shared, int step, void *in) { // kt_
     return 0;
 }
 
+// 0 = `call`, 1 = `paired`. One option table and one usage function serve
+// both; the subcommand only changes the synopsis line and which options are
+// worth showing first.
+static int LONGCALLD_CLI_PAIRED = 0;
+
 static void call_var_usage(void) {//main usage
     fprintf(stderr, "\n");
     // fprintf(stderr, "Program: %s (%s)\n", PROG, DESCRIP);
     // fprintf(stderr, "Version: %s\tContact: %s\n\n", LONGCALLD_VERSION, CONTACT); 
 
-    fprintf(stderr, "Usage: %s call [options] <ref.fa> <input.bam/cram> [region ...] > phased.vcf\n", PROG);
+    if (LONGCALLD_CLI_PAIRED)
+        fprintf(stderr, "Usage: %s paired [options] <ref.fa> <tumor.bam/cram> <normal.bam/cram> [region ...] > paired.vcf\n", PROG);
+    else
+        fprintf(stderr, "Usage: %s call [options] <ref.fa> <input.bam/cram> [region ...] > phased.vcf\n", PROG);
     fprintf(stderr, "\n");
     fprintf(stderr, "Note: \'ref.fa\' should contain the same contig/chromosome names as \'input.bam/cram\'\n");
     fprintf(stderr, "      \'input.bam/cram' should be sorted and indexed\n");
@@ -1181,7 +1232,11 @@ static void call_var_usage(void) {//main usage
     exit(1);
 }
 
-int call_var_main(int argc, char *argv[]) {
+int call_var_main(int argc, char *argv[]) { return call_var_main_mode(argc, argv, 0); }
+int paired_var_main(int argc, char *argv[]) { return call_var_main_mode(argc, argv, 1); }
+
+int call_var_main_mode(int argc, char *argv[], int paired_cli) {
+    LONGCALLD_CLI_PAIRED = paired_cli;
     // _err_cmd("%s\n", CMD);
     // 'L' takes no argument (--input-is-list); it was "L:" here while the option
     // table said no_argument, so `-L ref.fa bam_list.txt` ate ref.fa as -L's
@@ -1247,6 +1302,9 @@ int call_var_main(int argc, char *argv[]) {
                     else if (strcmp(call_var_opt[op_idx].name, "out-normal-bam") == 0)  { opt->out_naln_fp = hts_open(optarg, "wb"); opt->out_naln_is_cram = 0; }
                     else if (strcmp(call_var_opt[op_idx].name, "out-normal-cram") == 0) { opt->out_naln_fp = hts_open(optarg, "wc"); opt->out_naln_is_cram = 1; }
                     else if (strcmp(call_var_opt[op_idx].name, "out-normal-sam") == 0)  { opt->out_naln_fp = hts_open(optarg, "w");  opt->out_naln_is_cram = 0; }
+                    else if (strcmp(call_var_opt[op_idx].name, "tumor-name") == 0 ||
+                             strcmp(call_var_opt[op_idx].name, "tumour-name") == 0) { free(opt->tumor_name); opt->tumor_name = strdup(optarg); }
+                    else if (strcmp(call_var_opt[op_idx].name, "normal-name") == 0) { free(opt->normal_name); opt->normal_name = strdup(optarg); }
                     break;
             case 's': opt->out_somatic = 1; break;
             case 'm': opt->out_methylation = 1; break;
@@ -1292,6 +1350,16 @@ int call_var_main(int argc, char *argv[]) {
         opt->ref_fa_fn = retrieve_full_url(argv[optind++]);
         if (opt->input_is_list) set_bam_list_file(opt, argv[optind++]);
         else opt->in_bam_fns[0] = retrieve_full_url(argv[optind++]);
+        // `paired` takes the matched normal as its third operand. -N still
+        // works and wins, so the remaining operands stay available as regions.
+        if (paired_cli && opt->n_normal_bam_fn == 0) {
+            if (argc - optind < 1) {
+                call_var_free_para(opt);
+                _err_error("paired needs a matched normal: either a third operand or -N/--normal.\n");
+                call_var_usage();
+            }
+            set_normal_input_bam(opt, argv[optind++]);
+        }
     }
     finalise_sample_layout(opt);
     if (opt->out_naln_fp != NULL && opt->n_samples < 2)

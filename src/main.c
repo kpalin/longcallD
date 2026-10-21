@@ -24,6 +24,7 @@ static int usage(void) {//main usage
 
     fprintf(stderr, "Command: \n");
     fprintf(stderr, "         call          call variants from long-read BAM/CRAM, single normal sample\n");
+    fprintf(stderr, "         paired        call somatic variants from a matched tumor/normal pair\n");
     // fprintf(stderr, "         trio          call variants from long-read BAM/CRAM, trio normal samples\n");
     // fprintf(stderr, "         joint         joint variant calling for multiple samples\n");
     // fprintf(stderr, "         genotype      call genotype for given VCF\n");
@@ -46,6 +47,7 @@ int main(int argc, char *argv[]) {
         ret = 1; usage();
     } else {
         if (strcmp(argv[1], "call") == 0) ret = call_var_main(argc-1, argv+1);
+        else if (strcmp(argv[1], "paired") == 0) ret = paired_var_main(argc-1, argv+1);
         else {
             _err_error("Unrecognized command '%s'\n", argv[1]);
             ret = 1; usage();
