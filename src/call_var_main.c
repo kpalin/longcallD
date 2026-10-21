@@ -96,6 +96,9 @@ const struct option call_var_opt [] = {
     { "max-hap-alt", 1, NULL, 0},
     { "som-pval", 1, NULL, 0},
     { "no-out-aln-passthrough", 0, NULL, 0},
+    { "out-normal-bam", 1, NULL, 0},
+    { "out-normal-cram", 1, NULL, 0},
+    { "out-normal-sam", 1, NULL, 0},
     { "hap-read", 1, NULL, 'p' },
 
     { "threads", 1, NULL, 't' },
@@ -242,7 +245,9 @@ call_var_opt_t *call_var_init_para(void) {
     opt->max_gq = 60; opt->max_qual = 60;
     opt->out_vcf = NULL; opt->vcf_hdr = NULL; opt->out_vcf_fn = NULL; opt->out_vcf_type = 'v'; opt->no_vcf_header = 0; opt->out_amb_base = 0;
     opt->out_aln_fp = NULL; opt->out_aln_is_cram = 0; opt->refine_bam = 0;
-    opt->aln_out = NULL; opt->no_reorder = 0; opt->out_aln_passthrough = 1;
+    opt->out_naln_fp = NULL; opt->out_naln_is_cram = 0;
+    for (int i = 0; i < LONGCALLD_MAX_SAMPLES; ++i) opt->aln_outs[i] = NULL;
+    opt->no_reorder = 0; opt->out_aln_passthrough = 1;
     opt->out_somatic = 0; opt->out_methylation = 0;
     // opt->verbose = 0;
     return opt;
@@ -734,6 +739,12 @@ static void call_var_pl_open_fa_bam(call_var_opt_t *opt, call_var_pl_t *pl, char
         _err_info("Opening alignment file: %s\n", opt->in_bam_fns[j]);
     }
     pl->io_aux = (call_var_io_aux_t*)malloc(pl->n_threads * sizeof(call_var_io_aux_t));
+    // Checked once the headers are read, below: every input must declare the
+    // same contigs in the same order. tid is just an index into that list, so
+    // two inputs that disagree would silently put records on the wrong
+    // chromosome -- harmless to ignore with one input and one output, fatal
+    // once tumour and normal are written to separate files.
+
     // multi-threading
     for (int i = 0; i < pl->n_threads; ++i){
         call_var_io_aux_t *aux = &pl->io_aux[i];
@@ -915,6 +926,9 @@ static int64_t write_passthrough_records(call_var_opt_t *opt, bam_hdr_t *header)
     for (int i = 0; i < opt->n_in_bam_fn; ++i) {
         samFile *in_bam = opt->bams[i]; hts_idx_t *idx = opt->idxs[i];
         if (in_bam == NULL || idx == NULL) continue;
+        int smp = opt->bam_i_to_sample != NULL ? opt->bam_i_to_sample[i] : 0;
+        aln_out_t *out = (smp >= 0 && smp < LONGCALLD_MAX_SAMPLES) ? opt->aln_outs[smp] : NULL;
+        if (out == NULL) continue; // this sample has no alignment output
         for (int t = 0; t < header->n_targets; ++t) {
             if (!skip_target_region(opt, header->target_name[t])) continue;
             hts_itr_t *iter = sam_itr_queryi(idx, t, 0, header->target_len[t]);
@@ -922,7 +936,7 @@ static int64_t write_passthrough_records(call_var_opt_t *opt, bam_hdr_t *header)
             while (sam_itr_next(in_bam, iter, b) >= 0) {
                 uint8_t *hp = bam_aux_get(b, "HP"); if (hp != NULL) bam_aux_del(b, hp);
                 uint8_t *ps = bam_aux_get(b, "PS"); if (ps != NULL) bam_aux_del(b, ps);
-                aln_out_push(opt->aln_out, b, header->target_name[t]);
+                aln_out_push(out, b, header->target_name[t]);
                 n++;
             }
             hts_itr_destroy(iter);
@@ -933,7 +947,7 @@ static int64_t write_passthrough_records(call_var_opt_t *opt, bam_hdr_t *header)
             while (sam_itr_next(in_bam, iter, b) >= 0) {
                 uint8_t *hp = bam_aux_get(b, "HP"); if (hp != NULL) bam_aux_del(b, hp);
                 uint8_t *ps = bam_aux_get(b, "PS"); if (ps != NULL) bam_aux_del(b, ps);
-                aln_out_push(opt->aln_out, b, "*");
+                aln_out_push(out, b, "*");
                 n++;
             }
             hts_itr_destroy(iter);
@@ -943,11 +957,24 @@ static int64_t write_passthrough_records(call_var_opt_t *opt, bam_hdr_t *header)
     return n;
 }
 
-static void call_var_pl_write_bam_header(call_var_opt_t *opt, bam_hdr_t *header) {
-    if (opt->out_aln_is_cram) {
-        if (hts_set_fai_filename(opt->out_aln_fp, opt->ref_fa_fn) != 0) _err_error_exit("Failed to set reference file for output CRAM encoding: %s\n", opt->ref_fa_fn);
+// Open one alignment output: its own @PG, its own @HD sort order, its own
+// reorder buffer. The header is shared between outputs, which is safe only
+// because call_var_pl_open_fa_bam() has already rejected inputs whose contig
+// lists disagree -- otherwise a record's tid would mean different things in the
+// two files.
+static struct aln_out_t *open_one_aln_out(call_var_opt_t *opt, htsFile *fp, int is_cram,
+                                          bam_hdr_t *header, hts_pos_t window, int n_threads) {
+    if (fp == NULL) return NULL;
+    if (is_cram) {
+        if (hts_set_fai_filename(fp, opt->ref_fa_fn) != 0)
+            _err_error_exit("Failed to set reference file for output CRAM encoding: %s\n", opt->ref_fa_fn);
     }
-    hts_set_threads(opt->out_aln_fp, opt->n_threads);
+    hts_set_threads(fp, n_threads);
+    if (sam_hdr_write(fp, header) < 0) _err_error_exit("Failed to write BAM header.\n");
+    return aln_out_init(fp, header, is_cram, opt->no_reorder, window);
+}
+
+static void call_var_pl_write_bam_header(call_var_opt_t *opt, bam_hdr_t *header) {
     add_longcalld_pg_line(header);
 
     // Say what we actually produce. With the reorder buffer the output really is
@@ -967,8 +994,6 @@ static void call_var_pl_write_bam_header(call_var_opt_t *opt, bam_hdr_t *header)
         if (sam_hdr_update_hd(header, "SO", "coordinate") < 0)
             _err_warning("Failed to set @HD SO:coordinate in the output header.\n");
     }
-    if (sam_hdr_write(opt->out_aln_fp, header) < 0) _err_error_exit("Failed to write BAM header.\n");
-
     // Realignment can only move a record's POS left, and only within the noisy
     // region it was realigned inside -- regions longer than max_noisy_reg_len are
     // skipped entirely -- so that length (plus both flanks) bounds the shift.
@@ -976,7 +1001,13 @@ static void call_var_pl_write_bam_header(call_var_opt_t *opt, bam_hdr_t *header)
     // 500 bp (HiFi). Without --refine-aln no POS changes at all, so the window
     // is zero and records stream straight through.
     hts_pos_t window = opt->refine_bam ? (hts_pos_t)opt->max_noisy_reg_len + 2 * opt->noisy_reg_flank_len : 0;
-    opt->aln_out = aln_out_init(opt->out_aln_fp, header, opt->out_aln_is_cram, opt->no_reorder, window);
+    // Thread budget is shared between the outputs.
+    int n_out = (opt->out_aln_fp != NULL) + (opt->out_naln_fp != NULL);
+    int per_out = n_out > 1 ? (opt->n_threads + 1) / 2 : opt->n_threads;
+    opt->aln_outs[LONGCALLD_SAMPLE_TUMOR] =
+        open_one_aln_out(opt, opt->out_aln_fp, opt->out_aln_is_cram, header, window, per_out);
+    opt->aln_outs[LONGCALLD_SAMPLE_NORMAL] =
+        open_one_aln_out(opt, opt->out_naln_fp, opt->out_naln_is_cram, header, window, per_out);
 }
 
 // work with sorted SAM/BAM/CRAM
@@ -1022,7 +1053,8 @@ static void *call_var_worker_pipeline(void *shared, int step, void *in) { // kt_
             for (int smp = 0; smp < c->n_samples && smp < LONGCALLD_MAX_SAMPLES; ++smp)
                 pl->n_reads_per_sample[smp] += c->n_sample_reads[smp];
             n_out_vars += write_var_to_vcf(s->vars+i, pl->opt, c);
-            if (pl->opt->out_aln_fp != NULL) n_out_reads += write_read_to_bam(c, pl->opt, pl->io_aux);
+            if (pl->opt->aln_outs[LONGCALLD_SAMPLE_TUMOR] != NULL || pl->opt->aln_outs[LONGCALLD_SAMPLE_NORMAL] != NULL)
+                n_out_reads += write_read_to_bam(c, pl->opt, pl->io_aux);
             var_free(s->vars + i);  // free output
         }
         if (n_out_vars > 0) _err_info("Output %d variants to VCF\n", n_out_vars);
@@ -1099,6 +1131,9 @@ static void call_var_usage(void) {//main usage
     fprintf(stderr, "                          note: multiple input BAM/CRAM files will be merged in SAM/BAM/CRAM output\n");
     fprintf(stderr, "    --refine-aln          refine alignment in SAM/BAM/CRAM output\n");
     fprintf(stderr, "                          output stays coordinate-sorted and indexable\n");
+    fprintf(stderr, "    --out-normal-bam/-cram/-sam FILE\n");
+    fprintf(stderr, "                          with -N, write the matched normal's phased reads here;\n");
+    fprintf(stderr, "                          -b/-C/-S then carry the tumour's []\n");
     fprintf(stderr, "    --no-out-aln-passthrough\n");
     fprintf(stderr, "                          omit reads on excluded contigs and unmapped reads from the\n");
     fprintf(stderr, "                          alignment output (they are included by default)\n");
@@ -1209,6 +1244,9 @@ int call_var_main(int argc, char *argv[]) {
                     else if (strcmp(call_var_opt[op_idx].name, "max-hap-alt") == 0) opt->max_hap_alt = atoi(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "som-pval") == 0) opt->som_pval = atof(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "no-out-aln-passthrough") == 0) opt->out_aln_passthrough = 0;
+                    else if (strcmp(call_var_opt[op_idx].name, "out-normal-bam") == 0)  { opt->out_naln_fp = hts_open(optarg, "wb"); opt->out_naln_is_cram = 0; }
+                    else if (strcmp(call_var_opt[op_idx].name, "out-normal-cram") == 0) { opt->out_naln_fp = hts_open(optarg, "wc"); opt->out_naln_is_cram = 1; }
+                    else if (strcmp(call_var_opt[op_idx].name, "out-normal-sam") == 0)  { opt->out_naln_fp = hts_open(optarg, "w");  opt->out_naln_is_cram = 0; }
                     break;
             case 's': opt->out_somatic = 1; break;
             case 'm': opt->out_methylation = 1; break;
@@ -1256,6 +1294,8 @@ int call_var_main(int argc, char *argv[]) {
         else opt->in_bam_fns[0] = retrieve_full_url(argv[optind++]);
     }
     finalise_sample_layout(opt);
+    if (opt->out_naln_fp != NULL && opt->n_samples < 2)
+        _err_error_exit("--out-normal-bam/-cram/-sam needs a matched normal; supply one with -N/--normal.\n");
     // check if hifi and ont are both set
     if (opt->is_pb_hifi && opt->is_ont) _err_error_exit("Cannot set both --hifi and --ont\n");
     if (opt->only_autosome && opt->only_autosome_XY) _err_error_exit("Cannot set both --autosome and --autosome-XY\n");
@@ -1278,7 +1318,7 @@ int call_var_main(int argc, char *argv[]) {
     call_var_pl_open_fa_bam(opt, &pl, argv+optind, argc-optind);
 
     // write VCF/BAM header
-    if (opt->out_aln_fp != NULL) call_var_pl_write_bam_header(opt, pl.io_aux[0].headers[0]);
+    if (opt->out_aln_fp != NULL || opt->out_naln_fp != NULL) call_var_pl_write_bam_header(opt, pl.io_aux[0].headers[0]);
     if (opt->out_vcf != NULL && (opt->out_vcf_type == 'z' || opt->no_vcf_header == 0)) write_vcf_header(pl.io_aux[0].headers[0], opt);
     // start to work !!!
     pl.opt = opt;
@@ -1289,18 +1329,24 @@ int call_var_main(int argc, char *argv[]) {
                   pl.n_reads_per_sample[LONGCALLD_SAMPLE_TUMOR],
                   pl.n_reads_per_sample[LONGCALLD_SAMPLE_NORMAL]);
     }
-    if (opt->aln_out != NULL && opt->out_aln_passthrough) {
+    int any_aln_out = 0;
+    for (int i = 0; i < LONGCALLD_MAX_SAMPLES; ++i) if (opt->aln_outs[i] != NULL) any_aln_out = 1;
+    if (any_aln_out && opt->out_aln_passthrough) {
         int64_t n_pass = write_passthrough_records(opt, pl.io_aux[0].headers[0]);
         if (n_pass > 0) _err_info("Passed through %" PRId64 " reads on excluded contigs or without a mapping\n", n_pass);
     }
-    if (opt->aln_out != NULL) {
-        if (opt->refine_bam && opt->aln_out->n_unrefined_supp > 0)
-            _err_warning("%" PRId64 " supplementary alignment(s) were written with their original CIGAR: "
-                         "--refine-aln rebuilds a CIGAR from the primary alignment's digar, which is not valid "
-                         "for a supplementary.\n", opt->aln_out->n_unrefined_supp);
-        aln_out_free(opt->aln_out); opt->aln_out = NULL; // flush before closing
+    int64_t n_unrefined = 0;
+    for (int i = 0; i < LONGCALLD_MAX_SAMPLES; ++i) {
+        if (opt->aln_outs[i] == NULL) continue;
+        n_unrefined += opt->aln_outs[i]->n_unrefined_supp;
+        aln_out_free(opt->aln_outs[i]); opt->aln_outs[i] = NULL; // flush before closing
     }
+    if (opt->refine_bam && n_unrefined > 0)
+        _err_warning("%" PRId64 " supplementary alignment(s) were written with their original CIGAR: "
+                     "--refine-aln rebuilds a CIGAR from the primary alignment's digar, which is not valid "
+                     "for a supplementary.\n", n_unrefined);
     if (opt->out_aln_fp != NULL) hts_close(opt->out_aln_fp);
+    if (opt->out_naln_fp != NULL) hts_close(opt->out_naln_fp);
     if (opt->out_vcf != NULL) {
         if (opt->vcf_hdr != NULL) bcf_hdr_destroy(opt->vcf_hdr);
         hts_close(opt->out_vcf);

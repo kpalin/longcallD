@@ -82,15 +82,20 @@ n_unsorted() { samtools view "$1" | awk '{if($3==p3 && $4<p4) n++; p3=$3; p4=$4}
 n_half_phased() { samtools view "$1" | awk '{hp=/HP:i:/?1:0; ps=/PS:i:/?1:0; if(hp!=ps) n++} END{print n+0}'; }
 n_both=$(( $(samtools view -c "$T/half_a.bam") + $(samtools view -c "$T/half_b.bam") ))
 
+# -X pools both files as one sample, so -b holds everything. -N makes the
+# second file a separate sample, so -b holds only the tumour and the normal
+# goes to --out-normal-bam (covered further down).
+n_tumor_only=$(samtools view -c "$T/half_a.bam")
 for mode in -X -N; do
   for refine in "" "--refine-aln"; do
     tag="$mode${refine:+ --refine-aln}"
     out=$T/multi.bam
+    expect=$([[ $mode == -X ]] && echo "$n_both" || echo "$n_tumor_only")
     "$BIN" call $refine "$REF" "$T/half_a.bam" $mode "$T/half_b.bam" -t 1 -b "$out" -o /dev/null >/dev/null 2>&1
-    chk "$tag writes every record from both inputs" "$n_both" "$(samtools view -c "$out")"
+    chk "$tag -b holds the expected records" "$expect" "$(samtools view -c "$out")"
     chk "$tag output is coordinate-sorted" 0 "$(n_unsorted "$out")"
     chk "$tag output keeps HP/PS joint" 0 "$(n_half_phased "$out")"
-    rm -f "$out.bai"; samtools index "$out" 2>/dev/null
+    rm -f "${out:?}.bai"; samtools index "$out" 2>/dev/null
     chk "$tag output indexes" yes "$([[ -f $out.bai ]] && echo yes || echo no)"
   done
 done
@@ -126,6 +131,43 @@ chk "paired: no eligible variant still exits cleanly" 0     "$("$BIN" call "$REF
 "$BIN" call "$REF" "$HIFI" -t 1 -b "$T/ss_noopt.bam" -o /dev/null >/dev/null 2>&1
 chk "single sample ignores --min-normal-phase-dp" same \
     "$([[ "$(samtools view "$T/ss_opt.bam" | md5sum)" == "$(samtools view "$T/ss_noopt.bam" | md5sum)" ]] && echo same || echo differs)"
+
+# ---------------------------------------------------------------------------
+# Separate output BAMs for tumour and normal.
+#
+# The requirement is that phasing is consistent between them, so the same phase
+# sets must appear in both files. The risk is the opposite: global_read_i
+# indexes chunk->haps across every input, so routing records to two files is
+# exactly where an off-by-N puts one read's haplotype on another read. The
+# per-read signature check would abort if that happened.
+# ---------------------------------------------------------------------------
+n_t=$(samtools view -c "$T/half_a.bam"); n_n=$(samtools view -c "$T/half_b.bam")
+"$BIN" call --refine-aln "$REF" "$T/half_a.bam" -N "$T/half_b.bam" -t 1 \
+    -b "$T/o_t.bam" --out-normal-bam "$T/o_n.bam" -o /dev/null >/dev/null 2>&1
+chk "two output BAMs: tumour gets exactly its own records" "$n_t" "$(samtools view -c "$T/o_t.bam")"
+chk "two output BAMs: normal gets exactly its own records" "$n_n" "$(samtools view -c "$T/o_n.bam")"
+chk "two output BAMs: no read appears in both" 0 \
+    "$(comm -12 <(samtools view "$T/o_t.bam" | cut -f1 | sort -u) <(samtools view "$T/o_n.bam" | cut -f1 | sort -u) | wc -l | tr -d ' ')"
+for f in o_t o_n; do
+  chk "$f is coordinate-sorted" 0 "$(n_unsorted "$T/$f.bam")"
+  chk "$f keeps HP/PS joint" 0 "$(n_half_phased "$T/$f.bam")"
+  rm -f "${T:?}/${f:?}.bam.bai"; samtools index "$T/$f.bam" 2>/dev/null
+  chk "$f indexes" yes "$([[ -f $T/$f.bam.bai ]] && echo yes || echo no)"
+done
+# The stated requirement: phasing consistent between the two output BAMs.
+chk "both output BAMs use the same phase sets" same \
+    "$([[ "$(samtools view "$T/o_t.bam" | grep -oE 'PS:i:[0-9]+' | sort -u | md5sum)" == \
+          "$(samtools view "$T/o_n.bam" | grep -oE 'PS:i:[0-9]+' | sort -u | md5sum)" ]] && echo same || echo differs)"
+
+# With only -b, the normal's reads must not leak into the tumour's file -- and
+# read_i must still advance over them, which the signature check enforces.
+"$BIN" call --refine-aln "$REF" "$T/half_a.bam" -N "$T/half_b.bam" -t 1 -b "$T/only_t.bam" -o /dev/null >/dev/null 2>&1
+chk "with only -b, output holds just the tumour" "$n_t" "$(samtools view -c "$T/only_t.bam")"
+chk "with only -b, no normal read leaks in" 0 \
+    "$(comm -12 <(samtools view "$T/only_t.bam" | cut -f1 | sort -u) <(samtools view "$T/half_b.bam" | cut -f1 | sort -u) | wc -l | tr -d ' ')"
+
+chk "--out-normal-bam without -N is refused" 1 \
+    "$("$BIN" call "$REF" "$HIFI" -t 1 --out-normal-bam "$T/nope.bam" -o /dev/null >/dev/null 2>&1; echo $?)"
 
 echo
 if [[ $fail -eq 0 ]]; then echo "  paired input: all $pass assertions passed"; exit 0

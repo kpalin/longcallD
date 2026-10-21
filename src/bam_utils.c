@@ -2132,7 +2132,7 @@ int write_untagged_read_to_bam(bam_chunk_t *chunk, aln_out_t *out, bam1_t *read,
     return 0;
 }
 
-int write_processed_read_to_bam(const call_var_opt_t *opt, bam_chunk_t *chunk, bam_hdr_t *header, bam1_t *read, int read_i) {
+int write_processed_read_to_bam(const call_var_opt_t *opt, bam_chunk_t *chunk, aln_out_t *out, bam1_t *read, int read_i) {
     // The caller rebuilt read_i by re-reading the region and replaying
     // bam_record_is_callable() plus the n_up_ovlp_skip_reads[] counters. If any
     // of that drifts, we would silently stamp this record with another read's
@@ -2200,7 +2200,7 @@ int write_processed_read_to_bam(const call_var_opt_t *opt, bam_chunk_t *chunk, b
         if (ps_tag != NULL) bam_aux_del(read, ps_tag);
     }
     // write to bam
-    aln_out_push(opt->aln_out, read, chunk->tname);
+    aln_out_push(out, read, chunk->tname);
     return 0;
 }
 
@@ -2270,15 +2270,21 @@ int write_read_to_bam(bam_chunk_t *chunk, const struct call_var_opt_t *opt, cons
         if (pick < 0) break;
 
         bam1_t *read = cur[pick];
+        // Which file this input's reads belong in. NULL means this sample has
+        // no alignment output: the record is not written, but read_i still has
+        // to advance over it, because it indexes chunk->haps for every sample.
+        int smp = opt->bam_i_to_sample != NULL ? opt->bam_i_to_sample[pick] : 0;
+        aln_out_t *out = (smp >= 0 && smp < LONGCALLD_MAX_SAMPLES) ? opt->aln_outs[smp] : NULL;
+
         if (!bam_record_is_callable(read, min_mapq)) {
-            if (skip_read_i[pick] >= chunk->n_up_ovlp_skip_reads[pick]) {
-                write_untagged_read_to_bam(chunk, opt->aln_out, read, phase_by_qname);
+            if (out != NULL && skip_read_i[pick] >= chunk->n_up_ovlp_skip_reads[pick]) {
+                write_untagged_read_to_bam(chunk, out, read, phase_by_qname);
                 n_out_reads++;
             }
             skip_read_i[pick]++;
         } else {
-            if (read_i[pick] >= chunk->n_up_ovlp_reads[pick]) {
-                write_processed_read_to_bam(opt, chunk, opt->headers[pick], read,
+            if (out != NULL && read_i[pick] >= chunk->n_up_ovlp_reads[pick]) {
+                write_processed_read_to_bam(opt, chunk, out, read,
                                             chunk->bam_read_off[pick] + read_i[pick]);
                 n_out_reads++;
             }

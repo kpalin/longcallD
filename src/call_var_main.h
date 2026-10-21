@@ -198,8 +198,11 @@ typedef struct call_var_opt_t {
 
     // output
     int min_sv_len; // classify as SV if length >= min_sv_len (50)
-    htsFile *out_aln_fp; uint8_t out_aln_is_cram; uint8_t refine_bam; // phased bam
-    struct aln_out_t *aln_out; // bounded reorder buffer in front of out_aln_fp
+    htsFile *out_aln_fp; uint8_t out_aln_is_cram; uint8_t refine_bam; // phased bam (tumour / single sample)
+    htsFile *out_naln_fp; uint8_t out_naln_is_cram;                   // matched normal's phased bam
+    // One output per sample, indexed by LONGCALLD_SAMPLE_*. NULL means that
+    // sample's reads are not written; read_i must still advance over them.
+    struct aln_out_t *aln_outs[LONGCALLD_MAX_SAMPLES];
     uint8_t no_reorder;        // write records in input order and declare SO:unsorted
     uint8_t out_aln_passthrough; // also emit reads on excluded contigs and unmapped reads
     htsFile *out_vcf; bcf_hdr_t *vcf_hdr; char *out_vcf_fn; char out_vcf_type; // u/b/v/z
