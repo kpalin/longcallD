@@ -300,13 +300,18 @@ void var_free(var_t *v) {
             if (v->vars[i].tsd_len > 0) {
                 free(v->vars[i].tsd_seq);
             }
-            if (v->vars[i].is_sv && v->vars[i].AD[1] > 0) free(v->vars[i].alt_read_i);
+            // alt_read_i is allocated in make_variants for every variant with
+            // AD[1] > 0, not just SVs, and AD[1] may be lowered afterwards -- so
+            // free it unconditionally. make_variants sets it to NULL otherwise,
+            // and every element in [0, v->n) passes through that assignment.
+            free(v->vars[i].alt_read_i);
         }
         free(v->vars);
     }
 }
 
 void var1_free(var1_t *v) {
+    free(v->alt_read_i);
     if (v->ref_bases) free(v->ref_bases);
     if (v->alt_len) free(v->alt_len);
     if (v->alt_bases) {

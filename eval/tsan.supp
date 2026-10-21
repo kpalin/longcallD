@@ -1,0 +1,12 @@
+# ThreadSanitizer suppressions for longcallD.
+#
+# klib's kt_for work stealing (src/kthread.c:29, steal_work) scans
+# t->w[i].i without synchronisation to pick the worker with the least
+# remaining work, then claims the item atomically with
+# __sync_fetch_and_add and range-checks the result against t->n. A stale
+# read can therefore only cause a suboptimal victim choice -- never an
+# out-of-bounds index or a double-claimed item. This is upstream klib,
+# byte-identical to the copy shipped in minimap2, and the racy read is
+# deliberate. Suppressed rather than patched: editing vendored threading
+# code to satisfy a sanitizer would be a worse trade than documenting it.
+race:steal_work

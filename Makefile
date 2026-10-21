@@ -82,13 +82,41 @@ else
 	WFA2_LIB  = $(WFA_NOR_LIB)
 endif
 
-CFLAGS = $(OPT_FLAGS) $(EXTRA_FLAGS) -DLONGCALLD_VERSION=\"$(LONGCALLD_VERSION)\"
+# for sanitizers
+#   make san=1       AddressSanitizer + UndefinedBehaviorSanitizer
+#   make san=thread  ThreadSanitizer
+#
+# Only longcallD's own objects are instrumented here. htslib, abPOA and WFA2
+# link in as prebuilt static libraries and stay uninstrumented; ASan's
+# allocator interceptors still catch heap overflow and use-after-free on any
+# allocation regardless of which object made it. To instrument htslib as well:
+#   make clean_hts && make san=1 HTSLIB_CFLAGS="-g -O1 -fsanitize=address"
+#
+# We deliberately keep the non-gdb abPOA/WFA2 libraries: WFA2-lib provides no
+# libwfa_gdb.a target, so $(WFA_GDB_LIB) is a dangling path and selecting it
+# would break the link.
+ifeq ($(san),thread)
+	OPT_FLAGS = -O1 -g -fno-omit-frame-pointer
+	SAN_FLAGS = -fsanitize=thread
+else ifneq ($(san),)
+	OPT_FLAGS = -O1 -g -fno-omit-frame-pointer
+	SAN_FLAGS = -fsanitize=address,undefined -fno-sanitize-recover=all
+endif
+
+CFLAGS = $(OPT_FLAGS) $(EXTRA_FLAGS) $(SAN_FLAGS) -DLONGCALLD_VERSION=\"$(LONGCALLD_VERSION)\"
 
 BIN_LDFLAGS =
 
 ifeq ($(UNAME_S),Linux)
-    BIN_LDFLAGS += -no-pie
+    # ThreadSanitizer requires a position-independent executable: with -no-pie
+    # its shadow memory mapping collides with the executable's own and it
+    # aborts at startup. ASan and UBSan work either way.
+    ifneq ($(san),thread)
+        BIN_LDFLAGS += -no-pie
+    endif
 endif
+
+BIN_LDFLAGS += $(SAN_FLAGS)
 
 
 HTSLIB_CFLAGS = -g -O2

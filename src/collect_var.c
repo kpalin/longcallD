@@ -448,9 +448,11 @@ void copy_var(cand_var_t *to_var, cand_var_t *from_var) {
     }
     if (to_var->alt_len != from_var->alt_len) {
         to_var->alt_len = from_var->alt_len;
-        free(to_var->alt_seq); to_var->alt_seq = (uint8_t*)malloc(from_var->alt_len * sizeof(uint8_t));
+        free(to_var->alt_seq);
+        // deletions carry alt_len == 0 and a NULL alt_seq
+        to_var->alt_seq = from_var->alt_len > 0 ? (uint8_t*)malloc(from_var->alt_len * sizeof(uint8_t)) : NULL;
     }
-    memcpy(to_var->alt_seq, from_var->alt_seq, from_var->alt_len);
+    if (from_var->alt_len > 0) memcpy(to_var->alt_seq, from_var->alt_seq, from_var->alt_len);
     // copy tsd-related info
     if (to_var->tsd_len > 0) free(to_var->tsd_seq);
     if (from_var->tsd_len > 0) {
