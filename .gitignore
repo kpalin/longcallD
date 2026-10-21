@@ -67,3 +67,6 @@ dkms.conf
 # gprof
 gmon.out
 pg
+
+# build-mode stamp (normal vs sanitizer objects)
+.build-mode

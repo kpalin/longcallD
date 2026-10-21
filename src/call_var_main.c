@@ -86,6 +86,7 @@ const struct option call_var_opt [] = {
     { "merge-dis", 1, NULL, 0},
     { "end-clip", 1, NULL, 0},
     { "clip-flank", 1, NULL, 0},
+    { "no-reorder", 0, NULL, 0},
     { "hap-read", 1, NULL, 'p' },
 
     { "threads", 1, NULL, 't' },
@@ -222,6 +223,7 @@ call_var_opt_t *call_var_init_para(void) {
     opt->max_gq = 60; opt->max_qual = 60;
     opt->out_vcf = NULL; opt->vcf_hdr = NULL; opt->out_vcf_fn = NULL; opt->out_vcf_type = 'v'; opt->no_vcf_header = 0; opt->out_amb_base = 0;
     opt->out_aln_fp = NULL; opt->out_aln_is_cram = 0; opt->refine_bam = 0;
+    opt->aln_out = NULL; opt->no_reorder = 0;
     opt->out_somatic = 0; opt->out_methylation = 0;
     // opt->verbose = 0;
     return opt;
@@ -819,7 +821,27 @@ static void call_var_pl_write_bam_header(call_var_opt_t *opt, bam_hdr_t *header)
     }
     hts_set_threads(opt->out_aln_fp, opt->n_threads);
     add_longcalld_pg_line(header);
+
+    // Say what we actually produce. With the reorder buffer the output really is
+    // coordinate-sorted; with --no-reorder it is not, and claiming otherwise is
+    // how --refine-aln used to emit a file that samtools index rejected.
+    if (opt->no_reorder) {
+        if (sam_hdr_update_hd(header, "SO", "unsorted", "GO", "none") < 0)
+            _err_warning("Failed to set @HD SO:unsorted in the output header.\n");
+    } else {
+        if (sam_hdr_update_hd(header, "SO", "coordinate") < 0)
+            _err_warning("Failed to set @HD SO:coordinate in the output header.\n");
+    }
     if (sam_hdr_write(opt->out_aln_fp, header) < 0) _err_error_exit("Failed to write BAM header.\n");
+
+    // Realignment can only move a record's POS left, and only within the noisy
+    // region it was realigned inside -- regions longer than max_noisy_reg_len are
+    // skipped entirely -- so that length (plus both flanks) bounds the shift.
+    // Measured worst case on the bundled data is far smaller: 617 bp (ONT),
+    // 500 bp (HiFi). Without --refine-aln no POS changes at all, so the window
+    // is zero and records stream straight through.
+    hts_pos_t window = opt->refine_bam ? (hts_pos_t)opt->max_noisy_reg_len + 2 * opt->noisy_reg_flank_len : 0;
+    opt->aln_out = aln_out_init(opt->out_aln_fp, header, opt->out_aln_is_cram, opt->no_reorder, window);
 }
 
 // work with sorted SAM/BAM/CRAM
@@ -926,7 +948,9 @@ static void call_var_usage(void) {//main usage
     fprintf(stderr, "                          output phased SAM/BAM/CRAM file []\n");
     fprintf(stderr, "                          note: multiple input BAM/CRAM files will be merged in SAM/BAM/CRAM output\n");
     fprintf(stderr, "    --refine-aln          refine alignment in SAM/BAM/CRAM output\n");
-    fprintf(stderr, "                          note: output SAM/BAM/CRAM may be unsorted when --refine-aln is set\n");
+    fprintf(stderr, "                          output stays coordinate-sorted and indexable\n");
+    fprintf(stderr, "    --no-reorder          do not re-sort refined records; output is written in input\n");
+    fprintf(stderr, "                          order and the header declares SO:unsorted\n");
     fprintf(stderr, "    --out-var-rnames      output names of supporting reads in VCF FORMAT field for all variants [False]\n");
     fprintf(stderr, "    --out-som-var-rnames  output names of supporting reads in VCF FORMAT field for somatic variants [False]\n");
     fprintf(stderr, "    --out-sv-rnames       output names of supporting reads in VCF FORMAT field for SVs [False]\n");
@@ -1023,6 +1047,7 @@ int call_var_main(int argc, char *argv[]) {
                     else if (strcmp(call_var_opt[op_idx].name, "merge-dis") == 0) opt->noisy_reg_merge_dis = atoi(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "end-clip") == 0) opt->end_clip_reg = atoi(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "clip-flank") == 0) opt->end_clip_reg_flank_win = atoi(optarg);
+                    else if (strcmp(call_var_opt[op_idx].name, "no-reorder") == 0) opt->no_reorder = 1;
                     break;
             case 's': opt->out_somatic = 1; break;
             case 'm': opt->out_methylation = 1; break;
@@ -1095,6 +1120,7 @@ int call_var_main(int argc, char *argv[]) {
     // start to work !!!
     pl.opt = opt;
     kt_pipeline(opt->pl_threads, call_var_worker_pipeline, &pl, 3);
+    if (opt->aln_out != NULL) { aln_out_free(opt->aln_out); opt->aln_out = NULL; } // flush before closing
     if (opt->out_aln_fp != NULL) hts_close(opt->out_aln_fp);
     if (opt->out_vcf != NULL) {
         if (opt->vcf_hdr != NULL) bcf_hdr_destroy(opt->vcf_hdr);

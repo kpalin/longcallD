@@ -174,6 +174,8 @@ typedef struct call_var_opt_t {
     // output
     int min_sv_len; // classify as SV if length >= min_sv_len (50)
     htsFile *out_aln_fp; uint8_t out_aln_is_cram; uint8_t refine_bam; // phased bam
+    struct aln_out_t *aln_out; // bounded reorder buffer in front of out_aln_fp
+    uint8_t no_reorder;        // write records in input order and declare SO:unsorted
     htsFile *out_vcf; bcf_hdr_t *vcf_hdr; char *out_vcf_fn; char out_vcf_type; // u/b/v/z
     double p_error, log_p, log_1p, log_2; int max_gq; int max_qual;
     int8_t no_vcf_header, out_amb_base, out_somatic, out_methylation;

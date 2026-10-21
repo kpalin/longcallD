@@ -1950,14 +1950,93 @@ int refine_bam1(bam_chunk_t *chunk, int read_i, bam1_t *b) {
     return 0;
 }
 
-int write_unprocessed_read_to_bam(bam_chunk_t *chunk, bam_hdr_t *header, htsFile *out_aln_fp, bam1_t *read) {
-    // write unprocessed read to bam
+// ---------------------------------------------------------------------------
+// aln_out_t: bounded reorder buffer for the phased alignment output
+// ---------------------------------------------------------------------------
+
+aln_out_t *aln_out_init(htsFile *fp, bam_hdr_t *hdr, int is_cram, int no_reorder, hts_pos_t window) {
+    aln_out_t *o = (aln_out_t*)calloc(1, sizeof(aln_out_t));
+    o->fp = fp; o->hdr = hdr; o->is_cram = is_cram != 0;
+    o->no_reorder = no_reorder != 0;
+    o->window = no_reorder ? 0 : window;
+    o->m_buf = 256; o->buf = (bam1_t**)malloc(o->m_buf * sizeof(bam1_t*));
+    o->n_buf = 0; o->last_tid = -1; o->last_pos = -1; o->n_written = 0;
+    return o;
+}
+
+// Emit one record, checking that the file stays coordinate-sorted. "Silently
+// invalid BAM" is not an acceptable outcome, so a violation is fatal.
+static void aln_out_emit(aln_out_t *o, bam1_t *b, const char *tname) {
+    if (!o->no_reorder && o->last_tid >= 0 &&
+        (b->core.tid < o->last_tid || (b->core.tid == o->last_tid && b->core.pos < o->last_pos))) {
+        _err_error_exit("Output alignment went backwards at %s:%" PRId64 " %s (previous record was tid %d pos %" PRId64 "). "
+                        "The reorder window (%" PRId64 " bp) was too small.\n",
+                        tname ? tname : "?", b->core.pos+1, bam_get_qname(b), o->last_tid, o->last_pos+1, o->window);
+    }
+    if (sam_write1(o->fp, o->hdr, b) < 0)
+        _err_error_exit("Failed to write BAM record. %s:%" PRId64 " %s\n", tname ? tname : "?", b->core.pos+1, bam_get_qname(b));
+    o->last_tid = b->core.tid; o->last_pos = b->core.pos; o->n_written++;
+}
+
+// Drop the first n buffered records (already emitted).
+static void aln_out_pop_front(aln_out_t *o, int n) {
+    for (int i = 0; i < n; ++i) bam_destroy1(o->buf[i]);
+    if (n < o->n_buf) memmove(o->buf, o->buf + n, (o->n_buf - n) * sizeof(bam1_t*));
+    o->n_buf -= n;
+}
+
+void aln_out_flush(aln_out_t *o) {
+    if (o == NULL) return;
+    for (int i = 0; i < o->n_buf; ++i) aln_out_emit(o, o->buf[i], NULL);
+    aln_out_pop_front(o, o->n_buf);
+}
+
+void aln_out_push(aln_out_t *o, bam1_t *b, const char *tname) {
+    // Nothing can move, so there is nothing to reorder: write straight through
+    // and avoid a copy per record. The sortedness check still applies.
+    if (o->window == 0) { aln_out_emit(o, b, tname); return; }
+
+    // A new reference means everything buffered is already behind us.
+    if (o->n_buf > 0 && o->buf[0]->core.tid != b->core.tid) aln_out_flush(o);
+
+    if (o->n_buf == o->m_buf) {
+        o->m_buf <<= 1;
+        o->buf = (bam1_t**)realloc(o->buf, o->m_buf * sizeof(bam1_t*));
+    }
+    // Insertion sort from the back: the stream is nearly sorted, so this
+    // almost always lands at the end after a single comparison.
+    bam1_t *copy = bam_dup1(b);
+    int i = o->n_buf;
+    while (i > 0 && (o->buf[i-1]->core.tid > copy->core.tid ||
+                     (o->buf[i-1]->core.tid == copy->core.tid && o->buf[i-1]->core.pos > copy->core.pos))) {
+        o->buf[i] = o->buf[i-1]; --i;
+    }
+    o->buf[i] = copy; o->n_buf++;
+
+    // Everything more than `window` behind the current input position is safe
+    // to emit: no record still to come can start earlier than that.
+    hts_pos_t safe = b->core.pos - o->window;
+    int n_ready = 0;
+    while (n_ready < o->n_buf && o->buf[n_ready]->core.tid == b->core.tid && o->buf[n_ready]->core.pos < safe) ++n_ready;
+    for (int k = 0; k < n_ready; ++k) aln_out_emit(o, o->buf[k], tname);
+    aln_out_pop_front(o, n_ready);
+}
+
+void aln_out_free(aln_out_t *o) {
+    if (o == NULL) return;
+    aln_out_flush(o);
+    free(o->buf);
+    free(o);
+}
+
+int write_unprocessed_read_to_bam(bam_chunk_t *chunk, aln_out_t *out, bam1_t *read) {
+    // Not phased by us, so it must not carry our tags.
     uint8_t *hp = bam_aux_get(read, "HP");
     if (hp != NULL) bam_aux_del(read, hp);
 
     uint8_t *ps_tag = bam_aux_get(read, "PS");
     if (ps_tag != NULL) bam_aux_del(read, ps_tag);
-    if (sam_write1(out_aln_fp, header, read) < 0) _err_error_exit("Failed to write BAM record. %s:%" PRIi64 " %s\n", chunk->tname, read->core.pos+1, bam_get_qname(read));
+    aln_out_push(out, read, chunk->tname);
     return 0;
 }
 
@@ -2023,7 +2102,7 @@ int write_processed_read_to_bam(const call_var_opt_t *opt, bam_chunk_t *chunk, b
         if (ps_tag != NULL) bam_aux_del(read, ps_tag);
     }
     // write to bam
-    if (sam_write1(opt->out_aln_fp, header, read) < 0) _err_error_exit("Failed to write BAM record. %s:%" PRIi64 " %s\n", chunk->tname, read->core.pos+1, bam_get_qname(read));
+    aln_out_push(opt->aln_out, read, chunk->tname);
     return 0;
 }
 
@@ -2047,7 +2126,7 @@ int write_read_to_bam(bam_chunk_t *chunk, const struct call_var_opt_t *opt, cons
                 // fprintf(stderr, "read_i: %d, %s, %d, %ld\n", read_i, bam_get_qname(read), read->core.flag, read->core.pos+1);
                 if (!bam_record_is_callable(read, min_mapq)) {
                     if (skip_read_i >= chunk->n_up_ovlp_skip_reads[i]) {
-                        write_unprocessed_read_to_bam(chunk, header, opt->out_aln_fp, read);
+                        write_unprocessed_read_to_bam(chunk, opt->aln_out, read);
                         n_out_reads++;
                     }
                     skip_read_i++;

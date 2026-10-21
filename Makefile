@@ -162,6 +162,25 @@ endif
 .c.o:
 	$(CC) -c $(CFLAGS) $(INCLUDE) $< -o $@
 
+# `all` must stay the default goal: the FORCE target below would otherwise
+# become it, since make picks the first target that does not begin with a dot.
+.DEFAULT_GOAL := all
+
+# Switching between a normal build, san=1 and san=thread changes which runtime
+# every object needs, but make only rebuilds what the *sources* touched -- so a
+# plain `make` after a sanitizer run fails at link time with undefined __tsan_*
+# references, and a partially-rebuilt tree can segfault on an ABI mismatch.
+#
+# Keep the current mode in a stamp file, rewritten at parse time and only when
+# it actually changes, so its mtime moves exactly then. Every object depends on
+# it, so make invalidates them by its normal rules. (Deleting objects from a
+# recipe instead does not work: make has already stat'ed them and will link the
+# stale set.)
+SAN_MODE := $(if $(san),$(san),none)
+$(shell [ "$$(cat .build-mode 2>/dev/null)" = "$(SAN_MODE)" ] || printf '%s' "$(SAN_MODE)" > .build-mode)
+
+$(OBJS): .build-mode
+
 all: $(HTS_ALL) $(EDLIB) $(ABPOA_LIB) $(WFA2_LIB) $(BIN)
 
 $(HTS_ALL): $(HTSLIB)
@@ -205,7 +224,7 @@ $(SRC_DIR)/align.o: $(SRC_DIR)/align.c
 .PHONY: all hts_all abpoa_all wfa2_all clean clean_all clean_hts clean_abpoa clean_wfa2
 
 clean:
-	rm -f $(SRC_DIR)/*.o $(SRC_DIR)/*.d $(EDLIB_DIR)/src/*.d $(BIN)
+	rm -f $(SRC_DIR)/*.o $(SRC_DIR)/*.d $(EDLIB_DIR)/src/*.d $(BIN) .build-mode
 clean_all:
 	rm -f $(SRC_DIR)/*.o $(SRC_DIR)/*.d $(EDLIB_DIR)/src/*.d $(BIN) $(HTSLIB) $(ABPOA_LIB) $(WFA2_LIB)
 clean_hts:

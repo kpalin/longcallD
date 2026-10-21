@@ -177,6 +177,35 @@ int update_read_vs_somatic_var_profile_from_digar(const struct call_var_opt_t *o
 
 int collect_ref_seq_bam_main(const struct call_var_pl_t *pl, struct call_var_io_aux_t *io_aux, int reg_chunk_i, int reg_i, bam_chunk_t *chunks);
 
+// A phased-alignment output, with a bounded reorder buffer.
+//
+// --refine-aln rewrites a record's POS from its realigned CIGAR, which can move
+// it LEFT. The writer visits records in input (coordinate) order, so the output
+// stream is "nearly sorted": a record can only ever move earlier, and only by
+// less than the length of the noisy region it was realigned inside. Buffering a
+// window that wide and emitting in sorted order is therefore enough to keep the
+// file genuinely coordinate-sorted, without sorting whole chunks (a 500 kb
+// chunk at 100x is tens of Mbp of reads).
+//
+// Before this existed, --refine-aln emitted records out of order while @HD still
+// claimed SO:coordinate -- 6 of 587 on the bundled ONT data -- so the file was
+// silently invalid and samtools index refused it.
+typedef struct aln_out_t {
+    htsFile *fp;
+    bam_hdr_t *hdr;          // header this file was opened with; write with THIS, not a per-input header
+    uint8_t is_cram;
+    uint8_t no_reorder;      // pass records straight through and declare SO:unsorted
+    hts_pos_t window;        // upper bound on how far left a POS can move; 0 = no reordering needed
+    bam1_t **buf; int n_buf, m_buf;
+    int32_t last_tid; hts_pos_t last_pos;  // last record emitted, for the monotonicity check
+    int64_t n_written;
+} aln_out_t;
+
+aln_out_t *aln_out_init(htsFile *fp, bam_hdr_t *hdr, int is_cram, int no_reorder, hts_pos_t window);
+void aln_out_push(aln_out_t *o, bam1_t *b, const char *tname);
+void aln_out_flush(aln_out_t *o);
+void aln_out_free(aln_out_t *o);
+
 // Is this record one that the variant caller takes into chunk->reads[]?
 //
 // This predicate decides the mapping between BAM records and read_i, and it is
