@@ -95,6 +95,17 @@ else
   run_matrix tsan 'WARNING: ThreadSanitizer|FATAL' setarch "$(uname -m)" -R
 fi
 
+# Leave a normal build behind. Otherwise bin/longcallD is still the TSan binary,
+# which exits 66 on any reported race, and the next unrelated test run fails in
+# a way that looks like a code regression.
+log "=== restoring a normal build ==="
+make clean >/dev/null 2>&1
+if make -j"$JOBS" >"$OUT/build_normal.log" 2>&1; then
+  log "normal build restored"
+else
+  bad "could not restore the normal build"; tail -3 "$OUT/build_normal.log"
+fi
+
 echo
 if [[ $fails -eq 0 ]]; then
   log "ALL SANITIZER CHECKS PASSED (logs in $OUT)"; exit 0
