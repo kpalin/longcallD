@@ -52,6 +52,15 @@ typedef struct var_site_t {
 #define LONGCALLD_SAMPLE_TUMOR  0
 #define LONGCALLD_SAMPLE_NORMAL 1
 #define LONGCALLD_MAX_SAMPLES   2
+// How a variant looks when tumour and normal are compared slot by slot.
+#define LONGCALLD_PAIRED_UNSET       0
+#define LONGCALLD_PAIRED_SOMATIC     1 // alt in exactly one tumour slot, both normal slots clean
+#define LONGCALLD_PAIRED_GERMLINE    2 // present in the normal, and so inherited
+#define LONGCALLD_PAIRED_NORMAL_ONLY 3 // in the normal but not the tumour: suspect
+#define LONGCALLD_PAIRED_LOH         4 // normal-only because the tumour lost that copy
+#define LONGCALLD_PAIRED_LOWDP       5 // not enough depth on one side to say anything
+#define LONGCALLD_PAIRED_AMBIG       6 // none of the above fits
+
 // Haplotype slots per sample: 0 = unphased, 1 = H1, 2 = H2 (diploid).
 #define LONGCALLD_N_HAP_SLOTS   3
 

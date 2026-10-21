@@ -496,6 +496,120 @@ void collect_all_var_slot_counts(bam_chunk_t *chunk) {
     }
 }
 
+// Decide what a variant is, by comparing tumour and normal slot by slot.
+//
+// Because phasing is anchored on variants that are germline het in the normal,
+// haplotype index h denotes the same parental chromosome in both samples. The
+// four slots (N,1) (N,2) (T,1) (T,2) are therefore directly comparable, and a
+// somatic mutation -- which arises on one chromosome copy in one clone -- must
+// occupy exactly one of them, a tumour one.
+//
+// Haplotype exclusivity alone is NOT enough to call something somatic: a
+// germline het also puts its alt on a single haplotype. It is the sample axis
+// that separates "alt on h in the tumour only" from "alt on h in both".
+static void classify_paired_var(const call_var_opt_t *opt, var1_t *v) {
+    const var_slot_counts_t *sc = &v->slots;
+    const int N = LONGCALLD_SAMPLE_NORMAL, T = LONGCALLD_SAMPLE_TUMOR;
+    v->paired_class = LONGCALLD_PAIRED_AMBIG;
+    v->som_hap = 0; v->is_unphased_call = 0; v->hap_vaf = 0; v->paired_pval = 1.0;
+
+    int n_dp = smp_dp(sc, N), t_dp = smp_dp(sc, T);
+    int n_alt = smp_alt(sc, N), t_alt = smp_alt(sc, T);
+
+    // An under-powered normal is the commonest way to manufacture a false
+    // somatic call, so refuse to decide rather than guess.
+    if (n_dp < opt->min_normal_dp || t_dp < opt->min_tumor_dp) {
+        v->paired_class = LONGCALLD_PAIRED_LOWDP;
+        return;
+    }
+
+    // The haplotype carrying the alt, judged across BOTH samples. Choosing it
+    // from the tumour alone breaks the normal-only case: there the tumour has
+    // no alt reads at all, so there is nothing to pick, and the variant would
+    // fall through to the pooled path and be mislabelled germline.
+    int s1 = sc->alt[T][1] + sc->alt[N][1], s2 = sc->alt[T][2] + sc->alt[N][2];
+    int h = 0;
+    if (s1 > s2) h = 1; else if (s2 > s1) h = 2; else if (s1 > 0) h = 1;
+
+    int haps_usable = (h != 0 &&
+                       slot_dp(sc, T, 1) >= opt->min_tumor_hap_dp &&
+                       slot_dp(sc, T, 2) >= opt->min_tumor_hap_dp &&
+                       slot_dp(sc, N, 1) >= opt->min_normal_hap_dp &&
+                       slot_dp(sc, N, 2) >= opt->min_normal_hap_dp);
+
+    if (haps_usable) {
+        int o = 3 - h;
+        int t_h = sc->alt[T][h], t_o = sc->alt[T][o];
+        int n_h = sc->alt[N][h], n_o = sc->alt[N][o];
+        int normal_has_it = (n_h > opt->max_hap_alt || n_o > opt->max_hap_alt);
+        int tumor_has_it  = (t_h > opt->max_hap_alt || t_o > opt->max_hap_alt);
+
+        // In both samples: inherited. This is the common case, and it is also
+        // why haplotype exclusivity alone cannot establish somatic status -- a
+        // germline het puts its alt on a single haplotype too.
+        if (normal_has_it && tumor_has_it) { v->paired_class = LONGCALLD_PAIRED_GERMLINE; return; }
+
+        if (tumor_has_it && !normal_has_it) {
+            // Confined to one tumour haplotype, with both normal slots clean.
+            if (t_h >= opt->min_somatic_alt_dp && t_o <= opt->max_hap_alt) {
+                int a = t_h, b = slot_dp(sc, T, h) - a;
+                int c = t_o + n_h + n_o;
+                int d = (slot_dp(sc, T, o) - t_o)
+                      + (slot_dp(sc, N, 1) - sc->alt[N][1])
+                      + (slot_dp(sc, N, 2) - sc->alt[N][2]);
+                double p = fisher_exact_test(a, b, c, d, opt);
+                if (p <= opt->som_pval) {
+                    v->paired_class = LONGCALLD_PAIRED_SOMATIC;
+                    v->som_hap = (uint8_t)h;
+                    v->paired_pval = p;
+                    // Within-haplotype VAF, not the pooled one. The pooled
+                    // figure for a clonal het somatic variant is purity/2,
+                    // confounding purity, ploidy and cellular fraction; this
+                    // estimates purity x cancer-cell-fraction directly.
+                    v->hap_vaf = slot_dp(sc, T, h) > 0 ? (float)a / slot_dp(sc, T, h) : 0;
+                    return;
+                }
+            }
+            return; // looks tumour-only but the evidence does not carry: AMBIG
+        }
+
+        if (normal_has_it && !tumor_has_it) {
+            // The normal has it and the tumour does not. If the tumour has lost
+            // that chromosome copy the absence is copy number, not a
+            // disagreement between the samples.
+            int nh = (n_h > opt->max_hap_alt) ? h : o;
+            if (slot_dp(sc, T, nh) * 4 < slot_dp(sc, T, 3 - nh))
+                v->paired_class = LONGCALLD_PAIRED_LOH;
+            else
+                v->paired_class = LONGCALLD_PAIRED_NORMAL_ONLY;
+            return;
+        }
+        return; // neither sample has it above threshold: AMBIG
+    }
+
+    // ------------------------------------------------------------- unphased --
+    // No usable haplotype grid here: phase-set gap, a long homozygous stretch,
+    // or too little depth on one haplotype. Fall back to pooled per-sample
+    // counts and mark the call so E3 can report precision with and without
+    // this weaker evidence rather than silently blending the two.
+    v->is_unphased_call = 1;
+    double n_vaf = n_dp > 0 ? (double)n_alt / n_dp : 0;
+    if (n_vaf >= opt->min_af) { v->paired_class = LONGCALLD_PAIRED_GERMLINE; return; }
+    if (n_alt <= opt->max_hap_alt && t_alt >= opt->min_somatic_alt_dp) {
+        double p = fisher_exact_test(t_alt, t_dp - t_alt, n_alt, n_dp - n_alt, opt);
+        if (p <= opt->som_pval) {
+            v->paired_class = LONGCALLD_PAIRED_SOMATIC;
+            v->paired_pval = p;
+            v->hap_vaf = t_dp > 0 ? (float)t_alt / t_dp : 0;
+            return;
+        }
+    }
+    if (n_alt >= opt->min_alt_dp && t_alt <= opt->max_hap_alt) {
+        v->paired_class = LONGCALLD_PAIRED_NORMAL_ONLY; return;
+    }
+    // AMBIG
+}
+
 void copy_var(cand_var_t *to_var, cand_var_t *from_var) {
     to_var->pos = from_var->pos; to_var->var_type = from_var->var_type;
     to_var->total_cov = from_var->total_cov; to_var->low_qual_cov = from_var->low_qual_cov;
@@ -1628,6 +1742,13 @@ int make_variants(const call_var_opt_t *opt, bam_chunk_t *chunk, var_t **_var) {
         }
         var->vars[i].DP = cand_vars[cand_i].total_cov;
         for (int j = 0; j < cand_vars[cand_i].n_uniq_alles; ++j) var->vars[i].AD[j] = cand_vars[cand_i].alle_covs[j];
+        // Carry the slot grid onto the variant and decide what it is. The grid
+        // is the evidence a reviewer needs to re-litigate the call, so it
+        // travels with the verdict rather than being recomputed.
+        if (chunk->var_slots != NULL) {
+            var->vars[i].slots = chunk->var_slots[cand_i];
+            if (chunk->n_samples > 1) classify_paired_var(opt, var->vars + i);
+        }
         // LONGCALLD_SLOTCHK=1 dumps the per-(sample, haplotype) tallies beside the
         // pooled counters, so the two can be cross-checked on real data. See
         // eval/test_slot_counts.sh. Off unless the variable is set.
@@ -1640,7 +1761,8 @@ int make_variants(const call_var_opt_t *opt, bam_chunk_t *chunk, var_t **_var) {
             for (int smp = 0; smp < sc->n_samples; ++smp)
                 for (int h = 0; h < LONGCALLD_N_HAP_SLOTS; ++h)
                     fprintf(stderr, "\t%d/%d/%d", sc->alt[smp][h], sc->ref[smp][h], sc->oth[smp][h]);
-            fprintf(stderr, "\n");
+            fprintf(stderr, "\t%d\t%d\t%d\t%.4f\t%.3g\n", var->vars[i].paired_class, var->vars[i].som_hap,
+                    var->vars[i].is_unphased_call, var->vars[i].hap_vaf, var->vars[i].paired_pval);
         }
         if (var->vars[i].AD[1] > 0) { // collect alt_read_i from read_var_profile
             var->vars[i].alt_read_i = (int*)malloc(var->vars[i].AD[1] * sizeof(int));

@@ -89,6 +89,12 @@ const struct option call_var_opt [] = {
     { "clip-flank", 1, NULL, 0},
     { "no-reorder", 0, NULL, 0},
     { "min-normal-phase-dp", 1, NULL, 0},
+    { "min-normal-dp", 1, NULL, 0},
+    { "min-tumor-dp", 1, NULL, 0},
+    { "min-normal-hap-dp", 1, NULL, 0},
+    { "min-tumor-hap-dp", 1, NULL, 0},
+    { "max-hap-alt", 1, NULL, 0},
+    { "som-pval", 1, NULL, 0},
     { "no-out-aln-passthrough", 0, NULL, 0},
     { "hap-read", 1, NULL, 'p' },
 
@@ -169,6 +175,12 @@ call_var_opt_t *call_var_init_para(void) {
     opt->min_af = LONGCALLD_MIN_CAND_AF;
     opt->max_af = LONGCALLD_MAX_CAND_AF;
     opt->min_normal_phase_dp = 4;
+    opt->min_normal_dp = 8; opt->min_tumor_dp = 8;
+    opt->min_normal_hap_dp = 4; opt->min_tumor_hap_dp = 4;
+    opt->max_hap_alt = 0;
+    // The inherited mosaic default of 0.05 is far too permissive at these
+    // depths; retune against the E3 precision/recall curve.
+    opt->som_pval = 1e-3;
     opt->max_noisy_reg_cov = LONGCALLD_MAX_NOISY_REG_COV;
     // somatic/mosaic var
     opt->min_somatic_dis_to_var = LONGCALLD_MIN_SOMATIC_DIS_TO_VAR;
@@ -426,6 +438,16 @@ void finalise_sample_layout(call_var_opt_t *opt) {
         opt->bam_i_to_sample[i] = (i < opt->n_tumor_bam_fn) ? LONGCALLD_SAMPLE_TUMOR : LONGCALLD_SAMPLE_NORMAL;
     if (opt->n_samples > 1) {
         opt->paired_mode = 1;
+        // Paired mode implies the low-allele-fraction candidate path. Candidate
+        // selection measures allele fraction on the POOLED tumour+normal depth,
+        // and a somatic variant is low-fraction there by construction: a clonal
+        // het somatic variant at 100% purity with equal tumour and normal depth
+        // sits at about 0.25 pooled, and a subclonal one well below that --
+        // under the 0.20 germline threshold either way. Without this, paired
+        // mode would systematically miss exactly the variants it exists to
+        // find. Measured: a synthetic somatic SNV at tumour VAF 0.25 (pooled
+        // 0.138) is not even a candidate without it.
+        opt->out_somatic = 1;
         _err_info("Paired input: %d tumour file(s), %d normal file(s)\n", opt->n_tumor_bam_fn, opt->n_normal_bam_fn);
     }
 }
@@ -1041,6 +1063,14 @@ static void call_var_usage(void) {//main usage
     fprintf(stderr, "       --min-normal-phase-dp INT\n");
     fprintf(stderr, "                          with -N, min. normal-sample depth for a variant to be used for\n");
     fprintf(stderr, "                          phasing [%d]\n", 4);
+    fprintf(stderr, "       --min-normal-dp INT   min. normal depth to classify a variant at all [8]\n");
+    fprintf(stderr, "       --min-tumor-dp  INT   min. tumour depth to classify a variant at all [8]\n");
+    fprintf(stderr, "       --min-normal-hap-dp INT\n");
+    fprintf(stderr, "                          min. depth on EACH normal haplotype for the four-slot test [4]\n");
+    fprintf(stderr, "       --min-tumor-hap-dp INT\n");
+    fprintf(stderr, "                          min. depth on the candidate tumour haplotype [4]\n");
+    fprintf(stderr, "       --max-hap-alt   INT   alt reads tolerated in a slot that should be clean [0]\n");
+    fprintf(stderr, "       --som-pval    FLOAT   max. Fisher exact p for a somatic call [1e-3]\n");
     fprintf(stderr, "                          can be used multiple times, e.g., -X bam1 -X bam2\n");
     fprintf(stderr, "    --autosome-XY         only call variants on autosomes and sex chromosomes, e.g., (chr){1-22,XY} [default]\n");
     // fprintf(stderr, "                          if not found, all chromosomes/contigs will be processed automatically\n");
@@ -1172,6 +1202,12 @@ int call_var_main(int argc, char *argv[]) {
                     else if (strcmp(call_var_opt[op_idx].name, "clip-flank") == 0) opt->end_clip_reg_flank_win = atoi(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "no-reorder") == 0) opt->no_reorder = 1;
                     else if (strcmp(call_var_opt[op_idx].name, "min-normal-phase-dp") == 0) opt->min_normal_phase_dp = atoi(optarg);
+                    else if (strcmp(call_var_opt[op_idx].name, "min-normal-dp") == 0) opt->min_normal_dp = atoi(optarg);
+                    else if (strcmp(call_var_opt[op_idx].name, "min-tumor-dp") == 0) opt->min_tumor_dp = atoi(optarg);
+                    else if (strcmp(call_var_opt[op_idx].name, "min-normal-hap-dp") == 0) opt->min_normal_hap_dp = atoi(optarg);
+                    else if (strcmp(call_var_opt[op_idx].name, "min-tumor-hap-dp") == 0) opt->min_tumor_hap_dp = atoi(optarg);
+                    else if (strcmp(call_var_opt[op_idx].name, "max-hap-alt") == 0) opt->max_hap_alt = atoi(optarg);
+                    else if (strcmp(call_var_opt[op_idx].name, "som-pval") == 0) opt->som_pval = atof(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "no-out-aln-passthrough") == 0) opt->out_aln_passthrough = 0;
                     break;
             case 's': opt->out_somatic = 1; break;

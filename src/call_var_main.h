@@ -11,6 +11,7 @@
 #include "htslib/vcf.h"
 #include "htslib/sam.h"
 #include "htslib/thread_pool.h"
+#include "bam_utils.h"
 
 #define CALL_VAR_PL_THREAD_N 2 // num of threads for pipeline
 #define CALL_VAR_THREAD_N 8    // num of threads for variant calling
@@ -118,6 +119,14 @@ typedef struct {
     int DP, AD[2]; uint8_t GT[2]; // DP/AD/GT
     int QUAL, GQ, PL[6]; // phred-scaled, QUAL/FILTER/GQ/PL
     int *alt_read_i;
+
+    // Paired tumour/normal evidence and verdict. Unset in single-sample mode.
+    var_slot_counts_t slots;  // the per-(sample, haplotype) grid this was decided on
+    uint8_t paired_class;     // LONGCALLD_PAIRED_*
+    uint8_t som_hap;          // the tumour haplotype carrying a somatic alt; 0 if unphased
+    uint8_t is_unphased_call; // decided on pooled per-sample counts, not on the slot grid
+    float hap_vaf;            // alt fraction within that haplotype; estimates purity x cancer-cell fraction
+    double paired_pval;       // Fisher exact, one slot against the other three
 } var1_t;
 
 typedef struct var_t {
@@ -151,6 +160,11 @@ typedef struct call_var_opt_t {
     int max_ploid, min_mq, min_bq, min_dp, min_alt_dp;
     double min_af, max_af;
     int min_normal_phase_dp; // paired mode: min normal depth for a variant to drive phasing
+    // Paired tumour/normal classification thresholds.
+    int min_normal_dp, min_tumor_dp;         // per-sample depth floor before we say anything
+    int min_normal_hap_dp, min_tumor_hap_dp; // per-haplotype depth floor for the four-slot test
+    int max_hap_alt;                         // alt reads tolerated in a slot that should be clean
+    double som_pval;                         // Fisher exact, one slot against the other three
     // somatic/mosaic variant
     int min_somatic_dis_to_var, min_somatic_dis_to_homopolymer_indel_error, min_somatic_dis_to_seq_error, min_somatic_alt_dp, min_somatic_te_dp, min_somatic_hap_dp;
     double min_somatic_log_beta_binom, min_somatic_fisher_pval; //, max_somatic_alt_af; // 0.01~0.1

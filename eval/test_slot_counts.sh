@@ -7,7 +7,10 @@
 # single-sample calling, so the two must be shown to agree. LONGCALLD_SLOTCHK=1
 # makes longcallD dump both for every variant:
 #
-#   SLOTCHK  pos  pooledDP  pooledALT  slotDP  slotALT  alt/ref/oth per (sample,hap)...
+#   SLOTCHK  pos  pooledDP  pooledALT  slotDP  slotALT \
+#            alt/ref/oth per (sample,hap)...  class som_hap unphased hapvaf pval
+#
+# so the slot groups are fields 7 .. NF-5.
 #
 set -uo pipefail
 
@@ -45,7 +48,7 @@ chk "single sample: slot depth within 2 of pooled depth everywhere" 0 \
 
 # Every read must land in exactly one of alt/ref/oth, so the three sum to the depth.
 chk "single sample: alt+ref equals reported slot depth" 0 \
-    "$(awk -F'\t' '{s=0; for(i=7;i<=NF;i++){split($i,a,"/"); s+=a[1]+a[2]} if(s!=$5) n++} END{print n+0}' "$T/single.txt")"
+    "$(awk -F'\t' '{s=0; for(i=7;i<=NF-5;i++){split($i,a,"/"); s+=a[1]+a[2]} if(s!=$5) n++} END{print n+0}' "$T/single.txt")"
 
 # ---------------------------------------------------------------- paired ----
 # Two disjoint halves, so no molecule is in both "samples".
@@ -62,15 +65,15 @@ chk "paired: produced variants" yes "$([[ $(wc -l < "$T/paired.txt") -gt 0 ]] &&
 
 # Six groups means two samples x three haplotype slots.
 chk "paired: two samples' worth of slots are reported" 6 \
-    "$(head -1 "$T/paired.txt" | awk -F'\t' '{print NF-6}')"
+    "$(head -1 "$T/paired.txt" | awk -F'\t' '{print NF-11}')"
 
 # The pooled counters still cover both samples, so the per-sample alt counts
 # must add back up to them. This is the load-bearing check: if the sample axis
 # were mis-assigned, evidence would move between samples and this would break.
 chk "paired: tumour ALT + normal ALT equals pooled ALT" 0 \
-    "$(awk -F'\t' '{s=0; for(i=7;i<=NF;i++){split($i,a,"/"); s+=a[1]} if(s!=$4) n++} END{print n+0}' "$T/paired.txt")"
+    "$(awk -F'\t' '{s=0; for(i=7;i<=NF-5;i++){split($i,a,"/"); s+=a[1]} if(s!=$4) n++} END{print n+0}' "$T/paired.txt")"
 chk "paired: tumour depth + normal depth equals slot depth" 0 \
-    "$(awk -F'\t' '{s=0; for(i=7;i<=NF;i++){split($i,a,"/"); s+=a[1]+a[2]} if(s!=$5) n++} END{print n+0}' "$T/paired.txt")"
+    "$(awk -F'\t' '{s=0; for(i=7;i<=NF-5;i++){split($i,a,"/"); s+=a[1]+a[2]} if(s!=$5) n++} END{print n+0}' "$T/paired.txt")"
 
 # Both samples must actually contribute; all-zero on one side would mean the
 # normal reads never reached the tallies.
