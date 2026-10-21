@@ -331,10 +331,12 @@ static void collect_bam_call_var_worker_for(void *_data, long ii, int tid) {
     call_var_step_t *step = (call_var_step_t*)_data;
     bam_chunk_t *c = step->chunks + ii;
     if (LONGCALLD_VERBOSE >= 2) fprintf(stderr, "[%s] thread-id: %d, chunk: %ld (%d) ... \n", __func__, tid, ii, step->n_chunks);
-    // if (collect_ref_seq_bam_main(step->pl, step->pl->io_aux+tid, step->pl->reg_chunk_i, ii, c) > 0) {
-    collect_ref_seq_bam_main(step->pl, step->pl->io_aux+tid, step->pl->reg_chunk_i, ii, c);
-    collect_var_main(step->pl, c);
-    // }
+    if (collect_ref_seq_bam_main(step->pl, step->pl->io_aux+tid, step->pl->reg_chunk_i, ii, c) >= 0 && !c->is_invalid) {
+        collect_var_main(step->pl, c);
+    } else {
+        _err_warning("Skipping chunk %s:%" PRId64 "-%" PRId64 ": failed to load reads.\n", c->tname, c->reg_beg, c->reg_end);
+        c->is_invalid = 1;
+    }
     bam_chunk_mid_free(c, step->pl->opt);
     if (LONGCALLD_VERBOSE >= 2) fprintf(stderr, "[%s] thread-id: %d, chunk: %ld (%d) ... done\n", __func__, tid, ii, step->n_chunks);
 }
@@ -344,6 +346,7 @@ static void make_var_worker_for(void *_data, long ii, int tid) {
     call_var_step_t *step = (call_var_step_t*)_data;
     bam_chunk_t *c = step->chunks+ii; var_t *var = step->vars+ii;
     if (LONGCALLD_VERBOSE >= 2) fprintf(stderr, "[%s] thread-id: %d, chunk: %ld (%d), n_reads: %d\n", __func__, tid, ii, step->n_chunks, c->n_reads);
+    if (c->is_invalid) return; // step->vars is calloc'd, so an untouched var_t frees cleanly
     make_var_main(step, c, var, ii);
 }
 
@@ -858,6 +861,7 @@ static void *call_var_worker_pipeline(void *shared, int step, void *in) { // kt_
         int n_out_vars = 0, n_out_reads = 0;
         for (int i = 0; i < s->n_chunks; ++i) {
             bam_chunk_t *c = s->chunks + i;
+            if (c->is_invalid) { var_free(s->vars + i); continue; }
             n_out_vars += write_var_to_vcf(s->vars+i, pl->opt, c);
             if (pl->opt->out_aln_fp != NULL) n_out_reads += write_read_to_bam(c, pl->opt, pl->io_aux);
             var_free(s->vars + i);  // free output

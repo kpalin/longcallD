@@ -103,7 +103,9 @@ else ifneq ($(san),)
 	SAN_FLAGS = -fsanitize=address,undefined -fno-sanitize-recover=all
 endif
 
-CFLAGS = $(OPT_FLAGS) $(EXTRA_FLAGS) $(SAN_FLAGS) -DLONGCALLD_VERSION=\"$(LONGCALLD_VERSION)\"
+# -MMD -MP makes the compiler emit a .d file of real header dependencies
+# next to each .o, which -include pulls in below.
+CFLAGS = $(OPT_FLAGS) $(EXTRA_FLAGS) $(SAN_FLAGS) -MMD -MP -DLONGCALLD_VERSION=\"$(LONGCALLD_VERSION)\"
 
 BIN_LDFLAGS =
 
@@ -188,30 +190,24 @@ $(BIN): $(OBJS) $(ABPOA_LIB) $(HTSLIB) $(WFA2_LIB)
 	$(CXX) $(BIN_LDFLAGS) $(OBJS) -o $@ $(LIB) $(PG_FLAG)
 # 	$(CC) $(OBJS) -o $@ $(LIB) $(PG_FLAG)
 
-$(SRC_DIR)/align.o: $(SRC_DIR)/align.c $(SRC_DIR)/align.h $(SRC_DIR)/utils.h $(SRC_DIR)/bam_utils.h $(SRC_DIR)/seq.h
+$(SRC_DIR)/align.o: $(SRC_DIR)/align.c
 	$(CC) -c -DUSE_SIMDE -DSIMDE_ENABLE_NATIVE_ALIASES $(CFLAGS) $< $(INCLUDE) -o $@
 
-$(SRC_DIR)/assign_aln_hap.o: $(SRC_DIR)/assign_aln_hap.c $(SRC_DIR)/assign_aln_hap.h $(SRC_DIR)/utils.h $(SRC_DIR)/bam_utils.h
-$(SRC_DIR)/bam_utils.o: $(SRC_DIR)/bam_utils.c $(SRC_DIR)/bam_utils.h $(SRC_DIR)/utils.h
-$(SRC_DIR)/cgranges.o: $(SRC_DIR)/cgranges.c $(SRC_DIR)/cgranges.h $(SRC_DIR)/khash.h
-$(SRC_DIR)/collect_var.o: $(SRC_DIR)/collect_var.c $(SRC_DIR)/collect_var.h $(SRC_DIR)/bam_utils.h
-$(SRC_DIR)/kalloc.o: $(SRC_DIR)/kalloc.c $(SRC_DIR)/kalloc.h
-$(SRC_DIR)/kmedoids.o : $(SRC_DIR)/kmedoids.c $(SRC_DIR)/kmedoids.h
-$(SRC_DIR)/kthread.o: $(SRC_DIR)/kthread.c
-$(SRC_DIR)/main.o: $(SRC_DIR)/main.c $(SRC_DIR)/call_var_main.h
-$(SRC_DIR)/call_var_main.o: $(SRC_DIR)/bam_utils.c $(SRC_DIR)/call_var_main.c $(SRC_DIR)/call_var_main.h $(SRC_DIR)/main.h $(SRC_DIR)/utils.h $(SRC_DIR)/seq.h \
-                            $(SRC_DIR)/collect_var.h
-$(SRC_DIR)/seq.o: $(SRC_DIR)/seq.c $(SRC_DIR)/seq.h $(SRC_DIR)/utils.h
-$(SRC_DIR)/sdust.o: $(SRC_DIR)/sdust.c $(SRC_DIR)/sdust.h $(SRC_DIR)/kdq.h $(SRC_DIR)/kvec.h
-$(SRC_DIR)/utils.o: $(SRC_DIR)/utils.c $(SRC_DIR)/utils.h $(SRC_DIR)/ksort.h $(SRC_DIR)/kseq.h
-$(SRC_DIR)/vcf_utils.o: $(SRC_DIR)/vcf_utils.c $(SRC_DIR)/vcf_utils.h $(SRC_DIR)/utils.h
+# Header dependencies come from the compiler (-MMD -MP above), not from a
+# hand-maintained list. The list that used to live here was incomplete and
+# partly wrong: assign_hap.o had no rule at all, vcf_utils.o did not mention
+# bam_utils.h, and call_var_main.o depended on bam_utils.c rather than .h. The
+# effect was that editing bam_utils.h left those objects stale, and because
+# bam_chunk_t is defined there, a half-rebuilt tree segfaults on a struct
+# layout mismatch instead of failing to compile.
+-include $(OBJS:.o=.d)
 
 .PHONY: all hts_all abpoa_all wfa2_all clean clean_all clean_hts clean_abpoa clean_wfa2
 
 clean:
-	rm -f $(SRC_DIR)/*.o $(BIN)
+	rm -f $(SRC_DIR)/*.o $(SRC_DIR)/*.d $(EDLIB_DIR)/src/*.d $(BIN)
 clean_all:
-	rm -f $(SRC_DIR)/*.o $(BIN) $(HTSLIB) $(ABPOA_LIB) $(WFA2_LIB)
+	rm -f $(SRC_DIR)/*.o $(SRC_DIR)/*.d $(EDLIB_DIR)/src/*.d $(BIN) $(HTSLIB) $(ABPOA_LIB) $(WFA2_LIB)
 clean_hts:
 	rm -f $(HTSLIB)
 clean_abpoa:

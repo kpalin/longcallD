@@ -62,6 +62,8 @@ typedef struct bam_chunk_t {
     // should always be 1 region XXX
     cgranges_t *low_comp_cr; // tandem_rep_cr;
     int n_reads, m_reads; int *ordered_read_ids; // size: m_reads, for multiple input bams, merge sort reads by pos, end, NM, name
+    uint64_t *read_sigs; // size: m_reads, identity of the record loaded at each read_i; see bam_record_sig()
+    uint8_t is_invalid;  // loading this chunk failed; step 2 must not emit anything for it
     char **read_names; // size: m_reads, for output
     int n_bam; // for each input bam, record the number of region-overlapping reads
     int *n_up_ovlp_reads, *n_down_ovlp_reads, *n_up_ovlp_skip_reads, *n_down_ovlp_skip_reads; // number of reads overlapping with up/downstream bam chunk
@@ -174,6 +176,33 @@ int update_read_vs_all_var_profile_from_digar(const struct call_var_opt_t *opt, 
 int update_read_vs_somatic_var_profile_from_digar(const struct call_var_opt_t *opt, bam_chunk_t *chunk, digar_t *digar, int n_cand_vars, struct cand_var_t *cand_vars, struct read_var_profile_t *read_var_profile);
 
 int collect_ref_seq_bam_main(const struct call_var_pl_t *pl, struct call_var_io_aux_t *io_aux, int reg_chunk_i, int reg_i, bam_chunk_t *chunks);
+
+// Is this record one that the variant caller takes into chunk->reads[]?
+//
+// This predicate decides the mapping between BAM records and read_i, and it is
+// evaluated TWICE on the same region: once in collect_ref_seq_bam_main() when
+// the chunk is loaded, and again in write_read_to_bam() when the phased BAM is
+// written. The two passes must agree exactly, or every read_i in the chunk is
+// off and HP, PS and refined CIGARs get written onto the wrong records with no
+// error. It lived as two copy-pasted expressions; keep it as one function.
+static inline int bam_record_is_callable(const bam1_t *b, int min_mq) {
+    if (b->core.flag & (BAM_FUNMAP | BAM_FSECONDARY | BAM_FSUPPLEMENTARY)) return 0;
+    if (b->core.qual < min_mq) return 0;
+    return 1;
+}
+
+// A cheap identity for a BAM record: FNV-1a over the query name, mixed with
+// the flag and position. Used to assert that the record the writer is about to
+// tag really is the record that was loaded at that read_i.
+static inline uint64_t bam_record_sig(const bam1_t *b) {
+    uint64_t h = 1469598103934665603ULL; // FNV-1a offset basis
+    const char *q = bam_get_qname(b);
+    for (; *q; ++q) { h ^= (uint64_t)(unsigned char)(*q); h *= 1099511628211ULL; }
+    h ^= (uint64_t)b->core.flag;      h *= 1099511628211ULL;
+    h ^= (uint64_t)(b->core.pos + 1); h *= 1099511628211ULL;
+    return h;
+}
+
 int write_read_to_bam(bam_chunk_t *chunk, const struct call_var_opt_t *opt, const struct call_var_io_aux_t *io_aux);
 void bam_chunk_mid_free(bam_chunk_t *chunk, const struct call_var_opt_t *opt);
 void bam_chunks_mid_free(bam_chunk_t *chunks, int n_chunks, const struct call_var_opt_t *opt);

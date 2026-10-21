@@ -1348,6 +1348,8 @@ int bam_chunk_init0(bam_chunk_t *chunk, const struct call_var_opt_t *opt, int n_
     // intermediate
     chunk->qual_counts = (int*)calloc(256, sizeof(int));
     chunk->is_skipped = (uint8_t*)calloc(n_reads, sizeof(uint8_t));
+    chunk->read_sigs = (uint64_t*)calloc(n_reads, sizeof(uint64_t));
+    chunk->is_invalid = 0;
     chunk->n_clean_agree_snps = (int*)malloc(n_reads * sizeof(int));
     chunk->n_clean_conflict_snps = (int*)malloc(n_reads * sizeof(int));
     chunk->is_ont_palindrome = (uint8_t*)calloc(n_reads, sizeof(uint8_t));
@@ -1397,6 +1399,7 @@ int bam_chunk_realloc(bam_chunk_t *chunk, const struct call_var_opt_t *opt) {
         chunk->down_ovlp_read_i[i] = (int*)realloc(chunk->down_ovlp_read_i[i], m_reads * sizeof(int));
     }
     chunk->is_skipped = (uint8_t*)realloc(chunk->is_skipped, m_reads * sizeof(uint8_t));
+    chunk->read_sigs = (uint64_t*)realloc(chunk->read_sigs, m_reads * sizeof(uint64_t));
     chunk->n_clean_agree_snps = (int*)realloc(chunk->n_clean_agree_snps, m_reads * sizeof(int));
     chunk->n_clean_conflict_snps = (int*)realloc(chunk->n_clean_conflict_snps, m_reads * sizeof(int));
     chunk->is_ont_palindrome = (uint8_t*)realloc(chunk->is_ont_palindrome, m_reads * sizeof(uint8_t));
@@ -1408,7 +1411,7 @@ int bam_chunk_realloc(bam_chunk_t *chunk, const struct call_var_opt_t *opt) {
     for (int i = chunk->m_reads; i < m_reads; i++) {
         chunk->reads[i] = bam_init1();
         chunk->digars[i].n_digar = chunk->digars[i].m_digar = 0;
-        chunk->is_skipped[i] = 0;
+        chunk->is_skipped[i] = 0; chunk->read_sigs[i] = 0;
         chunk->phase_scores[i] = 0; chunk->haps[i] = 0; chunk->phase_sets[i] = -1;
         chunk->is_skipped_for_somatic[i] = 0;
     }
@@ -1499,6 +1502,7 @@ void bam_chunk_post_free(bam_chunk_t *chunk, const struct call_var_opt_t *opt) {
     if (chunk->var_i_to_cate != NULL) free(chunk->var_i_to_cate);
     bam_chunk_clear_var_noisy_read_cache(chunk);
     free(chunk->is_skipped);
+    free(chunk->read_sigs); // needed by write_read_to_bam in step 2, so not freed in mid_free
     free(chunk->n_clean_agree_snps); free(chunk->n_clean_conflict_snps);
     free(chunk->is_ont_palindrome); free(chunk->is_skipped_for_somatic);
     free(chunk->haps); free(chunk->phase_sets); free(chunk->phase_scores);
@@ -1673,6 +1677,10 @@ int collect_ref_seq_bam_main(const struct call_var_pl_t *pl, struct call_var_io_
         hts_itr_t *iter = sam_itr_queryi(io_aux->idxs[i], tid, reg_beg-1, reg_end); // (reg_beg-1, reg_end] ==> [reg_beg, reg_end]
         if (iter == NULL) {
             _err_warning("Failed to create iterator for region: %s:%" PRId64 "-%" PRId64 "\n", io_aux->headers[i]->target_name[tid], reg_beg, reg_end);
+            // The chunk is only half-loaded; mark it so neither variant calling
+            // nor either output path touches it. Previously this return value was
+            // ignored and the partial chunk was processed anyway.
+            chunk->is_invalid = 1;
             return -1;
         }
         // load bam records
@@ -1680,7 +1688,7 @@ int collect_ref_seq_bam_main(const struct call_var_pl_t *pl, struct call_var_io_
         // fprintf(stderr, "Loading reads from region %s:%" PRId64 "-%" PRId64 "\n", io_aux->headers[i]->target_name[tid], reg_beg, reg_end);
         while (sam_itr_next(in_bam, iter, chunk->reads[chunk->n_reads]) >= 0) {
             // fprintf(stderr, "load read %s\n", bam_get_qname(chunk->reads[chunk->n_reads]));
-            if (chunk->reads[chunk->n_reads]->core.flag & (BAM_FUNMAP | BAM_FSECONDARY | BAM_FSUPPLEMENTARY) || chunk->reads[chunk->n_reads]->core.qual < min_mapq) {
+            if (!bam_record_is_callable(chunk->reads[chunk->n_reads], min_mapq)) {
                 if (is_ovlp_with_prev_region(pl, chunk, chunk->reads[chunk->n_reads])) chunk->n_up_ovlp_skip_reads[i]++;
                 if (is_ovlp_with_next_region(pl, chunk, chunk->reads[chunk->n_reads])) chunk->n_down_ovlp_skip_reads[i]++;
                 continue; // BAM_FSUPPLEMENTARY
@@ -1700,6 +1708,7 @@ int collect_ref_seq_bam_main(const struct call_var_pl_t *pl, struct call_var_io_
             if (opt->output_var_rnames || opt->output_sv_rnames || opt->output_somatic_var_rnames) {
                 chunk->read_names[chunk->n_reads] = strdup(bam_get_qname(chunk->reads[chunk->n_reads]));
             }
+            chunk->read_sigs[chunk->n_reads] = bam_record_sig(chunk->reads[chunk->n_reads]);
             chunk->n_reads++;
             if (chunk->n_reads == chunk->m_reads) bam_chunk_realloc(chunk, opt);
         }
@@ -1953,6 +1962,19 @@ int write_unprocessed_read_to_bam(bam_chunk_t *chunk, bam_hdr_t *header, htsFile
 }
 
 int write_processed_read_to_bam(const call_var_opt_t *opt, bam_chunk_t *chunk, bam_hdr_t *header, bam1_t *read, int read_i) {
+    // The caller rebuilt read_i by re-reading the region and replaying
+    // bam_record_is_callable() plus the n_up_ovlp_skip_reads[] counters. If any
+    // of that drifts, we would silently stamp this record with another read's
+    // haplotype, phase set and refined CIGAR. Verify identity instead.
+    if (read_i < 0 || read_i >= chunk->n_reads) {
+        _err_error_exit("read_i %d out of range [0, %d) when writing BAM record: %s:%" PRId64 " %s\n",
+                        read_i, chunk->n_reads, chunk->tname, read->core.pos+1, bam_get_qname(read));
+    }
+    if (chunk->read_sigs[read_i] != bam_record_sig(read)) {
+        _err_error_exit("BAM record/read_i mismatch at %s:%" PRId64 " %s (read_i %d): the phased-BAM "
+                        "writer and the chunk loader disagree about which records are callable.\n",
+                        chunk->tname, read->core.pos+1, bam_get_qname(read), read_i);
+    }
     // refine bam cigars
     if (opt->refine_bam) {
         // check if bam and chunk->digars[read_i] match
@@ -2023,7 +2045,7 @@ int write_read_to_bam(bam_chunk_t *chunk, const struct call_var_opt_t *opt, cons
             int read_i = 0, skip_read_i = 0;
             while (sam_itr_next(in_bam, iter, read) >= 0) {
                 // fprintf(stderr, "read_i: %d, %s, %d, %ld\n", read_i, bam_get_qname(read), read->core.flag, read->core.pos+1);
-                if (read->core.flag & (BAM_FUNMAP | BAM_FSECONDARY | BAM_FSUPPLEMENTARY) || read->core.qual < min_mapq) {
+                if (!bam_record_is_callable(read, min_mapq)) {
                     if (skip_read_i >= chunk->n_up_ovlp_skip_reads[i]) {
                         write_unprocessed_read_to_bam(chunk, header, opt->out_aln_fp, read);
                         n_out_reads++;
