@@ -95,6 +95,7 @@ const struct option call_var_opt [] = {
     { "min-tumor-hap-dp", 1, NULL, 0},
     { "max-hap-alt", 1, NULL, 0},
     { "max-poa-cells", 1, NULL, 0},
+    { "max-poa-msa-cells", 1, NULL, 0},
     { "som-pval", 1, NULL, 0},
     { "no-out-aln-passthrough", 0, NULL, 0},
     { "out-normal-bam", 1, NULL, 0},
@@ -220,6 +221,9 @@ call_var_opt_t *call_var_init_para(void) {
     // Between the largest POA a normal region needs (6.3e8 cells, under 1 GB)
     // and the satellite call that asked for 16 GiB in one go (3.2e10).
     opt->max_poa_cells = 2000000000;
+    // The unbanded MSA site really does use ~7 B per (sum x longest) cell,
+    // and normal regions peak near 7.4e7 there, so its bound is far tighter.
+    opt->max_poa_msa_cells = 200000000;
     // opt->disable_read_sampling = 0; // by default read-sampling is enabled for long noisy regions (10kb+)
     // opt->min_noisy_reg_reads = LONGCALLD_NOISY_REG_READS;
     // opt->min_noisy_reg_ratio = LONGCALLD_NOISY_REG_RATIO;
@@ -1302,6 +1306,7 @@ int call_var_main_mode(int argc, char *argv[], int paired_cli) {
                     else if (strcmp(call_var_opt[op_idx].name, "min-tumor-hap-dp") == 0) opt->min_tumor_hap_dp = atoi(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "max-hap-alt") == 0) opt->max_hap_alt = atoi(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "max-poa-cells") == 0) opt->max_poa_cells = strtoll(optarg, NULL, 10);
+                    else if (strcmp(call_var_opt[op_idx].name, "max-poa-msa-cells") == 0) opt->max_poa_msa_cells = strtoll(optarg, NULL, 10);
                     else if (strcmp(call_var_opt[op_idx].name, "som-pval") == 0) opt->som_pval = atof(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "no-out-aln-passthrough") == 0) opt->out_aln_passthrough = 0;
                     else if (strcmp(call_var_opt[op_idx].name, "out-normal-bam") == 0)  { opt->out_naln_fp = hts_open(optarg, "wb"); opt->out_naln_is_cram = 0; }

@@ -912,10 +912,46 @@ int abpoa_partial_aln_msa_cons(const call_var_opt_t *opt, abpoa_t *ab, int sampl
 //     return n_cons;
 //  }
 
-  // XXX limit abpoa memory usage, avoid memory allocation failure
  int abpoa_aln_msa_cons(const call_var_opt_t *opt, int n_reads, int *read_ids, uint8_t **read_seqs, int *read_lens, int max_n_cons,
                         int *cons_lens, uint8_t **cons_seqs,
                         int *clu_n_seqs, int **clu_read_ids, int *msa_seq_len, uint8_t ***msa_seq) {
+    // Refuse a multiple alignment that cannot fit in memory. This is the
+    // "XXX limit abpoa memory usage, avoid memory allocation failure" that
+    // stood here as a note: whole-chr1 paired calling died on 1q with
+    //
+    //   [SIMDMalloc] posix_memalign fail!  Size: 17179869184 (16 GiB)
+    //
+    // from 5 reads totalling 96,980 bp with a 24,946 bp longest read. That is
+    // 2.42e9 DP cells, and the failed allocation works out at 7.1 bytes per
+    // cell, so here the matrix really is (sum of lengths) x (longest read):
+    // wb = -1 below switches banding off, and nothing makes the graph collapse.
+    //
+    // That makes this budget quite different from max_poa_cells, which guards
+    // abpoa_partial_aln_msa_cons where the graph does collapse and the same
+    // product badly overestimates. Two call sites, two measured bounds; one
+    // shared number would be wrong for one of them.
+    //
+    // Measured over 772 calls here in a normal 5 Mb window: p50 1.1e5, p99
+    // 1.0e7, max 7.4e7. The default of 2e8 leaves nearly 3x headroom over that
+    // maximum, caps one allocation near 1.4 GB, and sits an order of magnitude
+    // below the call that died.
+    if (n_reads > 0 && read_lens != NULL) {
+        int64_t sum_len = 0, max_len = 0;
+        for (int i = 0; i < n_reads; ++i) {
+            sum_len += read_lens[i];
+            if (read_lens[i] > max_len) max_len = read_lens[i];
+        }
+        if (sum_len * max_len > opt->max_poa_msa_cells) {
+            static int n_warned = 0;
+            if (n_warned < 5) {
+                _err_warning("Skipping a multiple alignment of %d reads (%" PRId64 " bp, longest %" PRId64 " bp): "
+                             "it needs %.3g DP cells, over the --max-poa-msa-cells budget of %.3g.%s\n",
+                             n_reads, sum_len, max_len, (double)(sum_len * max_len), (double)opt->max_poa_msa_cells,
+                             ++n_warned == 5 ? " Further such warnings suppressed." : "");
+            }
+            return 0;
+        }
+    }
     abpoa_t *ab = abpoa_init();
     abpoa_para_t *abpt = abpoa_init_para();
     // if (opt->out_somatic) abpt->wf = 0.01; // XXX for more accurate somatic variant calling
