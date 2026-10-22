@@ -56,15 +56,36 @@ for f in "$SIF" "$TRUTH" "$HCBED" "$REF" "$QUERY"; do
 done
 command -v apptainer >/dev/null || die "apptainer not found"
 
-# som.py wants an indexed, bgzipped query. Normalise one if we were handed a
-# plain .vcf, into the output directory so the input tree stays untouched.
-mkdir -p "$(dirname "$OUT")"
-if [[ $QUERY != *.gz ]]; then
-  log "bgzipping query -> ${OUT}.query.vcf.gz"
-  bgzip -c "$QUERY" > "${OUT}.query.vcf.gz"
-  QUERY="${OUT}.query.vcf.gz"
-fi
-[[ -s ${QUERY}.tbi || -s ${QUERY}.csi ]] || { log "indexing query"; tabix -f -p vcf "$QUERY"; }
+# Restrict the query to small variants before scoring.
+#
+# som.py preprocesses with a shell pipeline that ends
+#   bcftools view -R <HC BED> ... | bcftools norm -f ref -c x -D
+# and `view -R` emits a record ONCE PER OVERLAPPING BED INTERVAL. A deletion
+# long enough to span several high-confidence intervals therefore comes out
+# several times, at a position earlier than the intervals that follow, so the
+# stream runs backwards and som.py dies indexing its own intermediate:
+#
+#   [E::hts_idx_push] unsorted positions on sequence #1: 194483236 followed by
+#   194482054
+#
+# The culprit on chr1 is a 3,129 bp deletion in a TA microsatellite, emitted
+# four times. This is a limitation of the 2017 tooling, not something the
+# caller can avoid, and it cannot be worked around by normalising first --
+# the duplication happens inside som.py, after our file is read.
+#
+# Excluding these records is also the correct comparison. The SEQC2 small
+# variant truth set tops out at 55 bp, so an SV-sized call can never be a true
+# positive; and the published figures we compare against come from small
+# variant callers, which do not emit such records at all. The bound is applied
+# to every arm, and the count dropped is reported so its effect stays visible.
+MAXLEN=${MAXLEN:-60}
+SMALL="${OUT}.small.vcf.gz"
+bcftools view -i "strlen(REF)<=$MAXLEN && strlen(ALT)<=$MAXLEN" -Oz -o "$SMALL" "$QUERY" 2>/dev/null \
+  || die "failed to restrict $QUERY to small variants"
+tabix -f -p vcf "$SMALL"
+n_in=$(bcftools view -H "$QUERY" | wc -l); n_out=$(bcftools view -H "$SMALL" | wc -l)
+log "small-variant bound (<= ${MAXLEN} bp): kept $n_out of $n_in records, dropped $((n_in - n_out))"
+QUERY="$SMALL"
 
 SCRATCH="${OUT}.scratch"; rm -rf "$SCRATCH"; mkdir -p "$SCRATCH"
 
