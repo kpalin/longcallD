@@ -23,7 +23,19 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 BIN=${BIN:-$ROOT/bin/longcallD}
 DATA=${DATA:-/home/ubuntu/castle_tn}
 OUT=${OUT:-$DATA/bench}
-THREADS=${THREADS:-4}
+# -t 2, not 4. longcallD batches n_threads*4 regions of 500 kb and keeps
+# several batches in flight, so the thread count sets the size of the live read
+# set. Measured peak RSS, paired, chr1 from position 1: 1.5 GB at 10 Mb, 2.5 GB
+# at 25 Mb, 3.2 GB at 50 Mb -- growth with region length, sublinear but real.
+# At -t 4 that doubles, and whole-chr1 reached 6.7 GB and was OOM-killed on this
+# 7 GB box.
+THREADS=${THREADS:-2}
+# Call in windows rather than one pass, which bounds the live set and makes the
+# run resumable: a window whose VCF already exists is skipped. 0 disables.
+WINDOW=${WINDOW:-25000000}
+# Hard ceiling per invocation, so a blow-up fails this run with an allocation
+# error instead of inviting the OOM killer to choose a victim.
+MEMCAP_KB=${MEMCAP_KB:-5000000}
 MODE=paired
 REGION=${REGION:-chr1}
 EXTRA=${EXTRA:-}
@@ -41,14 +53,15 @@ Usage: $0 [-m paired|subtract] [-r REGION] [-t THREADS] [-o OUTDIR] [-x "EXTRA A
   -t  threads (default: $THREADS)
   -o  output directory (default: $OUT)
   -x  extra arguments passed through to longcallD
+  -w  window size in bp for chunked, resumable calling; 0 disables (default: $WINDOW)
 
 Needs the fixtures from eval/fetch_data.sh and the SIF from eval/build_happy_sif.sh.
 EOF
   exit 1
 }
-while getopts "m:r:t:o:x:h" o; do
+while getopts "m:r:t:o:x:w:h" o; do
   case $o in
-    m) MODE=$OPTARG ;; r) REGION=$OPTARG ;; t) THREADS=$OPTARG ;;
+    m) MODE=$OPTARG ;; r) REGION=$OPTARG ;; t) THREADS=$OPTARG ;; w) WINDOW=$OPTARG ;;
     o) OUT=$OPTARG ;; x) EXTRA=$OPTARG ;; *) usage ;;
   esac
 done
@@ -63,10 +76,31 @@ mkdir -p "$OUT"
 
 case $MODE in
   paired)
-    log "longcallD paired on $REGION ($THREADS threads)"
-    /usr/bin/time -v "$BIN" paired -t "$THREADS" $EXTRA "$REF" "$TUMOR" "$NORMAL" "$REGION" \
-        -o "$OUT/paired.vcf" > "$OUT/paired.stdout" 2> "$OUT/paired.log" \
-      || die "longcallD paired failed; see $OUT/paired.log"
+    call_window() { # $1 = region string, $2 = output vcf
+      ( ulimit -v "$MEMCAP_KB"
+        "$BIN" paired -t "$THREADS" $EXTRA "$REF" "$TUMOR" "$NORMAL" "$1" -o "$2" ) 2>> "$OUT/paired.log"
+    }
+    if [[ ${WINDOW:-0} -gt 0 && $REGION != *:* ]]; then
+      ctg=$REGION
+      len=$(awk -v c="$ctg" '$1==c {print $2}' "$REF.fai" 2>/dev/null)
+      [[ -n $len ]] || die "no length for $ctg in $REF.fai"
+      log "longcallD paired on $ctg in $(( (len + WINDOW - 1) / WINDOW )) windows of ${WINDOW} bp ($THREADS threads)"
+      : > "$OUT/paired.log"; parts=()
+      for ((beg=1; beg<=len; beg+=WINDOW)); do
+        end=$(( beg + WINDOW - 1 )); (( end > len )) && end=$len
+        part="$OUT/part.$(printf '%012d' "$beg")_${end}.vcf"; parts+=("$part")
+        if [[ -s $part ]]; then log "  $ctg:$beg-$end already done"; continue; fi
+        log "  $ctg:$beg-$end"
+        call_window "$ctg:$beg-$end" "$part.tmp" || die "longcallD failed on $ctg:$beg-$end; see $OUT/paired.log"
+        mv "$part.tmp" "$part"
+      done
+      log "concatenating ${#parts[@]} windows"
+      { grep '^#' "${parts[0]}"; for f in "${parts[@]}"; do grep -v '^#' "$f"; done; } > "$OUT/paired.vcf"
+    else
+      log "longcallD paired on $REGION ($THREADS threads)"
+      : > "$OUT/paired.log"
+      call_window "$REGION" "$OUT/paired.vcf" || die "longcallD paired failed; see $OUT/paired.log"
+    fi
     # som.py scores PASS records only, so the somatic set is what PASSes and
     # carries the SOMATIC flag. Germline calls also PASS and must come out.
     bcftools view -f PASS -i 'INFO/SOMATIC=1' -Oz -o "$OUT/query.vcf.gz" "$OUT/paired.vcf" 2>/dev/null \
