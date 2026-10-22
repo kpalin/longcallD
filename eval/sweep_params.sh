@@ -56,7 +56,9 @@ while IFS='|' read -r name args; do
   ncall=$(bcftools view -H "$OUT/$name.q.vcf.gz" | wc -l)
   "$ROOT/eval/sompy.sh" -q "$OUT/$name.q.vcf.gz" -o "$OUT/$name.sompy" -l "$REGION" >"$OUT/$name.score" 2>&1 \
     || { printf "%-24s SCORE FAILED (see %s)\n" "$name" "$OUT/$name.score"; continue; }
-  NAME=$name NCALL=$ncall python3 -I -c "
+  # The env prefix must carry S as well: a VAR=value written after the command
+  # is an argument to python, not an assignment, so S was never in os.environ.
+  NAME=$name NCALL=$ncall S="$OUT/$name.sompy.stats.csv" python3 -I -c "
 import csv, os
 rows=[r for r in csv.DictReader(open(os.environ['S'])) if r['type']=='records']
 if not rows: print('%-24s no records row'%os.environ['NAME']); raise SystemExit
@@ -64,5 +66,5 @@ r=rows[0]; tp,fp,fn=int(r['tp']),int(r['fp']),int(r['fn'])
 rec=tp/(tp+fn) if tp+fn else 0; pre=tp/(tp+fp) if tp+fp else 0
 f1=2*rec*pre/(rec+pre) if rec+pre else 0
 print('%-24s %5d %5d %5d %6s %7.4f %7.4f %7.4f'%(os.environ['NAME'],tp,fp,fn,os.environ['NCALL'],rec,pre,f1))
-" S="$OUT/$name.sompy.stats.csv"
+"
 done < "$CONFIGS"
