@@ -85,17 +85,30 @@ case $MODE in
       len=$(awk -v c="$ctg" '$1==c {print $2}' "$REF.fai" 2>/dev/null)
       [[ -n $len ]] || die "no length for $ctg in $REF.fai"
       log "longcallD paired on $ctg in $(( (len + WINDOW - 1) / WINDOW )) windows of ${WINDOW} bp ($THREADS threads)"
-      : > "$OUT/paired.log"; parts=()
+      : > "$OUT/paired.log"; parts=(); failed_windows=()
       for ((beg=1; beg<=len; beg+=WINDOW)); do
         end=$(( beg + WINDOW - 1 )); (( end > len )) && end=$len
         part="$OUT/part.$(printf '%012d' "$beg")_${end}.vcf"; parts+=("$part")
         if [[ -s $part ]]; then log "  $ctg:$beg-$end already done"; continue; fi
         log "  $ctg:$beg-$end"
-        call_window "$ctg:$beg-$end" "$part.tmp" || die "longcallD failed on $ctg:$beg-$end; see $OUT/paired.log"
-        mv "$part.tmp" "$part"
+        if call_window "$ctg:$beg-$end" "$part.tmp"; then
+          mv "$part.tmp" "$part"
+        else
+          # Keep going and say so at the end. One window that cannot be called
+          # should cost its own variants, not the other 90% of the chromosome.
+          log "  WARNING: $ctg:$beg-$end failed; continuing without it"
+          failed_windows+=("$ctg:$beg-$end"); rm -f "$part.tmp"
+          : > "$part"   # placeholder so a resumed run does not retry it blindly
+        fi
       done
+      if [[ ${#failed_windows[@]} -gt 0 ]]; then
+        log "${#failed_windows[@]} window(s) produced no calls: ${failed_windows[*]}"
+        log "their truth variants will count as false negatives, which is the honest accounting"
+      fi
       log "concatenating ${#parts[@]} windows"
-      { grep '^#' "${parts[0]}"; for f in "${parts[@]}"; do grep -v '^#' "$f"; done; } > "$OUT/paired.vcf"
+      hdr=""; for f in "${parts[@]}"; do [[ -s $f ]] && { hdr=$f; break; }; done
+      [[ -n $hdr ]] || die "every window failed; nothing to score"
+      { grep '^#' "$hdr"; for f in "${parts[@]}"; do [[ -s $f ]] && grep -v '^#' "$f"; done; } > "$OUT/paired.vcf"
     else
       log "longcallD paired on $REGION ($THREADS threads)"
       : > "$OUT/paired.log"
@@ -122,6 +135,22 @@ esac
 
 tabix -f -p vcf "$OUT/query.vcf.gz"
 log "$(bcftools view -H "$OUT/query.vcf.gz" | wc -l) candidate somatic calls"
+
+# The somatic F1 is the headline, but the other classes carry the specificity
+# story: with a real matched normal there should be few normal-only calls, and
+# the grid/pooled split says how much of the answer rests on the weaker test.
+if [[ -s $OUT/paired.vcf ]]; then
+  log "call composition:"
+  awk -F'\t' '!/^#/ {
+        c = ($8 ~ /(^|;)SOMATIC(;|$)/) ? "SOMATIC" :
+            ($8 ~ /(^|;)LOH(;|$)/)     ? "LOH" :
+            ($8 ~ /NORMALONLY/)        ? "NORMAL_ONLY" : "germline/other"
+        n[c]++; if (c=="SOMATIC") { if ($8 ~ /UNPHASED/) pooled++; else grid++ }
+      } END {
+        for (k in n) printf "    %-15s %d\n", k, n[k]
+        printf "    somatic decided on the haplotype grid: %d, on pooled counts: %d\n", grid+0, pooled+0
+      }' "$OUT/paired.vcf" >&2
+fi
 
 log "scoring with som.py"
 "$ROOT/eval/sompy.sh" -q "$OUT/query.vcf.gz" -o "$OUT/sompy.$MODE" -l chr1 \
