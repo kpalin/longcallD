@@ -476,6 +476,22 @@ void finalise_sample_layout(call_var_opt_t *opt) {
         // find. Measured: a synthetic somatic SNV at tumour VAF 0.25 (pooled
         // 0.138) is not even a candidate without it.
         opt->out_somatic = 1;
+        // Tuned defaults, measured rather than guessed: on SEQC2 HCC1395 chr1
+        // (PacBio HiFi, som.py inside the high-confidence BED) these lift
+        // somatic SNV F1 from 0.7480 to 0.8274. Both are deliberately set here
+        // and not in call_var_init_para(), because -a is a global option and
+        // moving it there would change single-sample output.
+        //
+        // The alt-ratio has to drop because candidate allele fraction is
+        // measured on the pooled depth (see above). --som-pval at 1.0 retires
+        // the one-slot-against-three Fisher test as a gate: it was costing
+        // recall across the whole sweep and never bought precision, because the
+        // per-haplotype depth floors and the "other three slots are clean"
+        // requirement already do that work, and the test is badly underpowered
+        // once a slot holds only a quarter of the reads. The p-value is still
+        // computed and reported as SPV/SOMSCORE, so a caller can filter on it.
+        if (!opt->min_af_set) opt->min_af = LONGCALLD_PAIRED_MIN_CAND_AF;
+        if (!opt->som_pval_set) opt->som_pval = LONGCALLD_PAIRED_SOM_PVAL;
         _err_info("Paired input: %d tumour file(s), %d normal file(s)\n", opt->n_tumor_bam_fn, opt->n_normal_bam_fn);
     }
 }
@@ -1173,7 +1189,7 @@ static void call_var_usage(void) {//main usage
     fprintf(stderr, "                          min. depth on the candidate tumour haplotype [4]\n");
     fprintf(stderr, "       --max-hap-alt   INT   alt reads tolerated in a slot that should be clean [0]\n");
     fprintf(stderr, "       --som-pval    FLOAT   max. Fisher exact p, one haplotype slot against the other\n");
-    fprintf(stderr, "                          three, for a somatic call [%.3g]\n", 1e-3);
+    fprintf(stderr, "                          three, for a somatic call [%.3g with -N, %.3g otherwise]\n", (double)LONGCALLD_PAIRED_SOM_PVAL, 1e-3);
     fprintf(stderr, "       --min-normal-phase-af FLOAT\n");
     fprintf(stderr, "       --max-normal-phase-af FLOAT\n");
     fprintf(stderr, "                          allele-fraction window a normal site must sit in to anchor the\n");
@@ -1222,7 +1238,9 @@ static void call_var_usage(void) {//main usage
     fprintf(stderr, "  Variant calling:\n");
     fprintf(stderr, "    -c --min-cov     INT  min. total read coverage for candidate variant [%d]\n", LONGCALLD_MIN_CAND_DP);
     fprintf(stderr, "    -d --alt-cov     INT  min. alt. read coverage for candidate variant [%d]\n", LONGCALLD_MIN_ALT_DP);
-    fprintf(stderr, "    -a --alt-ratio FLOAT  min. alt. read ratio for candidate variant [%.2f]\n", LONGCALLD_MIN_CAND_AF);
+    fprintf(stderr, "    -a --alt-ratio FLOAT  min. alt. read ratio for candidate variant [%.2f, %.2f with -N]\n", LONGCALLD_MIN_CAND_AF, (double)LONGCALLD_PAIRED_MIN_CAND_AF);
+    fprintf(stderr, "                          with -N the ratio is measured on the pooled tumour+normal depth,\n");
+    fprintf(stderr, "                          where a clonal somatic variant sits near 0.25 or below\n");
     fprintf(stderr, "    -M --min-mapq    INT  min. mapping quality score to be used [%d]\n", LONGCALLD_MIN_CAND_MQ);
     fprintf(stderr, "    -B --min-bq      INT  min. base quality score to be used [%d]\n", LONGCALLD_MIN_CAND_BQ);
     fprintf(stderr, "       --max-cov     INT  max. total read coverage for candidate variant [%d]\n", LONGCALLD_MAX_NOISY_REG_COV);
@@ -1324,7 +1342,7 @@ int call_var_main_mode(int argc, char *argv[], int paired_cli) {
                     else if (strcmp(call_var_opt[op_idx].name, "max-hap-alt") == 0) opt->max_hap_alt = atoi(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "max-poa-cells") == 0) opt->max_poa_cells = strtoll(optarg, NULL, 10);
                     else if (strcmp(call_var_opt[op_idx].name, "max-poa-msa-cells") == 0) opt->max_poa_msa_cells = strtoll(optarg, NULL, 10);
-                    else if (strcmp(call_var_opt[op_idx].name, "som-pval") == 0) opt->som_pval = atof(optarg);
+                    else if (strcmp(call_var_opt[op_idx].name, "som-pval") == 0) { opt->som_pval = atof(optarg); opt->som_pval_set = 1; }
                     else if (strcmp(call_var_opt[op_idx].name, "min-normal-phase-af") == 0) opt->min_normal_phase_af = atof(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "max-normal-phase-af") == 0) opt->max_normal_phase_af = atof(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "no-out-aln-passthrough") == 0) opt->out_aln_passthrough = 0;
@@ -1345,7 +1363,7 @@ int call_var_main_mode(int argc, char *argv[], int paired_cli) {
             case 'S': opt->out_aln_fp = hts_open(optarg, "w"); opt->out_aln_is_cram = 0; break;
             case 'c': opt->min_dp = atoi(optarg); break;
             case 'd': opt->min_alt_dp = atoi(optarg); break;
-            case 'a': opt->min_af = atof(optarg); break;
+            case 'a': opt->min_af = atof(optarg); opt->min_af_set = 1; break;
             case 'M': opt->min_mq = atoi(optarg); break;
             case 'B': opt->min_bq = atoi(optarg); break;
             case 'n': opt->sample_name = strdup(optarg); break;

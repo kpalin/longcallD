@@ -22,6 +22,11 @@
 #define LONGCALLD_MIN_ALT_DP 2 // alt depth < 2: skipped
 #define LONGCALLD_MIN_CAND_AF 0.20 // AF < 0.20: not germline het.
 #define LONGCALLD_MAX_CAND_AF 0.80 // AF > 0.80: not germline het.
+// Paired-mode candidate and somatic-test defaults, tuned on SEQC2 HCC1395 chr1
+// (PacBio HiFi) with som.py. They apply ONLY when -N is given, so single-sample
+// calling is untouched; an explicit -a or --som-pval still wins.
+#define LONGCALLD_PAIRED_MIN_CAND_AF 0.05
+#define LONGCALLD_PAIRED_SOM_PVAL 1.0
 #define LONGCALLD_DEF_PLOID 2 // diploid
 #define LONGCALLD_REF_ALLELE 0
 #define LONGCALLD_ALT_ALLELE1 1
@@ -160,6 +165,7 @@ typedef struct call_var_opt_t {
     // filters for variant calling
     int max_ploid, min_mq, min_bq, min_dp, min_alt_dp;
     double min_af, max_af;
+    uint8_t min_af_set, som_pval_set; // user passed -a / --som-pval: do not override in paired mode
     int min_normal_phase_dp; // paired mode: min normal depth for a variant to drive phasing
     // Paired tumour/normal classification thresholds.
     int min_normal_dp, min_tumor_dp;         // per-sample depth floor before we say anything
