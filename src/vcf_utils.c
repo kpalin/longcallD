@@ -58,7 +58,7 @@ void write_vcf_header(bam_hdr_t *hdr, struct call_var_opt_t *opt) {
         bcf_hdr_append(vcf_hdr, "##FILTER=<ID=NormalOnly,Description=\"Present in the normal but not the tumour; treated as false\">");
         bcf_hdr_append(vcf_hdr, "##FILTER=<ID=LowDP,Description=\"Too little depth in one sample to classify\">");
         bcf_hdr_append(vcf_hdr, "##FILTER=<ID=Ambiguous,Description=\"Evidence fits no tumour/normal class cleanly\">");
-        bcf_hdr_append(vcf_hdr, "##FILTER=<ID=Unphased,Description=\"Classified on pooled per-sample counts; no usable haplotype grid here\">");
+        bcf_hdr_append(vcf_hdr, "##INFO=<ID=UNPHASED,Number=0,Type=Flag,Description=\"Classified on pooled per-sample counts; no usable haplotype grid at this site\">");
     }
 
     // INFO fields
@@ -132,13 +132,13 @@ static void append_paired_filter(kstring_t *ks, const var1_t *v) {
         case LONGCALLD_PAIRED_AMBIG: kputs("Ambiguous", ks); n++; break;
         default: break; // SOMATIC and GERMLINE pass
     }
-    // A call made without a usable haplotype grid rests on weaker evidence, so
-    // say so rather than blending the two regimes into one PASS.
-    if (v->is_unphased_call && v->paired_class != LONGCALLD_PAIRED_LOWDP) {
-        if (n++) kputc(';', ks);
-        kputs("Unphased", ks);
-    }
     if (n == 0) kputs("PASS", ks);
+    // Note: a call made without a usable haplotype grid is reported through
+    // INFO/UNPHASED, not here. As a FILTER it made every such call non-PASS,
+    // which means som.py -- and any `bcftools view -f PASS` consumer -- drops it
+    // entirely, so the two evidence regimes could not be compared at all. In
+    // INFO it is scored and still stratifiable:
+    //   bcftools view -f PASS -i 'SOMATIC=1 && UNPHASED=1'
 }
 
 // One sample's FORMAT fields, from the slot grid.
@@ -270,6 +270,7 @@ int write_var_to_vcf(var_t *vars, const struct call_var_opt_t *opt, bam_chunk_t 
             if (var.paired_class == LONGCALLD_PAIRED_NORMAL_ONLY || var.paired_class == LONGCALLD_PAIRED_LOH)
                 len += snprintf(buffer + len, buf_m - len, "NORMALONLY;");
             if (var.paired_class == LONGCALLD_PAIRED_LOH) len += snprintf(buffer + len, buf_m - len, "LOH;");
+            if (var.is_unphased_call) len += snprintf(buffer + len, buf_m - len, "UNPHASED;");
         } else if (var.is_somatic) len += snprintf(buffer + len, buf_m - len, "SOMATIC;");
         if (var.te_seq_i >= 0) len += snprintf(buffer + len, buf_m - len, "MEI;");
         len += snprintf(buffer + len, buf_m - len, "END=%" PRId64 "", var.pos + var.ref_len - 1);

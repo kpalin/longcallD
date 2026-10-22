@@ -52,9 +52,13 @@ chk "two sample columns, normal first" "HG002_N HG002_T" \
 chk "the column names are distinct" distinct \
     "$(grep '^#CHROM' "$T/paired.vcf" | awk '{print ($10==$11) ? "same" : "distinct"}')"
 chk "bcftools accepts the header" 0 "$(bcftools view -h "$T/paired.vcf" >/dev/null 2>&1; echo $?)"
-for tag in NormalOnly LowDP Ambiguous Unphased; do
+for tag in NormalOnly LowDP Ambiguous; do
   chk "FILTER $tag is declared" 1 "$(grep -c "##FILTER=<ID=$tag," "$T/paired.vcf")"
 done
+# UNPHASED is INFO, not FILTER: as a filter it made every such call non-PASS, so
+# som.py dropped it and the two evidence regimes could not be compared.
+chk "UNPHASED is INFO, not FILTER" "0 1" \
+    "$(grep -c '##FILTER=<ID=Unphased,' "$T/paired.vcf") $(grep -c '##INFO=<ID=UNPHASED,' "$T/paired.vcf")"
 for tag in NORMALONLY LOH SOMHAP HAPVAF SPV; do
   chk "INFO $tag is declared" 1 "$(grep -c "##INFO=<ID=$tag," "$T/paired.vcf")"
 done

@@ -547,11 +547,20 @@ static void classify_paired_var(const call_var_opt_t *opt, var1_t *v) {
     int h = 0;
     if (s1 > s2) h = 1; else if (s2 > s1) h = 2; else if (s1 > 0) h = 1;
 
-    int haps_usable = (h != 0 &&
-                       slot_dp(sc, T, 1) >= opt->min_tumor_hap_dp &&
-                       slot_dp(sc, T, 2) >= opt->min_tumor_hap_dp &&
-                       slot_dp(sc, N, 1) >= opt->min_normal_hap_dp &&
+    // The normal must have both haplotypes covered -- it is the reference the
+    // comparison is against -- but the tumour only needs the haplotype under
+    // test. Requiring both of the tumour's is wrong in a region of loss of
+    // heterozygosity, where the tumour genuinely has one copy: measured on
+    // HCC1395 chr1, the tumour retains both haplotypes at 100% of sites near
+    // 220 Mb but only 0-4% near 1-31 Mb, which is arm-scale 1p loss and exactly
+    // what this cell line is known for. Demanding both put 90% of a 1p window
+    // through the pooled fallback and labelled genuine somatic calls as
+    // unphased, when the reads were phased and the tumour simply had one copy.
+    int normal_both = (slot_dp(sc, N, 1) >= opt->min_normal_hap_dp &&
                        slot_dp(sc, N, 2) >= opt->min_normal_hap_dp);
+    int tumor_both  = (slot_dp(sc, T, 1) >= opt->min_tumor_hap_dp &&
+                       slot_dp(sc, T, 2) >= opt->min_tumor_hap_dp);
+    int haps_usable = (h != 0 && normal_both && slot_dp(sc, T, h) >= opt->min_tumor_hap_dp);
 
     if (haps_usable) {
         int o = 3 - h;
@@ -567,12 +576,17 @@ static void classify_paired_var(const call_var_opt_t *opt, var1_t *v) {
 
         if (tumor_has_it && !normal_has_it) {
             // Confined to one tumour haplotype, with both normal slots clean.
-            if (t_h >= opt->min_somatic_alt_dp && t_o <= opt->max_hap_alt) {
+            // Where the tumour has lost the other copy there is nothing to be
+            // clean -- the normal's two slots still carry the comparison.
+            int other_tumor_ok = tumor_both ? (t_o <= opt->max_hap_alt) : 1;
+            if (t_h >= opt->min_somatic_alt_dp && other_tumor_ok) {
                 int a = t_h, b = slot_dp(sc, T, h) - a;
-                int c = t_o + n_h + n_o;
-                int d = (slot_dp(sc, T, o) - t_o)
-                      + (slot_dp(sc, N, 1) - sc->alt[N][1])
-                      + (slot_dp(sc, N, 2) - sc->alt[N][2]);
+                // One slot against the others that actually have reads: under
+                // LOH that is the normal's two, otherwise all three.
+                int c = n_h + n_o + (tumor_both ? t_o : 0);
+                int d = (slot_dp(sc, N, 1) - sc->alt[N][1])
+                      + (slot_dp(sc, N, 2) - sc->alt[N][2])
+                      + (tumor_both ? (slot_dp(sc, T, o) - t_o) : 0);
                 double p = fisher_exact_test(a, b, c, d, opt);
                 if (p <= opt->som_pval) {
                     v->paired_class = LONGCALLD_PAIRED_SOMATIC;
@@ -594,7 +608,7 @@ static void classify_paired_var(const call_var_opt_t *opt, var1_t *v) {
             // that chromosome copy the absence is copy number, not a
             // disagreement between the samples.
             int nh = slot_has_alt(sc, N, h, opt) ? h : o;
-            if (slot_dp(sc, T, nh) * 4 < slot_dp(sc, T, 3 - nh))
+            if (!tumor_both || slot_dp(sc, T, nh) * 4 < slot_dp(sc, T, 3 - nh))
                 v->paired_class = LONGCALLD_PAIRED_LOH;
             else
                 v->paired_class = LONGCALLD_PAIRED_NORMAL_ONLY;
