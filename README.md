@@ -200,10 +200,46 @@ longcallD paired -t16 ref.fa tumor.bam normal.bam \
     -b tumor.phased.bam --out-normal-bam normal.phased.bam > paired.vcf
 ```
 
+#### Accuracy
+
+Scored with `som.py` against the SEQC2 HCC1395 v1.2.1 truth set inside its high-confidence
+regions, on chr1 of the PacBio HiFi tumor/normal pair -- the same truth set, region and technology
+the DeepSomatic paper reports:
+
+| | TP | FP | FN | recall | precision | F1 |
+|---|---|---|---|---|---|---|
+| SNVs | 2572 | 197 | 868 | 0.7477 | 0.9289 | **0.8285** |
+| indels | 48 | 62 | 85 | 0.3609 | 0.4364 | **0.3951** |
+| records | 2620 | 259 | 953 | 0.7333 | 0.9100 | 0.8122 |
+
+For comparison, Park et al. (2025, *Nat Biotechnol*) report SNV / indel F1 of 0.9536 / 0.8151 for
+DeepSomatic and 0.9310 / 0.4550 for ClairS v0.2.0 on the same benchmark. Both are trained models;
+longcallD is not. Recall is where the gap lies -- precision is comparable, and the remaining false
+negatives are mostly variants with clear read support that the classifier declines rather than
+variants it never sees.
+
+Reproduce with `eval/run_benchmark.sh` after fetching the fixtures with `eval/fetch_data.sh`.
+
+#### Thresholds
+
+Two defaults differ from single-sample calling, and both only when `-N` is in effect:
+
+| Option | `call` | `paired` | why |
+|---|---|---|---|
+| `-a/--alt-ratio` | 0.20 | 0.05 | candidate allele fraction is measured on the **pooled** tumor+normal depth, where a clonal heterozygous somatic variant sits near 0.25 and a subclonal one well below |
+| `--som-pval` | 1e-3 | 1.0 | the per-haplotype depth floors and the clean-slot requirement already supply the specificity; the Fisher test is underpowered on a quarter of the reads and only cost recall |
+
+Passing either option explicitly overrides the paired default. `SPV` and `SOMSCORE` are still
+reported at every site, so the Fisher p-value remains available to filter on afterwards.
+
 Useful thresholds: `--min-normal-dp`/`--min-tumor-dp` (depth floor before classifying at all),
 `--min-normal-hap-dp`/`--min-tumor-hap-dp` (per-haplotype floor for the four-slot test),
-`--max-hap-alt` (alt reads tolerated in a slot that should be clean), `--som-pval`, and
-`--min-normal-phase-dp` (normal depth needed for a variant to anchor phasing).
+`--max-hap-alt` (alt reads tolerated in a slot that should be clean), `--som-pval`,
+`--min-normal-phase-dp` (normal depth needed for a variant to anchor phasing), and
+`--min-normal-phase-af`/`--max-normal-phase-af` (the allele-fraction window a normal site must sit
+in to anchor it). The last pair is deliberately separate from `-a`: lowering the detection
+threshold to find low-fraction somatic variants is no reason to let a 5%-allele-fraction normal
+site decide which parental chromosome is which.
 Run `longcallD paired` with no arguments for the full list.
 
 ### Low-allele-fraction mosaic variant calling
@@ -254,6 +290,15 @@ Because longcallD performs multiple sequence alignment and re-alignment, both ar
 Memory usage and runtime increase further when mosaic variant calling is enabled.
 
 If you encounter memory constraints, you may restrict processing to specific genomic regions using `--region-file`. A region list for the human genome that excludes centromeres is available [here](https://github.com/yangao07/longcallD/blob/main/anno/).
+
+The partial-order alignment that drives re-alignment allocates a dynamic-programming matrix of
+(graph nodes) x (query length). Where reads agree the graph collapses and this is small, but in
+satellite DNA the graph stays close to the sum of the read lengths and the matrix can reach tens of
+gigabytes. `--max-poa-cells` and `--max-poa-msa-cells` cap it: an alignment whose matrix would
+exceed the budget is skipped with a warning, and that region is called from the original
+alignments instead. The defaults (2e9 and 2e8 cells) were chosen by measuring the distribution on
+human chr1, and cost no variants there; lower them if a pericentromeric region still exhausts
+memory, since the alternative is an allocation failure that aborts the run.
 
 ## Acknowledgements
 LongcallD is dependent on the following libraries, we are grateful to all the developers/maintainers:
