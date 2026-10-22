@@ -177,6 +177,7 @@ typedef struct call_var_opt_t {
     int noisy_reg_merge_dis, noisy_reg_flank_len; // noisy_reg_merge_win; // for re-alignment
     // filters for noisy region, i.e., coverage/ratio
     int max_noisy_reg_len, max_noisy_reg_cov; //, min_noisy_reg_reads; 
+    int64_t max_poa_cells; // largest abPOA DP matrix to attempt, in cells
     double max_var_ratio_per_read, max_noisy_frac_per_read; //, min_noisy_reg_ratio;
     int min_hap_full_reads, min_hap_reads; //, min_no_hap_full_reads;
     // alignment

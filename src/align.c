@@ -761,6 +761,50 @@ int collect_exc_beg_end(const call_var_opt_t *opt, abpoa_t *ab, abpoa_para_t *ab
 
 int abpoa_partial_aln_msa_cons(const call_var_opt_t *opt, abpoa_t *ab, int sampling_reads, int n_reads, int *read_ids, uint8_t **read_seqs, uint8_t **read_quals, int *read_lens, int *read_full_cover, char **names,
                                int max_n_cons, int *cons_lens, uint8_t **cons_seqs, int *clu_n_seqs, int **clu_read_ids, int *msa_seq_lens, uint8_t **msa_seqs) {
+    // Refuse a partial-order alignment that cannot fit in memory.
+    //
+    // abPOA's SIMD DP matrix is (graph nodes) x (query length) cells. In a
+    // normal region the reads agree, the graph collapses to about one read
+    // length, and the matrix is small. In satellite DNA they do not agree, the
+    // graph stays close to the SUM of the read lengths, and the product
+    // explodes: on HCC1395 chr1:144-145 Mb a call with 7 reads totalling 36,605
+    // bp with a 6,859 bp longest read asked for 36605 x 6859 x 64 B = 16 GiB in
+    // one go.
+    //
+    // That is not recoverable from here -- abPOA's SIMDMalloc calls exit(1) on
+    // failure, inside the submodule -- so the oversized call must simply not be
+    // made.
+    //
+    // sum x max is an upper bound on the matrix, tight only when the graph does
+    // not collapse, which is exactly the satellite case. Measured over 5,388
+    // calls in a normal 5 Mb window: p50 8e4, p99 1.1e7, max 6.3e8 -- all of
+    // which complete in under 1 GB. The fatal call is 3.2e10, fifty times
+    // larger. The default sits between them, and costs nothing: that window
+    // yields 8,662 variants with the guard and 8,662 without.
+    //
+    // Skipping the region loses its variants, the same outcome as the existing
+    // max_noisy_reg_len guard, and far better than killing the run: the window
+    // in question holds 1 of chr1's 3,573 truth variants.
+    //
+    // Paired calling reaches this where single-sample does not, because pooling
+    // tumour and normal puts more divergent reads into the same graph.
+    if (n_reads > 0 && read_lens != NULL) {
+        int64_t sum_len = 0, max_len = 0;
+        for (int i = 0; i < n_reads; ++i) {
+            sum_len += read_lens[i];
+            if (read_lens[i] > max_len) max_len = read_lens[i];
+        }
+        if (sum_len * max_len > opt->max_poa_cells) {
+            static int n_warned = 0;
+            if (n_warned < 5) {
+                _err_warning("Skipping a partial-order alignment of %d reads (%" PRId64 " bp, longest %" PRId64 " bp): "
+                             "it needs %.3g DP cells, over the --max-poa-cells budget of %.3g.%s\n",
+                             n_reads, sum_len, max_len, (double)(sum_len * max_len), (double)opt->max_poa_cells,
+                             ++n_warned == 5 ? " Further such warnings suppressed." : "");
+            }
+            return 0;
+        }
+    }
     // abpoa_t *ab = abpoa_init();
     int needs_free_ab = 0;
     if (ab == NULL) {

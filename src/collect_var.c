@@ -604,11 +604,19 @@ static void classify_paired_var(const call_var_opt_t *opt, var1_t *v) {
         }
 
         if (normal_has_it && !tumor_has_it) {
-            // The normal has it and the tumour does not. If the tumour has lost
-            // that chromosome copy the absence is copy number, not a
-            // disagreement between the samples.
+            // The normal has it and the tumour does not. That is copy loss only
+            // if the tumour lacks the haplotype the variant actually sits on. If
+            // the tumour kept that haplotype and still does not carry the
+            // variant, the two samples genuinely disagree and the call is
+            // suspect.
+            //
+            // Keying this off tumor_both instead -- "the tumour lost a copy
+            // somewhere, so call it LOH" -- mislabels every real disagreement
+            // inside an LOH region, which on HCC1395 chr1p is almost all of them.
             int nh = slot_has_alt(sc, N, h, opt) ? h : o;
-            if (!tumor_both || slot_dp(sc, T, nh) * 4 < slot_dp(sc, T, 3 - nh))
+            int tumor_lacks_nh = slot_dp(sc, T, nh) < opt->min_tumor_hap_dp;
+            int tumor_depleted_nh = tumor_both && slot_dp(sc, T, nh) * 4 < slot_dp(sc, T, 3 - nh);
+            if (tumor_lacks_nh || tumor_depleted_nh)
                 v->paired_class = LONGCALLD_PAIRED_LOH;
             else
                 v->paired_class = LONGCALLD_PAIRED_NORMAL_ONLY;
