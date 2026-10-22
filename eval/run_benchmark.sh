@@ -123,8 +123,30 @@ case $MODE in
     log "single-sample calls, then subtraction (the DeepVariant-style baseline)"
     for s in tumor normal; do
       bam=$([[ $s == tumor ]] && echo "$TUMOR" || echo "$NORMAL")
-      "$BIN" call -s -t "$THREADS" $EXTRA "$REF" "$bam" "$REGION" -o "$OUT/$s.vcf" 2> "$OUT/$s.log" \
-        || die "longcallD call failed on $s; see $OUT/$s.log"
+      : > "$OUT/$s.log"
+      # Windowed for the same reason as the paired branch: memory grows with
+      # region length, and single-sample whole-chr1 is large enough to matter
+      # even though it is lighter than paired.
+      if [[ ${WINDOW:-0} -gt 0 && $REGION != *:* ]]; then
+        len=$(awk -v c="$REGION" '$1==c {print $2}' "$REF.fai")
+        [[ -n $len ]] || die "no length for $REGION in $REF.fai"
+        sparts=()
+        for ((beg=1; beg<=len; beg+=WINDOW)); do
+          end=$(( beg + WINDOW - 1 )); (( end > len )) && end=$len
+          sp="$OUT/$s.part.$(printf '%012d' "$beg").vcf"; sparts+=("$sp")
+          [[ -s $sp ]] && continue
+          log "  $s $REGION:$beg-$end"
+          ( ulimit -v "$MEMCAP_KB"
+            "$BIN" call -s -t "$THREADS" $EXTRA "$REF" "$bam" "$REGION:$beg-$end" -o "$sp.tmp" ) 2>> "$OUT/$s.log" \
+            && mv "$sp.tmp" "$sp" || { log "  WARNING: $s $REGION:$beg-$end failed; continuing"; rm -f "$sp.tmp"; : > "$sp"; }
+        done
+        hdr=""; for f in "${sparts[@]}"; do [[ -s $f ]] && { hdr=$f; break; }; done
+        [[ -n $hdr ]] || die "every $s window failed"
+        { grep '^#' "$hdr"; for f in "${sparts[@]}"; do [[ -s $f ]] && grep -v '^#' "$f"; done; } > "$OUT/$s.vcf"
+      else
+        ( ulimit -v "$MEMCAP_KB"; "$BIN" call -s -t "$THREADS" $EXTRA "$REF" "$bam" "$REGION" -o "$OUT/$s.vcf" ) 2>> "$OUT/$s.log" \
+          || die "longcallD call failed on $s; see $OUT/$s.log"
+      fi
       bgzip -f "$OUT/$s.vcf"; tabix -f -p vcf "$OUT/$s.vcf.gz"
     done
     bcftools isec -C -w1 -Oz -o "$OUT/query.vcf.gz" "$OUT/tumor.vcf.gz" "$OUT/normal.vcf.gz" 2>/dev/null \
