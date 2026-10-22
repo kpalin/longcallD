@@ -36,6 +36,8 @@ WINDOW=${WINDOW:-25000000}
 # Hard ceiling per invocation, so a blow-up fails this run with an allocation
 # error instead of inviting the OOM killer to choose a victim.
 MEMCAP_KB=${MEMCAP_KB:-5000000}
+# Floor for the retry-in-halves subdivision below.
+MIN_SUBWIN=${MIN_SUBWIN:-3000000}
 MODE=paired
 REGION=${REGION:-chr1}
 EXTRA=${EXTRA:-}
@@ -94,11 +96,38 @@ case $MODE in
         if call_window "$ctg:$beg-$end" "$part.tmp"; then
           mv "$part.tmp" "$part"
         else
-          # Keep going and say so at the end. One window that cannot be called
-          # should cost its own variants, not the other 90% of the chromosome.
-          log "  WARNING: $ctg:$beg-$end failed; continuing without it"
-          failed_windows+=("$ctg:$beg-$end"); rm -f "$part.tmp"
-          : > "$part"   # placeholder so a resumed run does not retry it blindly
+          # Retry in halves before giving up. Peak memory grows with region
+          # length, so a window that cannot be called whole often calls fine in
+          # pieces -- on HCC1395 chr1 the pericentromeric 25 Mb window exhausts
+          # the address-space cap while every 5 Mb piece of it succeeds. The
+          # subdivision is bounded by MIN_SUBWIN so a genuinely impossible
+          # region fails in finite time rather than recursing to single bases.
+          rm -f "$part.tmp"
+          log "  $ctg:$beg-$end failed whole; retrying in pieces"
+          sub=$(( (end - beg + 1) / 2 )); pieces=(); ok=1
+          while [[ $sub -ge $MIN_SUBWIN ]]; do
+            pieces=(); ok=1
+            for ((sb=beg; sb<=end; sb+=sub)); do
+              se=$(( sb + sub - 1 )); (( se > end )) && se=$end
+              sp="$part.sub.$(printf '%012d' "$sb")"
+              if [[ -s $sp ]]; then pieces+=("$sp"); continue; fi
+              if call_window "$ctg:$sb-$se" "$sp.tmp"; then mv "$sp.tmp" "$sp"; pieces+=("$sp")
+              else rm -f "$sp.tmp"; ok=0; log "    $ctg:$sb-$se failed at ${sub} bp"; break; fi
+            done
+            [[ $ok -eq 1 ]] && break
+            sub=$(( sub / 2 ))
+          done
+          if [[ $ok -eq 1 && ${#pieces[@]} -gt 0 ]]; then
+            { grep '^#' "${pieces[0]}"; for f in "${pieces[@]}"; do grep -v '^#' "$f"; done; } > "$part"
+            log "  recovered $ctg:$beg-$end as ${#pieces[@]} piece(s) of $sub bp"
+            rm -f "$part".sub.*
+          else
+            # Keep going and say so at the end. One window that cannot be called
+            # should cost its own variants, not the other 90% of the chromosome.
+            log "  WARNING: $ctg:$beg-$end failed even subdivided; continuing without it"
+            failed_windows+=("$ctg:$beg-$end")
+            : > "$part"   # placeholder so a resumed run does not retry it blindly
+          fi
         fi
       done
       if [[ ${#failed_windows[@]} -gt 0 ]]; then
