@@ -166,6 +166,7 @@ typedef struct call_var_opt_t {
     int min_normal_hap_dp, min_tumor_hap_dp; // per-haplotype depth floor for the four-slot test
     int max_hap_alt;                         // alt reads tolerated in a slot that should be clean
     double som_pval;                         // Fisher exact, one slot against the other three
+    double min_normal_phase_af, max_normal_phase_af; // AF window a normal site must sit in to anchor phasing
     // somatic/mosaic variant
     int min_somatic_dis_to_var, min_somatic_dis_to_homopolymer_indel_error, min_somatic_dis_to_seq_error, min_somatic_alt_dp, min_somatic_te_dp, min_somatic_hap_dp;
     double min_somatic_log_beta_binom, min_somatic_fisher_pval; //, max_somatic_alt_af; // 0.01~0.1

@@ -492,7 +492,16 @@ static int var_is_phasing_eligible(const call_var_opt_t *opt, bam_chunk_t *chunk
     int dp = smp_dp(sc, LONGCALLD_SAMPLE_NORMAL);
     if (dp < opt->min_normal_phase_dp) return 0; // too little normal evidence to anchor on
     double af = (double)smp_alt(sc, LONGCALLD_SAMPLE_NORMAL) / dp;
-    return (af >= opt->min_af && af <= opt->max_af);
+    // Deliberately not min_af/max_af: that pair is the candidate-detection
+    // threshold, and -a is lowered well below the germline-het range to pick up
+    // low-fraction somatic variants. Sharing it meant every step down in -a
+    // also let noisier normal sites anchor the phasing. Measured on chr1:1-25M,
+    // separating the two raised somatic F1 from 0.8197 to 0.8294 at -a 0.05 and
+    // from 0.7252 to 0.7500 at -a 0.02 -- the lower the detection threshold, the
+    // more the coupling cost. (It is not the whole story: -a 0.02 is still well
+    // behind -a 0.05 even decoupled, because detecting at 2% adds false
+    // candidates on its own.)
+    return (af >= opt->min_normal_phase_af && af <= opt->max_normal_phase_af);
 }
 
 int assign_hap_based_on_germline_het_vars_kmeans(const call_var_opt_t *opt, bam_chunk_t *chunk, int target_var_cate) {

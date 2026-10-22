@@ -97,6 +97,8 @@ const struct option call_var_opt [] = {
     { "max-poa-cells", 1, NULL, 0},
     { "max-poa-msa-cells", 1, NULL, 0},
     { "som-pval", 1, NULL, 0},
+    { "min-normal-phase-af", 1, NULL, 0},
+    { "max-normal-phase-af", 1, NULL, 0},
     { "no-out-aln-passthrough", 0, NULL, 0},
     { "out-normal-bam", 1, NULL, 0},
     { "out-normal-cram", 1, NULL, 0},
@@ -190,6 +192,14 @@ call_var_opt_t *call_var_init_para(void) {
     // The inherited mosaic default of 0.05 is far too permissive at these
     // depths; retune against the E3 precision/recall curve.
     opt->som_pval = 1e-3;
+    // Anchoring phasing is a different question from detecting a candidate, so
+    // it gets its own allele-fraction window rather than borrowing min_af. A
+    // normal site anchors the haplotypes only if it looks like a real germline
+    // het; -a can then be lowered to admit low-fraction somatic candidates
+    // without also inviting 5%-noise sites to decide which parental chromosome
+    // is which.
+    opt->min_normal_phase_af = LONGCALLD_MIN_CAND_AF;
+    opt->max_normal_phase_af = LONGCALLD_MAX_CAND_AF;
     opt->max_noisy_reg_cov = LONGCALLD_MAX_NOISY_REG_COV;
     // somatic/mosaic var
     opt->min_somatic_dis_to_var = LONGCALLD_MIN_SOMATIC_DIS_TO_VAR;
@@ -1149,6 +1159,7 @@ static void call_var_usage(void) {//main usage
     fprintf(stderr, "    -L --input-is-list    input file is a list of BAM/CRAM files of the same sample\n");
     fprintf(stderr, "                          each line is a file path, e.g., longcallD call -L ref.fa bam_list.txt\n");
     fprintf(stderr, "    -X --extra-bam  FILE  extra input BAM/CRAM file(s) of the same sample for variant calling []\n");
+    fprintf(stderr, "                          can be used multiple times, e.g., -X bam1 -X bam2\n");
     fprintf(stderr, "    -N --normal     FILE  matched normal BAM/CRAM file(s); the positional input is then\n");
     fprintf(stderr, "                          treated as the tumour. Can be used multiple times. []\n");
     fprintf(stderr, "       --min-normal-phase-dp INT\n");
@@ -1161,8 +1172,14 @@ static void call_var_usage(void) {//main usage
     fprintf(stderr, "       --min-tumor-hap-dp INT\n");
     fprintf(stderr, "                          min. depth on the candidate tumour haplotype [4]\n");
     fprintf(stderr, "       --max-hap-alt   INT   alt reads tolerated in a slot that should be clean [0]\n");
-    fprintf(stderr, "       --som-pval    FLOAT   max. Fisher exact p for a somatic call [1e-3]\n");
-    fprintf(stderr, "                          can be used multiple times, e.g., -X bam1 -X bam2\n");
+    fprintf(stderr, "       --som-pval    FLOAT   max. Fisher exact p, one haplotype slot against the other\n");
+    fprintf(stderr, "                          three, for a somatic call [%.3g]\n", 1e-3);
+    fprintf(stderr, "       --min-normal-phase-af FLOAT\n");
+    fprintf(stderr, "       --max-normal-phase-af FLOAT\n");
+    fprintf(stderr, "                          allele-fraction window a normal site must sit in to anchor the\n");
+    fprintf(stderr, "                          shared phasing [%.2f, %.2f]. Separate from -a on purpose: -a is\n", LONGCALLD_MIN_CAND_AF, LONGCALLD_MAX_CAND_AF);
+    fprintf(stderr, "                          lowered in paired mode to detect low-fraction somatic variants,\n");
+    fprintf(stderr, "                          which is no reason to let noisy normal sites decide haplotypes\n");
     fprintf(stderr, "    --autosome-XY         only call variants on autosomes and sex chromosomes, e.g., (chr){1-22,XY} [default]\n");
     // fprintf(stderr, "                          if not found, all chromosomes/contigs will be processed automatically\n");
     fprintf(stderr, "    --autosome            only call variants on autosomes, e.g., (chr){1-22}\n");
@@ -1308,6 +1325,8 @@ int call_var_main_mode(int argc, char *argv[], int paired_cli) {
                     else if (strcmp(call_var_opt[op_idx].name, "max-poa-cells") == 0) opt->max_poa_cells = strtoll(optarg, NULL, 10);
                     else if (strcmp(call_var_opt[op_idx].name, "max-poa-msa-cells") == 0) opt->max_poa_msa_cells = strtoll(optarg, NULL, 10);
                     else if (strcmp(call_var_opt[op_idx].name, "som-pval") == 0) opt->som_pval = atof(optarg);
+                    else if (strcmp(call_var_opt[op_idx].name, "min-normal-phase-af") == 0) opt->min_normal_phase_af = atof(optarg);
+                    else if (strcmp(call_var_opt[op_idx].name, "max-normal-phase-af") == 0) opt->max_normal_phase_af = atof(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "no-out-aln-passthrough") == 0) opt->out_aln_passthrough = 0;
                     else if (strcmp(call_var_opt[op_idx].name, "out-normal-bam") == 0)  { opt->out_naln_fp = hts_open(optarg, "wb"); opt->out_naln_is_cram = 0; }
                     else if (strcmp(call_var_opt[op_idx].name, "out-normal-cram") == 0) { opt->out_naln_fp = hts_open(optarg, "wc"); opt->out_naln_is_cram = 1; }
