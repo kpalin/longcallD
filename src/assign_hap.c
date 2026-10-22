@@ -586,6 +586,37 @@ int assign_hap_based_on_germline_het_vars_kmeans(const call_var_opt_t *opt, bam_
             if (LONGCALLD_VERBOSE >= 2) fprintf(stderr, "changed_hap1: %d changed_hap2: %d\n", changed_hap1, changed_hap2);
         }
     }
+    // Genotype the variants that were not allowed to anchor the phasing.
+    //
+    // Phasing is anchored only on variants the normal calls het, so a
+    // tumour-only variant never entered valid_var_idx -- and therefore never
+    // had its haplotype profile updated from the reads. It kept the empty
+    // profile left by initialisation, make_variants() read that as reference on
+    // both haplotypes, and the variant was dropped without a trace: not even a
+    // filtered record. That silently discarded exactly the variants paired
+    // calling exists to find. Measured on 200 kb of HCC1395 chr1, single-sample
+    // calling found 7 of 7 truth somatic variants and paired found 4; all three
+    // it lost were tumour-only, chr1:89094435 among them with 75 alt reads in
+    // 130 tumour against 0 in 68 normal.
+    //
+    // The order here is the whole point. These variants must not vote on the
+    // phasing -- a tumour-only allele is not evidence about which parental
+    // chromosome is which, and letting it anchor is what the eligibility filter
+    // exists to prevent -- but once the anchors have fixed the phasing, they
+    // must be read off it. Anchor first, then genotype.
+    if (n_all_cate > n_valid_vars) {
+        int n_rest = 0, *rest_idx = (int*)malloc((n_all_cate - n_valid_vars) * sizeof(int));
+        for (int i = 0; i < n_all_cate; ++i)
+            if (!var_is_valid[all_cate_idx[i]]) rest_idx[n_rest++] = all_cate_idx[i];
+        if (n_rest > 0) {
+            iter_update_var_hap_cons_phase_set(chunk, rest_idx, p, cand_vars, n_rest, var_i_to_cate);
+            iter_update_var_hap_to_cons_alle(opt, chunk, rest_idx, n_rest, p, cand_vars, var_i_to_cate, target_var_cate);
+            if (LONGCALLD_VERBOSE >= 2)
+                fprintf(stderr, "[%s] %s:%" PRIi64 "-%" PRIi64 ": genotyped %d non-anchor variant(s) against the final phasing\n",
+                        __func__, chunk->tname, chunk->reg_beg, chunk->reg_end, n_rest);
+        }
+        free(rest_idx);
+    }
     // update PS for read & var after all iterations
     update_read_phase_set(chunk, var_is_valid, p, cand_vars);
     free(valid_var_idx); free(var_is_valid); free(all_cate_idx);
