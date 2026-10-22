@@ -1,0 +1,28 @@
+# name|args   -- the sweep that tuned the paired defaults, on chr1:1-25000000
+# (317 truth records in scope). F1 on the records row.
+#
+# Two things this measured, both of which changed the defaults:
+#   * --som-pval never rejected a single false positive anywhere between 1e-3
+#     and 1.0: FP stayed pinned at 6 while TP rose 176 -> 190. The four-slot
+#     structural constraints carry precision on their own, so the Fisher test
+#     was pure recall loss.
+#   * -a (candidate alt-ratio) only pays off once the p-value is relaxed:
+#     -a 0.10 alone gains 2 TP, but with the p-value off it gains 33. Lowering
+#     one without the other wastes it, because the candidates it admits are
+#     low-VAF and the Fisher test then rejects them for lack of power.
+# -a 0.02 is worse than 0.05 on both counts, so 0.05 is a real interior optimum.
+baseline|
+pval_1e2|--som-pval 0.01
+pval_5e2|--som-pval 0.05
+pval_2e1|--som-pval 0.2
+pval_5e1|--som-pval 0.5
+pval_1|--som-pval 1.0
+hapalt_1|--max-hap-alt 1
+hapalt_2|--max-hap-alt 2
+a10|-a 0.10
+p2e1_a10|--som-pval 0.2 -a 0.10
+p1_a10|--som-pval 1.0 -a 0.10
+p2e1_a05|--som-pval 0.2 -a 0.05
+p1_a05|--som-pval 1.0 -a 0.05
+p1_a02|--som-pval 1.0 -a 0.02
+p1_a05_ha1|--som-pval 1.0 -a 0.05 --max-hap-alt 1
