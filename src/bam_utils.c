@@ -1548,18 +1548,27 @@ void bam_chunk_post_free(bam_chunk_t *chunk, const struct call_var_opt_t *opt) {
 }
 
 // free variables that will not be used in stitch & make variants
+// Free what step 2 does not need. Every pointer freed here is set to NULL
+// afterwards, which is not tidiness: bam_chunk_post_free() frees the same
+// low_comp_cr and read_var_cr behind a "!= NULL" check, so leaving them
+// dangling made that check always true and freed them twice. Anything in step 2
+// that reaches for one of these now sees NULL and can say so, instead of
+// reading freed memory -- which is how a cgranges query from step 2 came to
+// crash inside cr_get_ctg().
 void bam_chunk_mid_free(bam_chunk_t *chunk, const struct call_var_opt_t *opt) {
-    if (chunk->low_comp_cr != NULL) cr_destroy(chunk->low_comp_cr);
+    if (chunk->low_comp_cr != NULL) { cr_destroy(chunk->low_comp_cr); chunk->low_comp_cr = NULL; }
     if (opt->out_aln_fp == NULL || opt->refine_bam == 0) bam_chunk_free_digar(chunk);
     bam_chunk_clear_var_noisy_read_cache(chunk);
-    if (chunk->chunk_noisy_regs != NULL) cr_destroy(chunk->chunk_noisy_regs);
+    // The per-region read lists are sized by chunk_noisy_regs->n_r, so they have
+    // to be freed while that object still exists.
     if (chunk->noisy_reg_to_reads != NULL) {
-        for (int i = 0; i < chunk->chunk_noisy_regs->n_r; i++) {
-            free(chunk->noisy_reg_to_reads[i]);
-        } free(chunk->noisy_reg_to_reads);
+        int n_noisy_regs = chunk->chunk_noisy_regs != NULL ? chunk->chunk_noisy_regs->n_r : 0;
+        for (int i = 0; i < n_noisy_regs; i++) free(chunk->noisy_reg_to_reads[i]);
+        free(chunk->noisy_reg_to_reads); chunk->noisy_reg_to_reads = NULL;
     }
-    if (chunk->noisy_reg_to_n_reads != NULL) free(chunk->noisy_reg_to_n_reads);
-    if (chunk->read_var_cr != NULL) cr_destroy(chunk->read_var_cr);
+    if (chunk->chunk_noisy_regs != NULL) { cr_destroy(chunk->chunk_noisy_regs); chunk->chunk_noisy_regs = NULL; }
+    if (chunk->noisy_reg_to_n_reads != NULL) { free(chunk->noisy_reg_to_n_reads); chunk->noisy_reg_to_n_reads = NULL; }
+    if (chunk->read_var_cr != NULL) { cr_destroy(chunk->read_var_cr); chunk->read_var_cr = NULL; }
 }
 
 void bam_chunks_mid_free(bam_chunk_t *chunks, int n_chunks, const struct call_var_opt_t *opt) {
