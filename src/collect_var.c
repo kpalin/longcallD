@@ -523,7 +523,90 @@ static int slot_has_alt(const var_slot_counts_t *sc, int s, int h, const call_va
     return (double)a / d >= opt->min_af;
 }
 
+// Does a homopolymer run or a short tandem repeat cover this reference
+// position? Both are where polymerase slippage manufactures indels, and
+// var_is_homopolymer_indel() above covers only the homopolymer case (and only
+// for an indel whose own bases are all identical). Measured on HCC1395 chr1,
+// 71% of false somatic indels sat in a tandem repeat of period 2-6 against 41%
+// in a homopolymer, so the period range is what earns its place here.
+//
+// [beg, end] are the inclusive bounds of ref_seq in reference coordinates;
+// everything is clamped to them, so a repeat running off the end of the chunk's
+// window is simply measured as far as the window goes.
+static int ref_pos_in_repeat(const char *ref_seq, hts_pos_t beg, hts_pos_t end, hts_pos_t pos,
+                             int min_hp_len, int max_period, int min_copies) {
+    if (ref_seq == NULL || pos < beg || pos > end) return 0;
+    const char *s = ref_seq - beg; // s[x] is the base at reference position x
+    // homopolymer
+    hts_pos_t a = pos, z = pos;
+    while (a > beg && s[a-1] == s[pos]) --a;
+    while (z < end && s[z+1] == s[pos]) ++z;
+    if (z - a + 1 >= min_hp_len) return 1;
+    // tandem repeat: shortest period with at least min_copies copies over pos
+    for (int p = 1; p <= max_period; ++p) {
+        if (pos + p - 1 > end) break;
+        int copies = 1;
+        for (hts_pos_t j = pos + p; j + p - 1 <= end; j += p) {
+            int same = 1;
+            for (int k = 0; k < p; ++k) if (s[j+k] != s[pos+k]) { same = 0; break; }
+            if (!same) break;
+            ++copies;
+        }
+        for (hts_pos_t j = pos - p; j >= beg; j -= p) {
+            int same = 1;
+            for (int k = 0; k < p; ++k) if (s[j+k] != s[pos+k]) { same = 0; break; }
+            if (!same) break;
+            ++copies;
+        }
+        if (copies >= min_copies) return 1;
+    }
+    return 0;
+}
+
+// Alt reads a slot may hold and still count as clean.
+static int clean_slot_limit(const call_var_opt_t *opt, const var_slot_counts_t *sc, int s, int h) {
+    int lim = opt->max_hap_alt;
+    if (opt->max_hap_alt_frac > 0) {
+        int frac = (int)(opt->max_hap_alt_frac * slot_dp(sc, s, h));
+        if (frac > lim) lim = frac;
+    }
+    return lim;
+}
+
+// Tumour allele-fraction floor a somatic call has to clear, which depends on
+// what kind of variant it is. Substitutions need only to clear the noise
+// floor. Indels need much more, because polymerase slippage in homopolymers and
+// short tandem repeats produces real reads carrying a real indel that is not a
+// somatic mutation: on HCC1395 chr1 the false somatic indels sat at a median
+// tumour VAF of 0.143 against 0.49 for the true ones, were 1 bp long where the
+// true ones had a median length of 16, and 71% of them fell in a tandem repeat
+// against 25% of the true ones. A flat floor high enough to clear that would
+// also discard every clonal indel below 50% purity, so the floor is raised only
+// where the slippage actually happens.
+static double som_vaf_floor(const call_var_opt_t *opt, const var1_t *v) {
+    if (v->type == BAM_CDIFF) return opt->min_som_vaf;
+    return v->in_repeat ? opt->min_som_rep_indel_vaf : opt->min_som_indel_vaf;
+}
+
+static void classify_paired_var1(const call_var_opt_t *opt, var1_t *v);
+
 static void classify_paired_var(const call_var_opt_t *opt, var1_t *v) {
+    classify_paired_var1(opt, v);
+    if (v->paired_class != LONGCALLD_PAIRED_SOMATIC) return;
+    // The classifier decides WHICH slot carries the allele; this decides whether
+    // there is enough of it to call a mutation at all. Keeping the two separate
+    // means the slot logic stays readable and the sensitivity floor stays in one
+    // place, where it can be moved for a low-purity sample.
+    const var_slot_counts_t *sc = &v->slots;
+    int t_dp = smp_dp(sc, LONGCALLD_SAMPLE_TUMOR), t_alt = smp_alt(sc, LONGCALLD_SAMPLE_TUMOR);
+    double vaf = t_dp > 0 ? (double)t_alt / t_dp : 0.0;
+    if (vaf < som_vaf_floor(opt, v)) {
+        v->paired_class = LONGCALLD_PAIRED_AMBIG;
+        v->som_hap = 0; v->hap_vaf = 0; v->paired_pval = 1.0;
+    }
+}
+
+static void classify_paired_var1(const call_var_opt_t *opt, var1_t *v) {
     const var_slot_counts_t *sc = &v->slots;
     const int N = LONGCALLD_SAMPLE_NORMAL, T = LONGCALLD_SAMPLE_TUMOR;
     v->paired_class = LONGCALLD_PAIRED_AMBIG;
@@ -560,7 +643,31 @@ static void classify_paired_var(const call_var_opt_t *opt, var1_t *v) {
                        slot_dp(sc, N, 2) >= opt->min_normal_hap_dp);
     int tumor_both  = (slot_dp(sc, T, 1) >= opt->min_tumor_hap_dp &&
                        slot_dp(sc, T, 2) >= opt->min_tumor_hap_dp);
-    int haps_usable = (h != 0 && normal_both && slot_dp(sc, T, h) >= opt->min_tumor_hap_dp);
+
+    // Depth on a haplotype is not the same thing as a haplotype assignment
+    // worth believing. In a germline run of homozygosity there is nothing to
+    // phase on -- measured on HCC1395 chr1, the sites where a somatic variant's
+    // alt reads land on BOTH tumour haplotypes carry a median of 6 heterozygous
+    // sites per 40 kb against a chromosome average of 38, at normal depth and
+    // normal variant density, and 87% of the calls there are homozygous. Both
+    // nominal haplotypes still have ample depth, so the depth gates all pass
+    // and the four-slot test runs on an assignment that is close to arbitrary:
+    // the alt scatters across both tumour slots and fails the clean-slot test.
+    //
+    // The share of reads that could not be assigned a haplotype at all is the
+    // signal for this, and it is already in the grid as slot 0: 9.2% of tumour
+    // reads at those sites against 0.0% at true positives. Above the threshold
+    // the pooled fallback takes over, which is the honest answer -- the reads
+    // genuinely do not separate here. It diverts 19% of sites and the result is
+    // flat anywhere from 0% to 3%, so the exact value is not load-bearing.
+    int grid_is_trusted = 1;
+    if (opt->max_unphased_frac > 0) {
+        double un_n = n_dp > 0 ? (double)slot_dp(sc, N, 0) / n_dp : 1.0;
+        double un_t = t_dp > 0 ? (double)slot_dp(sc, T, 0) / t_dp : 1.0;
+        if (un_n > opt->max_unphased_frac || un_t > opt->max_unphased_frac) grid_is_trusted = 0;
+    }
+    int haps_usable = (h != 0 && normal_both && grid_is_trusted &&
+                       slot_dp(sc, T, h) >= opt->min_tumor_hap_dp);
 
     if (haps_usable) {
         int o = 3 - h;
@@ -578,7 +685,12 @@ static void classify_paired_var(const call_var_opt_t *opt, var1_t *v) {
             // Confined to one tumour haplotype, with both normal slots clean.
             // Where the tumour has lost the other copy there is nothing to be
             // clean -- the normal's two slots still carry the comparison.
-            int other_tumor_ok = tumor_both ? (t_o <= opt->max_hap_alt) : 1;
+            // A slot that must be clean is allowed a little alt in proportion
+            // to its own depth, not an absolute count. At max_hap_alt = 0 a
+            // single mis-assigned read disqualifies the call, and on HCC1395
+            // chr1 that alone accounted for 63 missed somatic SNVs whose other
+            // tumour slot held one or two stray alt reads.
+            int other_tumor_ok = tumor_both ? (t_o <= clean_slot_limit(opt, sc, T, o)) : 1;
             if (t_h >= opt->min_somatic_alt_dp && other_tumor_ok) {
                 int a = t_h, b = slot_dp(sc, T, h) - a;
                 // One slot against the others that actually have reads: under
@@ -1794,6 +1906,12 @@ int make_variants(const call_var_opt_t *opt, bam_chunk_t *chunk, var_t **_var) {
         }
         var->vars[i].n_alt_allele = 0;
         var->vars[i].is_sv = 0;
+        // An indel's event starts one base after the anchor the record is
+        // written at, which is the base the repeat test has to look at.
+        var->vars[i].in_repeat = 0;
+        if (var->vars[i].type != BAM_CDIFF)
+            var->vars[i].in_repeat = (uint8_t)ref_pos_in_repeat(ref_seq, ref_beg, chunk->ref_end,
+                                                                var->vars[i].pos + 1, 5, 6, 3);
         var->vars[i].is_clean = (chunk->var_i_to_cate[cand_i] & LONGCALLD_CAND_GERMLINE_CLEAN_VAR_CATE) != 0;
         for (int hap=1; hap <= 2; ++hap) {
             int hap_alle = hap == 1 ? hap1_alle : hap2_alle;
@@ -1829,6 +1947,8 @@ int make_variants(const call_var_opt_t *opt, bam_chunk_t *chunk, var_t **_var) {
         // travels with the verdict rather than being recomputed.
         if (chunk->var_slots != NULL) {
             var->vars[i].slots = chunk->var_slots[cand_i];
+            // An indel's event starts one base after the anchor the record is
+            // written at, which is the base the repeat test has to look at.
             if (chunk->n_samples > 1) {
                 classify_paired_var(opt, var->vars + i);
                 // A somatic variant is never a phasing anchor, so it carries no

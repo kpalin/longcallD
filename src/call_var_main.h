@@ -31,6 +31,15 @@
 // haplotype-consensus vote did not find. See make_variants(). Tuned on
 // SEQC2 HCC1395 chr1: the gain is flat from 0.30 to 0.40 and collapses by 0.50.
 #define LONGCALLD_PAIRED_MIN_HAP_VAF 0.35
+// Paired-mode classifier thresholds. All of these are read only by
+// classify_paired_var(), which runs only when a matched normal is given, so
+// they need no single-sample default and cannot affect single-sample output.
+// Tuned together on SEQC2 HCC1395 chr1; see the comments at each use.
+#define LONGCALLD_MAX_UNPHASED_FRAC 0.02      // above this, the haplotype grid is not trusted
+#define LONGCALLD_MAX_HAP_ALT_FRAC 0.20       // alt tolerated in a slot that must be clean
+#define LONGCALLD_MIN_SOM_VAF 0.05            // tumour VAF floor, substitutions
+#define LONGCALLD_MIN_SOM_INDEL_VAF 0.15      // tumour VAF floor, indels
+#define LONGCALLD_MIN_SOM_REP_INDEL_VAF 0.30  // tumour VAF floor, indels in a repeat
 #define LONGCALLD_DEF_PLOID 2 // diploid
 #define LONGCALLD_REF_ALLELE 0
 #define LONGCALLD_ALT_ALLELE1 1
@@ -132,6 +141,7 @@ typedef struct {
     // Paired tumour/normal evidence and verdict. Unset in single-sample mode.
     var_slot_counts_t slots;  // the per-(sample, haplotype) grid this was decided on
     uint8_t paired_class;     // LONGCALLD_PAIRED_*
+    uint8_t in_repeat;        // indel sits in a homopolymer or short tandem repeat
     uint8_t som_hap;          // the tumour haplotype carrying a somatic alt; 0 if unphased
     uint8_t is_unphased_call; // decided on pooled per-sample counts, not on the slot grid
     float hap_vaf;            // alt fraction within that haplotype; estimates purity x cancer-cell fraction
@@ -171,6 +181,11 @@ typedef struct call_var_opt_t {
     double min_af, max_af;
     uint8_t min_af_set, som_pval_set, min_hap_vaf_set; // user passed -a / --som-pval / --min-hap-vaf: do not override in paired mode
     double min_hap_vaf;               // within-slot alt fraction needed to assert an ALT the pooled vote missed
+    double max_unphased_frac;         // share of unphased reads above which the haplotype grid is not trusted
+    double max_hap_alt_frac;          // alt tolerated in a slot that must be clean, as a fraction of its depth
+    double min_som_vaf;               // tumour VAF floor for a somatic substitution
+    double min_som_indel_vaf;         // tumour VAF floor for a somatic indel
+    double min_som_rep_indel_vaf;     // tumour VAF floor for a somatic indel in a homopolymer or short tandem repeat
     int min_normal_phase_dp; // paired mode: min normal depth for a variant to drive phasing
     // Paired tumour/normal classification thresholds.
     int min_normal_dp, min_tumor_dp;         // per-sample depth floor before we say anything

@@ -98,6 +98,11 @@ const struct option call_var_opt [] = {
     { "max-poa-msa-cells", 1, NULL, 0},
     { "som-pval", 1, NULL, 0},
     { "min-hap-vaf", 1, NULL, 0},
+    { "max-unphased-frac", 1, NULL, 0},
+    { "max-hap-alt-frac", 1, NULL, 0},
+    { "min-som-vaf", 1, NULL, 0},
+    { "min-som-indel-vaf", 1, NULL, 0},
+    { "min-som-rep-indel-vaf", 1, NULL, 0},
     { "min-normal-phase-af", 1, NULL, 0},
     { "max-normal-phase-af", 1, NULL, 0},
     { "no-out-aln-passthrough", 0, NULL, 0},
@@ -202,6 +207,11 @@ call_var_opt_t *call_var_init_para(void) {
     // 0 disables the slot-evidence fallback entirely, which is what
     // single-sample calling wants: there is no second sample to be outvoted by.
     opt->min_hap_vaf = 0;
+    opt->max_unphased_frac = LONGCALLD_MAX_UNPHASED_FRAC;
+    opt->max_hap_alt_frac = LONGCALLD_MAX_HAP_ALT_FRAC;
+    opt->min_som_vaf = LONGCALLD_MIN_SOM_VAF;
+    opt->min_som_indel_vaf = LONGCALLD_MIN_SOM_INDEL_VAF;
+    opt->min_som_rep_indel_vaf = LONGCALLD_MIN_SOM_REP_INDEL_VAF;
     opt->min_normal_phase_af = LONGCALLD_MIN_CAND_AF;
     opt->max_normal_phase_af = LONGCALLD_MAX_CAND_AF;
     opt->max_noisy_reg_cov = LONGCALLD_MAX_NOISY_REG_COV;
@@ -1200,6 +1210,21 @@ static void call_var_usage(void) {//main usage
     fprintf(stderr, "                          [%.2f with -N, off otherwise]. Joint phasing puts both samples'\n", (double)LONGCALLD_PAIRED_MIN_HAP_VAF);
     fprintf(stderr, "                          reads on the same haplotype, so a variant only one sample\n");
     fprintf(stderr, "                          carries loses that vote to the other sample's reference reads\n");
+    fprintf(stderr, "       --min-som-vaf  FLOAT  min. tumour allele fraction for a somatic substitution [%.2f]\n", (double)LONGCALLD_MIN_SOM_VAF);
+    fprintf(stderr, "       --min-som-indel-vaf FLOAT\n");
+    fprintf(stderr, "       --min-som-rep-indel-vaf FLOAT\n");
+    fprintf(stderr, "                          the same for indels, outside [%.2f] and inside [%.2f] a homopolymer\n", (double)LONGCALLD_MIN_SOM_INDEL_VAF, (double)LONGCALLD_MIN_SOM_REP_INDEL_VAF);
+    fprintf(stderr, "                          or short tandem repeat, where slippage manufactures real reads\n");
+    fprintf(stderr, "                          carrying a real indel that is not a somatic mutation. Lower all\n");
+    fprintf(stderr, "                          three for a low-purity tumour, where clonal VAF is itself low\n");
+    fprintf(stderr, "       --max-unphased-frac FLOAT\n");
+    fprintf(stderr, "                          share of reads with no haplotype above which the four-slot grid\n");
+    fprintf(stderr, "                          is not trusted and the pooled test is used instead [%.2f]. Guards\n", (double)LONGCALLD_MAX_UNPHASED_FRAC);
+    fprintf(stderr, "                          against germline runs of homozygosity, where both haplotypes have\n");
+    fprintf(stderr, "                          depth but there is nothing to phase on\n");
+    fprintf(stderr, "       --max-hap-alt-frac FLOAT\n");
+    fprintf(stderr, "                          alt reads tolerated in a slot that should be clean, as a fraction\n");
+    fprintf(stderr, "                          of that slot's own depth [%.2f]; used alongside --max-hap-alt\n", (double)LONGCALLD_MAX_HAP_ALT_FRAC);
     fprintf(stderr, "       --min-normal-phase-af FLOAT\n");
     fprintf(stderr, "       --max-normal-phase-af FLOAT\n");
     fprintf(stderr, "                          allele-fraction window a normal site must sit in to anchor the\n");
@@ -1354,6 +1379,11 @@ int call_var_main_mode(int argc, char *argv[], int paired_cli) {
                     else if (strcmp(call_var_opt[op_idx].name, "max-poa-msa-cells") == 0) opt->max_poa_msa_cells = strtoll(optarg, NULL, 10);
                     else if (strcmp(call_var_opt[op_idx].name, "som-pval") == 0) { opt->som_pval = atof(optarg); opt->som_pval_set = 1; }
                     else if (strcmp(call_var_opt[op_idx].name, "min-hap-vaf") == 0) { opt->min_hap_vaf = atof(optarg); opt->min_hap_vaf_set = 1; }
+                    else if (strcmp(call_var_opt[op_idx].name, "max-unphased-frac") == 0) opt->max_unphased_frac = atof(optarg);
+                    else if (strcmp(call_var_opt[op_idx].name, "max-hap-alt-frac") == 0) opt->max_hap_alt_frac = atof(optarg);
+                    else if (strcmp(call_var_opt[op_idx].name, "min-som-vaf") == 0) opt->min_som_vaf = atof(optarg);
+                    else if (strcmp(call_var_opt[op_idx].name, "min-som-indel-vaf") == 0) opt->min_som_indel_vaf = atof(optarg);
+                    else if (strcmp(call_var_opt[op_idx].name, "min-som-rep-indel-vaf") == 0) opt->min_som_rep_indel_vaf = atof(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "min-normal-phase-af") == 0) opt->min_normal_phase_af = atof(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "max-normal-phase-af") == 0) opt->max_normal_phase_af = atof(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "no-out-aln-passthrough") == 0) opt->out_aln_passthrough = 0;
