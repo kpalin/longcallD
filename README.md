@@ -208,15 +208,21 @@ the DeepSomatic paper reports:
 
 | | TP | FP | FN | recall | precision | F1 |
 |---|---|---|---|---|---|---|
-| SNVs | 2572 | 197 | 868 | 0.7477 | 0.9289 | **0.8285** |
-| indels | 48 | 62 | 85 | 0.3609 | 0.4364 | **0.3951** |
-| records | 2620 | 259 | 953 | 0.7333 | 0.9100 | 0.8122 |
+| SNVs | 2910 | 294 | 530 | 0.8459 | 0.9082 | **0.8760** |
+| indels | 56 | 93 | 77 | 0.4211 | 0.3758 | **0.3972** |
+| records | 2966 | 387 | 607 | 0.8301 | 0.8846 | 0.8565 |
 
 For comparison, Park et al. (2025, *Nat Biotechnol*) report SNV / indel F1 of 0.9536 / 0.8151 for
 DeepSomatic and 0.9310 / 0.4550 for ClairS v0.2.0 on the same benchmark. Both are trained models;
-longcallD is not. Recall is where the gap lies -- precision is comparable, and the remaining false
-negatives are mostly variants with clear read support that the classifier declines rather than
-variants it never sees.
+longcallD is not.
+
+Recall is where the gap lies. Of the SNVs still missed, roughly a fifth sit in germline runs of
+homozygosity -- stretches with about 6 heterozygous sites per 40 kb against a chromosome average of
+38, at normal depth and normal variant density. There are too few anchors there to separate the
+reads, so a somatic variant's alt reads scatter across both haplotype slots and fail the
+"other tumor haplotype is clean" test. Such sites belong in the pooled `FILTER=Unphased` path, and
+the depth-based gate that routes them does not currently notice that the haplotype assignment is
+untrustworthy rather than merely shallow.
 
 Reproduce with `eval/run_benchmark.sh` after fetching the fixtures with `eval/fetch_data.sh`.
 
@@ -240,6 +246,14 @@ Useful thresholds: `--min-normal-dp`/`--min-tumor-dp` (depth floor before classi
 in to anchor it). The last pair is deliberately separate from `-a`: lowering the detection
 threshold to find low-fraction somatic variants is no reason to let a 5%-allele-fraction normal
 site decide which parental chromosome is which.
+
+`--min-hap-vaf` (default 0.35 with `-N`, off otherwise) is the alt fraction a single
+(sample, haplotype) slot needs before it can put an ALT allele on a record that the pooled
+haplotype consensus did not. It exists because joint phasing puts both samples' reads on the same
+haplotype, so a variant only one sample carries is outvoted there by the other sample's reference
+reads -- which used to discard 60% of somatic and 91% of normal-only verdicts after they had
+already been decided. Raise it for fewer, more clonal somatic calls; lower it for more recall at
+a precision cost.
 Run `longcallD paired` with no arguments for the full list.
 
 ### Low-allele-fraction mosaic variant calling
