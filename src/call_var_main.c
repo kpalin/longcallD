@@ -97,6 +97,7 @@ const struct option call_var_opt [] = {
     { "max-poa-cells", 1, NULL, 0},
     { "max-poa-msa-cells", 1, NULL, 0},
     { "som-pval", 1, NULL, 0},
+    { "min-hap-vaf", 1, NULL, 0},
     { "min-normal-phase-af", 1, NULL, 0},
     { "max-normal-phase-af", 1, NULL, 0},
     { "no-out-aln-passthrough", 0, NULL, 0},
@@ -198,6 +199,9 @@ call_var_opt_t *call_var_init_para(void) {
     // het; -a can then be lowered to admit low-fraction somatic candidates
     // without also inviting 5%-noise sites to decide which parental chromosome
     // is which.
+    // 0 disables the slot-evidence fallback entirely, which is what
+    // single-sample calling wants: there is no second sample to be outvoted by.
+    opt->min_hap_vaf = 0;
     opt->min_normal_phase_af = LONGCALLD_MIN_CAND_AF;
     opt->max_normal_phase_af = LONGCALLD_MAX_CAND_AF;
     opt->max_noisy_reg_cov = LONGCALLD_MAX_NOISY_REG_COV;
@@ -492,6 +496,7 @@ void finalise_sample_layout(call_var_opt_t *opt) {
         // computed and reported as SPV/SOMSCORE, so a caller can filter on it.
         if (!opt->min_af_set) opt->min_af = LONGCALLD_PAIRED_MIN_CAND_AF;
         if (!opt->som_pval_set) opt->som_pval = LONGCALLD_PAIRED_SOM_PVAL;
+        if (!opt->min_hap_vaf_set) opt->min_hap_vaf = LONGCALLD_PAIRED_MIN_HAP_VAF;
         _err_info("Paired input: %d tumour file(s), %d normal file(s)\n", opt->n_tumor_bam_fn, opt->n_normal_bam_fn);
     }
 }
@@ -1190,6 +1195,11 @@ static void call_var_usage(void) {//main usage
     fprintf(stderr, "       --max-hap-alt   INT   alt reads tolerated in a slot that should be clean [0]\n");
     fprintf(stderr, "       --som-pval    FLOAT   max. Fisher exact p, one haplotype slot against the other\n");
     fprintf(stderr, "                          three, for a somatic call [%.3g with -N, %.3g otherwise]\n", (double)LONGCALLD_PAIRED_SOM_PVAL, 1e-3);
+    fprintf(stderr, "       --min-hap-vaf FLOAT   alt fraction a (sample, haplotype) slot needs before it can\n");
+    fprintf(stderr, "                          assert an ALT allele that the pooled haplotype consensus missed\n");
+    fprintf(stderr, "                          [%.2f with -N, off otherwise]. Joint phasing puts both samples'\n", (double)LONGCALLD_PAIRED_MIN_HAP_VAF);
+    fprintf(stderr, "                          reads on the same haplotype, so a variant only one sample\n");
+    fprintf(stderr, "                          carries loses that vote to the other sample's reference reads\n");
     fprintf(stderr, "       --min-normal-phase-af FLOAT\n");
     fprintf(stderr, "       --max-normal-phase-af FLOAT\n");
     fprintf(stderr, "                          allele-fraction window a normal site must sit in to anchor the\n");
@@ -1343,6 +1353,7 @@ int call_var_main_mode(int argc, char *argv[], int paired_cli) {
                     else if (strcmp(call_var_opt[op_idx].name, "max-poa-cells") == 0) opt->max_poa_cells = strtoll(optarg, NULL, 10);
                     else if (strcmp(call_var_opt[op_idx].name, "max-poa-msa-cells") == 0) opt->max_poa_msa_cells = strtoll(optarg, NULL, 10);
                     else if (strcmp(call_var_opt[op_idx].name, "som-pval") == 0) { opt->som_pval = atof(optarg); opt->som_pval_set = 1; }
+                    else if (strcmp(call_var_opt[op_idx].name, "min-hap-vaf") == 0) { opt->min_hap_vaf = atof(optarg); opt->min_hap_vaf_set = 1; }
                     else if (strcmp(call_var_opt[op_idx].name, "min-normal-phase-af") == 0) opt->min_normal_phase_af = atof(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "max-normal-phase-af") == 0) opt->max_normal_phase_af = atof(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "no-out-aln-passthrough") == 0) opt->out_aln_passthrough = 0;

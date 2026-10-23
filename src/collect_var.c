@@ -1710,6 +1710,50 @@ int make_variants(const call_var_opt_t *opt, bam_chunk_t *chunk, var_t **_var) {
         hom_alle = cand_vars[cand_i].hap_to_cons_alle[hom_idx];
         hap1_alle = cand_vars[cand_i].hap_to_cons_alle[hap1_idx];
         hap2_alle = cand_vars[cand_i].hap_to_cons_alle[hap2_idx];
+        // In paired mode, take the ALT from the per-sample slot evidence when
+        // the pooled vote found none.
+        //
+        // hap_to_cons_alle is a majority vote over the POOLED reads on each
+        // haplotype (update_var_hap_to_cons_alle(), src/assign_hap.c), and ties
+        // go to reference. Joint phasing deliberately puts both samples' reads
+        // in the same haplotype, so a variant that only one sample carries is
+        // voted down by the other sample's reference reads on its own
+        // haplotype. A somatic variant needs its tumour alt reads to outnumber
+        // the tumour AND normal reference reads there, which at comparable
+        // depths means a within-haplotype fraction near 1.0. Everything below
+        // that got no ALT allele, and vcf_utils.c then dropped the record on
+        // n_alt_allele == 0 -- after the classifier had already decided.
+        // Measured on chr1:1-10Mb, that silently discarded 60% of SOMATIC, 91%
+        // of NORMAL_ONLY and 77% of LOH verdicts (against 2.5% of GERMLINE,
+        // which both samples carry and which therefore wins the vote), 6 of
+        // them truth somatic SNVs with p-values down to 1e-15.
+        //
+        // The vote also acted as an accidental purity filter, so lifting it
+        // alone is not an improvement: emitting every vetoed somatic verdict
+        // adds 6 true positives and 306 false ones per 10 Mb. min_hap_vaf
+        // replaces the accident with a stated threshold -- a slot must hold
+        // min_alt_dp alt reads at that fraction of its own depth before it can
+        // assert an allele -- which at the default costs 1-2 false positives
+        // for the same 3 recovered per 10 Mb.
+        if (chunk->n_samples > 1 && chunk->var_slots != NULL && opt->min_hap_vaf > 0 &&
+            hap1_alle <= 0 && hap2_alle <= 0) {
+            const var_slot_counts_t *sc = chunk->var_slots + cand_i;
+            int slot_alt[LONGCALLD_N_HAP_SLOTS]; // 0 = unphased, 1/2 = haplotypes
+            for (int hap = 0; hap < LONGCALLD_N_HAP_SLOTS; ++hap) {
+                slot_alt[hap] = 0;
+                for (int smp = 0; smp < sc->n_samples; ++smp) {
+                    int a = sc->alt[smp][hap], d = slot_dp(sc, smp, hap);
+                    if (a >= opt->min_alt_dp && d > 0 && (double)a / d >= opt->min_hap_vaf) slot_alt[hap] = 1;
+                }
+            }
+            // A haplotype that carries the allele says so; evidence that is
+            // only in the unphased slot cannot name a haplotype, so it goes on
+            // hap1 and is written with "/" because such a call keeps PS == 0.
+            if (slot_alt[1] || slot_alt[2]) {
+                if (slot_alt[1]) hap1_alle = 1;
+                if (slot_alt[2]) hap2_alle = 1;
+            } else if (slot_alt[0]) hap1_alle = 1;
+        }
         is_hom = 0; hom_alt_is_set = 0;
         if (hap1_alle == -1 && hap2_alle == -1) { // homozygous
             is_hom = 1;

@@ -27,6 +27,10 @@
 // calling is untouched; an explicit -a or --som-pval still wins.
 #define LONGCALLD_PAIRED_MIN_CAND_AF 0.05
 #define LONGCALLD_PAIRED_SOM_PVAL 1.0
+// Within-slot alt fraction needed to assert an ALT allele that the pooled
+// haplotype-consensus vote did not find. See make_variants(). Tuned on
+// SEQC2 HCC1395 chr1: the gain is flat from 0.30 to 0.40 and collapses by 0.50.
+#define LONGCALLD_PAIRED_MIN_HAP_VAF 0.35
 #define LONGCALLD_DEF_PLOID 2 // diploid
 #define LONGCALLD_REF_ALLELE 0
 #define LONGCALLD_ALT_ALLELE1 1
@@ -165,7 +169,8 @@ typedef struct call_var_opt_t {
     // filters for variant calling
     int max_ploid, min_mq, min_bq, min_dp, min_alt_dp;
     double min_af, max_af;
-    uint8_t min_af_set, som_pval_set; // user passed -a / --som-pval: do not override in paired mode
+    uint8_t min_af_set, som_pval_set, min_hap_vaf_set; // user passed -a / --som-pval / --min-hap-vaf: do not override in paired mode
+    double min_hap_vaf;               // within-slot alt fraction needed to assert an ALT the pooled vote missed
     int min_normal_phase_dp; // paired mode: min normal depth for a variant to drive phasing
     // Paired tumour/normal classification thresholds.
     int min_normal_dp, min_tumor_dp;         // per-sample depth floor before we say anything
