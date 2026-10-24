@@ -42,9 +42,12 @@ MODE=paired
 REGION=${REGION:-chr1}
 EXTRA=${EXTRA:-}
 
-TUMOR=$DATA/HCC1395_pacbio.tumor.chr1.bam
-NORMAL=$DATA/HCC1395_pacbio.normal.chr1.bam
-REF=$DATA/GCA_000001405.15_GRCh38_no_alt_analysis_set.chr1.fna
+# Overridable, because -x "--ont" only changes the caller's parameters: it does
+# not change which reads are read. Pointing OUT at an ont_ directory while these
+# stayed hardcoded produced a whole "ONT" benchmark run on the PacBio BAMs.
+TUMOR=${TUMOR:-$DATA/HCC1395_pacbio.tumor.chr1.bam}
+NORMAL=${NORMAL:-$DATA/HCC1395_pacbio.normal.chr1.bam}
+REF=${REF:-$DATA/GCA_000001405.15_GRCh38_no_alt_analysis_set.chr1.fna}
 
 usage() {
   cat <<EOF
@@ -75,6 +78,8 @@ for f in "$BIN" "$TUMOR" "$NORMAL" "$REF"; do
   [[ -s $f ]] || die "missing $f (run eval/fetch_data.sh?)"
 done
 mkdir -p "$OUT"
+log "tumour: $TUMOR"
+log "normal: $NORMAL"
 
 case $MODE in
   paired)
