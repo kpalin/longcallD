@@ -28,9 +28,20 @@
 #define LONGCALLD_PAIRED_MIN_CAND_AF 0.05
 #define LONGCALLD_PAIRED_SOM_PVAL 1.0
 // Within-slot alt fraction needed to assert an ALT allele that the pooled
-// haplotype-consensus vote did not find. See make_variants(). Tuned on
-// SEQC2 HCC1395 chr1: the gain is flat from 0.30 to 0.40 and collapses by 0.50.
-#define LONGCALLD_PAIRED_MIN_HAP_VAF 0.35
+// haplotype-consensus vote did not find. See make_variants(). Tuned on full
+// chr1 (SEQC2 HCC1395, som.py inside the HC BED): 0.25 gives SNV F1 0.9255 and
+// indel F1 0.5112 against 0.9208 / 0.5045 at 0.35, gaining 48 true somatic
+// calls for 22 false ones.
+//
+// The optimum is region-dependent, which a single chromosome number hides. On
+// a 25 Mb window where recall is already 0.94 the same relaxation only buys
+// false positives (F1 0.9407 -> 0.9330); on one where recall is 0.81 it
+// recovers 9 true calls for 2 false ones (0.8690 -> 0.8814). Measuring this on
+// one window would therefore have given either answer, depending on the
+// window. What makes the hard windows hard is that there is less to phase on,
+// so the better fix is to let this respond to local phasing quality rather
+// than tune one global number further.
+#define LONGCALLD_PAIRED_MIN_HAP_VAF 0.25
 // Paired-mode classifier thresholds. All of these are read only by
 // classify_paired_var(), which runs only when a matched normal is given, so
 // they need no single-sample default and cannot affect single-sample output.

@@ -208,9 +208,9 @@ the DeepSomatic paper reports:
 
 | | TP | FP | FN | recall | precision | F1 |
 |---|---|---|---|---|---|---|
-| SNVs | 3044 | 128 | 396 | 0.8849 | 0.9596 | **0.9208** |
-| indels | 56 | 33 | 77 | 0.4211 | 0.6292 | **0.5045** |
-| records | 3100 | 161 | 473 | 0.8676 | 0.9506 | 0.9072 |
+| SNVs | 3092 | 150 | 348 | 0.8988 | 0.9537 | **0.9255** |
+| indels | 57 | 33 | 76 | 0.4286 | 0.6333 | **0.5112** |
+| records | 3149 | 183 | 424 | 0.8813 | 0.9451 | 0.9121 |
 
 For comparison, Park et al. (2025, *Nat Biotechnol*) report SNV / indel F1 of 0.9536 / 0.8151 for
 DeepSomatic and 0.9310 / 0.4550 for ClairS v0.2.0 on the same benchmark. Both are trained models;
@@ -218,9 +218,16 @@ longcallD is not.
 
 The indel figure is above the ClairS number; the SNV gap to both trained models is recall, not
 precision. Of the SNVs still missed, about three quarters never reach the VCF at all, and for most
-of those the pileup does carry alt reads -- a median tumour allele fraction near 0.15, which
-`--min-hap-vaf` (0.35) declines to call. The remaining quarter are emitted but demoted: mostly
+of those the pileup does carry alt reads at a tumour allele fraction below what
+`--min-hap-vaf` will call. The remaining quarter are emitted but demoted: mostly
 `FILTER=Ambiguous` under the tumour allele-fraction floor, a handful `LowDP`.
+
+How much that threshold costs depends on where you measure, which is worth knowing before
+tuning it further. Lowering it from 0.35 to 0.25 is worth +48 true somatic SNVs for +22 false
+ones chromosome-wide, but per-window recall ranges from 0.81 to 0.94, and in the easiest windows
+the same relaxation buys only false positives. The windows where it helps are the ones with
+fewest heterozygous sites to phase on, so the threshold is standing in for a measure of local
+phasing quality that it cannot see.
 
 Germline runs of homozygosity are no longer the leading cause. They were: stretches with about 6
 heterozygous sites per 40 kb against a chromosome average of 38 leave too few anchors to separate
@@ -248,7 +255,7 @@ low-complexity region (`0x080`) and homopolymer error (`0x100`). All three come 
 mosaic calling, where a lone low-fraction allele clustering with a repeat is good evidence of
 polymerase slippage. A paired call has already cleared the four-slot test, so on HiFi the same
 clustering mostly marks a real variant that happens to sit in a repeat: enforcing the homopolymer
-check alone rejects 1281 true somatic SNVs to remove 17 false ones, taking SNV F1 from 0.9208 to
+check alone rejects 1281 true somatic SNVs to remove 17 false ones, taking SNV F1 from 0.9255 to
 0.6607. Running with `LONGCALLD_ARTCHK=1` prints every call's full mask, which re-measures the
 whole table in one pass -- worth doing before trusting these defaults on another technology, since
 the strand check (`0x001`) never fires on HiFi but is live on ONT.
@@ -262,7 +269,7 @@ in to anchor it). The last pair is deliberately separate from `-a`: lowering the
 threshold to find low-fraction somatic variants is no reason to let a 5%-allele-fraction normal
 site decide which parental chromosome is which.
 
-`--min-hap-vaf` (default 0.35 with `-N`, off otherwise) is the alt fraction a single
+`--min-hap-vaf` (default 0.25 with `-N`, off otherwise) is the alt fraction a single
 (sample, haplotype) slot needs before it can put an ALT allele on a record that the pooled
 haplotype consensus did not. It exists because joint phasing puts both samples' reads on the same
 haplotype, so a variant only one sample carries is outvoted there by the other sample's reference
