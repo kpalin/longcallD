@@ -44,10 +44,19 @@ for o in "--clip-flank 100" "--merge-dis 100" "--end-clip 150"; do
 done
 
 # Retired options: backing fields no longer exist, so they must be rejected.
-for o in "--noisy-rat 0.3" "--noisy-flank 10" "--full-read 5"; do
+for o in "--noisy-flank 10" "--full-read 5"; do
   "$BIN" call $o "$REF" "$BAM" -o r.vcf >/dev/null 2>&1
   chk "$o rejected non-zero" 1 "$?"
 done
+
+# --noisy-rat was retired with the rest, then brought back with a real field
+# when the re-alignment trigger was separated from -a. It must work, and it
+# must not be a synonym for -a: a region-noise threshold of 1.0 re-aligns
+# nothing, while -a 1.0 would also call nothing.
+"$BIN" call --noisy-rat 0.3 "$REF" "$BAM" -o t.vcf >/dev/null 2>&1; ec=$?
+chk "--noisy-rat 0.3 works" "0:yes" "$ec:$([[ $(nvar t.vcf) -gt 0 ]] && echo yes || echo no)"
+"$BIN" call --noisy-rat 1.0 "$REF" "$BAM" -o t.vcf >/dev/null 2>&1
+chk "--noisy-rat 1.0 still calls variants" yes "$([[ $(nvar t.vcf) -gt 0 ]] && echo yes || echo no)"
 
 # A typo must not look like a successful run that happened to produce nothing.
 "$BIN" call --no-such-option "$REF" "$BAM" >/dev/null 2>&1

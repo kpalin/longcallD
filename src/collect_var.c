@@ -976,7 +976,7 @@ void pre_process_noisy_regs(bam_chunk_t *chunk, call_var_opt_t *opt) {
         }
     }
     int min_noisy_reg_reads = opt->min_alt_dp; //, max_noisy_reg_reads = opt->max_noisy_reg_reads;
-    float min_noisy_reg_ratio = opt->min_af; // opt->min_noisy_reg_ratio;
+    float min_noisy_reg_ratio = opt->min_noisy_reg_ratio;
     int n_skipped = 0;
     for (int i = 0; i < noisy_regs->n_r; ++i) {
         int n_noisy_reg_reads = noisy_reg_to_noisy_reads[i];
@@ -1146,7 +1146,7 @@ int cr_add_var_cr(const call_var_opt_t *opt, bam_chunk_t *chunk, cgranges_t *var
         }
         free(low_comp_b);
     }
-    if (check_noisy_reads_ratio == 0 || (var_noisy_reads_ratio(chunk, var_start, var_end) >= opt->min_af))
+    if (check_noisy_reads_ratio == 0 || (var_noisy_reads_ratio(chunk, var_start, var_end) >= opt->min_noisy_reg_ratio))
         cr_add(var_cr, "cr", var_start-1, var_end, 1); // XXX set merge_win as 1, previously: niosy_reg_flank_len
     return 0;
 }
@@ -1283,7 +1283,7 @@ int classify_cand_vars(bam_chunk_t *chunk, int n_var_sites, const call_var_opt_t
     cgranges_t *low_comp_cr = chunk->low_comp_cr;
     chunk->var_i_to_cate = (int*)_err_malloc(n_var_sites * sizeof(int));
     int min_dp = opt->min_dp, min_alt_dp = opt->min_alt_dp;
-    double min_af = opt->min_af, max_af = opt->max_af, min_noisy_reg_ratio = opt->min_af;//opt->min_noisy_reg_ratio;
+    double min_af = opt->min_af, max_af = opt->max_af, min_noisy_reg_ratio = opt->min_noisy_reg_ratio;
     int var_cate = -1;
     for (int i = 0; i < n_var_sites; ++i) {
         cand_var_t *var = cand_vars+i;

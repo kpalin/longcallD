@@ -94,6 +94,7 @@ const struct option call_var_opt [] = {
     { "min-normal-hap-dp", 1, NULL, 0},
     { "min-tumor-hap-dp", 1, NULL, 0},
     { "max-hap-alt", 1, NULL, 0},
+    { "noisy-rat", 1, NULL, 0},
     { "max-poa-cells", 1, NULL, 0},
     { "max-poa-msa-cells", 1, NULL, 0},
     { "som-pval", 1, NULL, 0},
@@ -262,7 +263,21 @@ call_var_opt_t *call_var_init_para(void) {
     opt->max_poa_msa_cells = 200000000;
     // opt->disable_read_sampling = 0; // by default read-sampling is enabled for long noisy regions (10kb+)
     // opt->min_noisy_reg_reads = LONGCALLD_NOISY_REG_READS;
-    // opt->min_noisy_reg_ratio = LONGCALLD_NOISY_REG_RATIO;
+    // Deliberately not min_af. Re-alignment is triggered by the fraction of a
+    // region's reads that look noisy, which is a question about alignment
+    // quality, not about how small an allele fraction is worth calling. The
+    // two shared a value only because single-sample calling sets both to 0.20;
+    // paired mode lowers min_af to 0.05 to admit subclonal somatic candidates,
+    // and that silently dropped the re-alignment trigger to one read in twenty.
+    //
+    // Measured on ONT HCC1395 chr1:1-5,000,000 at -t 4, against the SEQC2
+    // truth set: separating the two is nearly free in time (17m32s vs 17m48s)
+    // but cuts somatic false positives from 23 to 14 at unchanged true
+    // positives, and peak RSS from 4.23 to 3.62 GB. Re-aligning a region
+    // because one read in twenty looks noisy mostly manufactures candidates.
+    // --noisy-rat 0.05 reproduces the old, coupled output record for record,
+    // so the previous behaviour stays reachable.
+    opt->min_noisy_reg_ratio = LONGCALLD_NOISY_REG_RATIO;
     opt->max_noisy_frac_per_read = LONGCALLD_MAX_NOISY_FRAC_PER_READ;
     opt->min_hap_full_reads = LONGCALLD_MIN_HAP_FULL_READS;
     opt->min_hap_reads = LONGCALLD_MIN_HAP_READS;
@@ -1304,6 +1319,9 @@ static void call_var_usage(void) {//main usage
     fprintf(stderr, "    -M --min-mapq    INT  min. mapping quality score to be used [%d]\n", LONGCALLD_MIN_CAND_MQ);
     fprintf(stderr, "    -B --min-bq      INT  min. base quality score to be used [%d]\n", LONGCALLD_MIN_CAND_BQ);
     fprintf(stderr, "       --max-cov     INT  max. total read coverage for candidate variant [%d]\n", LONGCALLD_MAX_NOISY_REG_COV);
+    fprintf(stderr, "       --noisy-rat FLOAT  fraction of a region's reads that must look noisy before\n");
+    fprintf(stderr, "                          the region is re-aligned [%.2f]; independent of -a, which\n", (double)LONGCALLD_NOISY_REG_RATIO);
+    fprintf(stderr, "                          only sets how small an allele fraction is worth calling\n");
     // fprintf(stderr, "    -p --max-ploidy  INT  max. ploidy [%d]\n", LONGCALLD_DEF_PLOID);
     fprintf(stderr, "  Low allele-frequency mosaic/somatic variant calling: (effective when -s/--mosaic/--somatic is used)\n");
     // fprintf(stderr, "    --alpha          INT  alpha value of beta-binomial distribution [%d]\n", LONGCALLD_SOMATIC_BETA_ALPHA);
@@ -1400,6 +1418,7 @@ int call_var_main_mode(int argc, char *argv[], int paired_cli) {
                     else if (strcmp(call_var_opt[op_idx].name, "min-normal-hap-dp") == 0) opt->min_normal_hap_dp = atoi(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "min-tumor-hap-dp") == 0) opt->min_tumor_hap_dp = atoi(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "max-hap-alt") == 0) opt->max_hap_alt = atoi(optarg);
+                    else if (strcmp(call_var_opt[op_idx].name, "noisy-rat") == 0) opt->min_noisy_reg_ratio = atof(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "max-poa-cells") == 0) opt->max_poa_cells = strtoll(optarg, NULL, 10);
                     else if (strcmp(call_var_opt[op_idx].name, "max-poa-msa-cells") == 0) opt->max_poa_msa_cells = strtoll(optarg, NULL, 10);
                     else if (strcmp(call_var_opt[op_idx].name, "som-pval") == 0) { opt->som_pval = atof(optarg); opt->som_pval_set = 1; }

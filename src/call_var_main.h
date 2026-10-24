@@ -113,7 +113,10 @@
 
 #define LONGCALLD_MAX_NOISY_REG_LEN 50000 // >50kb noisy region will be skipped
 #define LONGCALLD_NOISY_REG_READS 2 // >= 5 reads supporting noisy region
-// #define LONGCALLD_NOISY_REG_RATIO 0.20 // >= 25% reads supporting noisy region
+// Fraction of a region's reads that must look noisy before the region is
+// re-aligned with abPOA. Its own threshold, not min_af -- see the note beside
+// opt->min_noisy_reg_ratio in call_var_init_para().
+#define LONGCALLD_NOISY_REG_RATIO 0.20
 
 #define LONGCALLD_MIN_NOISY_REG_SIZE_TO_SAMPLE_READS 10000 // >=10kb noisy region, sample reads for re-alignment
 #define LONGCALLD_PARTIAL_ALN_RATIO 1.1 // max length ratio for partial alignment, i.e. longer_aln_len / shorter_aln_len <= 1.1
@@ -260,7 +263,8 @@ typedef struct call_var_opt_t {
     int max_noisy_reg_len, max_noisy_reg_cov; //, min_noisy_reg_reads; 
     int64_t max_poa_cells; // largest abPOA DP matrix to attempt, in cells
     int64_t max_poa_msa_cells; // same, for the unbanded whole-MSA call site
-    double max_var_ratio_per_read, max_noisy_frac_per_read; //, min_noisy_reg_ratio;
+    double max_var_ratio_per_read, max_noisy_frac_per_read;
+    double min_noisy_reg_ratio; // fraction of noisy reads that triggers re-alignment
     int min_hap_full_reads, min_hap_reads; //, min_no_hap_full_reads;
     // alignment
     int match, mismatch, gap_open1, gap_ext1, gap_open2, gap_ext2;
