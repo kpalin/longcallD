@@ -846,7 +846,11 @@ static void call_var_pl_open_fa_bam(call_var_opt_t *opt, call_var_pl_t *pl, char
             }
         }
     }
-    if (opt->out_aln_fp != NULL) {
+    // Either output BAM needs the inputs reopened for the writer's second pass.
+    // Guarding this on the tumour output alone left opt->headers NULL when only
+    // --out-normal-bam was given, while write_read_to_bam() is reached whenever
+    // either output exists -- a null dereference on the first record.
+    if (opt->out_aln_fp != NULL || opt->out_naln_fp != NULL) {
         opt->bams = (samFile **)calloc(opt->n_in_bam_fn, sizeof(samFile *));
         opt->headers = (bam_hdr_t **)calloc(opt->n_in_bam_fn, sizeof(bam_hdr_t *));
         opt->idxs = (hts_idx_t **)calloc(opt->n_in_bam_fn, sizeof(hts_idx_t *));
