@@ -26,6 +26,22 @@
 // (PacBio HiFi) with som.py. They apply ONLY when -N is given, so single-sample
 // calling is untouched; an explicit -a or --som-pval still wins.
 #define LONGCALLD_PAIRED_MIN_CAND_AF 0.05
+// ONT needs a higher candidate floor than HiFi. Per-base error is an order of
+// magnitude larger, so an alt fraction of 0.05 on a pooled tumour+normal pile
+// is indistinguishable from sequencing noise, and admitting it costs both time
+// and precision. Measured on real ONT HCC1395 chr1:1-10,000,000 (R10.4.1,
+// tumour 43.8x / normal 30.8x, -t 4, som.py against SEQC2 inside the HC BED,
+// 120 truth SNVs):
+//
+//   -a 0.05  wall 36m06s  TP 59  FP 22  recall 0.4917  prec 0.7284  F1 0.5871
+//   -a 0.15  wall 11m38s  TP 59  FP 14  recall 0.4917  prec 0.8082  F1 0.6114
+//   -a 0.20  wall 10m49s  TP 58  FP 12  recall 0.4833  prec 0.8286  F1 0.6105
+//
+// 0.15 keeps every true positive that 0.05 finds, so the recall that the low
+// floor exists to protect is not actually coming from it. HiFi stays at 0.05:
+// it has not been swept at this threshold, and the 0.05 figure is what the
+// published chr1 HiFi result was measured with.
+#define LONGCALLD_PAIRED_ONT_MIN_CAND_AF 0.15
 #define LONGCALLD_PAIRED_SOM_PVAL 1.0
 // Within-slot alt fraction needed to assert an ALT allele that the pooled
 // haplotype-consensus vote did not find. See make_variants(). Tuned on full

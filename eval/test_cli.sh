@@ -58,6 +58,18 @@ chk "--noisy-rat 0.3 works" "0:yes" "$ec:$([[ $(nvar t.vcf) -gt 0 ]] && echo yes
 "$BIN" call --noisy-rat 1.0 "$REF" "$BAM" -o t.vcf >/dev/null 2>&1
 chk "--noisy-rat 1.0 still calls variants" yes "$([[ $(nvar t.vcf) -gt 0 ]] && echo yes || echo no)"
 
+# Paired mode presets -a, and since the ONT and HiFi error rates differ by an
+# order of magnitude the ONT preset differs too. A default that silently fails
+# to reach the caller produces a plausible VCF rather than an error, so the
+# effective thresholds are logged and asserted here rather than inferred from
+# output differences, which are not guaranteed to exist on 2 Mb of test data.
+samtools view -b -s 42.5 "$BAM" > normal.bam 2>/dev/null; samtools index normal.bam
+thr() { "$BIN" call $1 "$REF" "$BAM" -N normal.bam -t 1 -o /dev/null 2>&1 \
+          | grep -o 'Paired thresholds: -a [0-9.]*\( (ONT default)\)\?'; }
+chk "paired HiFi presets -a 0.05"   "Paired thresholds: -a 0.05"                 "$(thr --hifi)"
+chk "paired ONT presets -a 0.15"    "Paired thresholds: -a 0.15 (ONT default)"   "$(thr --ont)"
+chk "explicit -a beats the ONT preset" "Paired thresholds: -a 0.07"              "$(thr "--ont -a 0.07")"
+
 # A typo must not look like a successful run that happened to produce nothing.
 "$BIN" call --no-such-option "$REF" "$BAM" >/dev/null 2>&1
 chk "unknown option exits non-zero" 1 "$?"

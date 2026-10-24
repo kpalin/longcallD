@@ -243,11 +243,21 @@ Two defaults differ from single-sample calling, and both only when `-N` is in ef
 
 | Option | `call` | `paired` | why |
 |---|---|---|---|
-| `-a/--alt-ratio` | 0.20 | 0.05 | candidate allele fraction is measured on the **pooled** tumor+normal depth, where a clonal heterozygous somatic variant sits near 0.25 and a subclonal one well below |
+| `-a/--alt-ratio` | 0.20 | 0.05, or **0.15 with `--ont`** | candidate allele fraction is measured on the **pooled** tumor+normal depth, where a clonal heterozygous somatic variant sits near 0.25 and a subclonal one well below |
 | `--som-pval` | 1e-3 | 1.0 | the per-haplotype depth floors and the clean-slot requirement already supply the specificity; the Fisher test is underpowered on a quarter of the reads and only cost recall |
 
+The dilution argument behind the low `-a` is technology-independent, but the noise floor is not:
+at ONT per-base error, an alt fraction of 0.05 on a pooled pile is indistinguishable from
+sequencing noise. Measured on the first 10 Mb of chr1 of the ONT HCC1395 pair (R10.4.1, tumour
+44x / normal 31x, 120 truth SNVs), a floor of 0.15 keeps all 59 true somatic SNVs that 0.05 finds
+while taking false positives from 22 to 14 and wall time from 36 to 12 minutes, so `--ont` raises
+it. The recall the low floor exists to protect was not coming from it. HiFi stays at 0.05, which
+is what the chr1 figures above were measured with; that span is too short to quote an ONT F1
+against the chr1 table, so it is reported here as a threshold choice, not as an accuracy result.
+
 Passing either option explicitly overrides the paired default. `SPV` and `SOMSCORE` are still
-reported at every site, so the Fisher p-value remains available to filter on afterwards.
+reported at every site, so the Fisher p-value remains available to filter on afterwards. Every
+paired run logs the thresholds it actually used, so a mis-set run is visible in its own log.
 
 `--som-artifact-mask` selects which sequencing-artifact checks reject a somatic call, as a bit
 mask. The default (`0x7d`) leaves out three of the nine: another variant nearby (`0x002`),

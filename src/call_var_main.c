@@ -531,10 +531,22 @@ void finalise_sample_layout(call_var_opt_t *opt) {
         // requirement already do that work, and the test is badly underpowered
         // once a slot holds only a quarter of the reads. The p-value is still
         // computed and reported as SPV/SOMSCORE, so a caller can filter on it.
-        if (!opt->min_af_set) opt->min_af = LONGCALLD_PAIRED_MIN_CAND_AF;
+        if (!opt->min_af_set)
+            opt->min_af = opt->is_ont ? LONGCALLD_PAIRED_ONT_MIN_CAND_AF
+                                      : LONGCALLD_PAIRED_MIN_CAND_AF;
         if (!opt->som_pval_set) opt->som_pval = LONGCALLD_PAIRED_SOM_PVAL;
         if (!opt->min_hap_vaf_set) opt->min_hap_vaf = LONGCALLD_PAIRED_MIN_HAP_VAF;
         _err_info("Paired input: %d tumour file(s), %d normal file(s)\n", opt->n_tumor_bam_fn, opt->n_normal_bam_fn);
+        // Report what the preset actually chose, not what it was asked for.
+        // These defaults are set here rather than in call_var_init_para(), and
+        // one of them now depends on the read type, so "the default did not
+        // reach the caller" is a real failure mode -- and an invisible one,
+        // because a wrong threshold produces a plausible VCF rather than an
+        // error. Printing the effective values puts them in every run's log,
+        // which is where a mis-set benchmark is caught.
+        _err_info("Paired thresholds: -a %.2f%s, --som-pval %g, --min-hap-vaf %.2f\n",
+                  opt->min_af, (opt->is_ont && !opt->min_af_set) ? " (ONT default)" : "",
+                  opt->som_pval, opt->min_hap_vaf);
     }
 }
 
@@ -1313,7 +1325,8 @@ static void call_var_usage(void) {//main usage
     fprintf(stderr, "  Variant calling:\n");
     fprintf(stderr, "    -c --min-cov     INT  min. total read coverage for candidate variant [%d]\n", LONGCALLD_MIN_CAND_DP);
     fprintf(stderr, "    -d --alt-cov     INT  min. alt. read coverage for candidate variant [%d]\n", LONGCALLD_MIN_ALT_DP);
-    fprintf(stderr, "    -a --alt-ratio FLOAT  min. alt. read ratio for candidate variant [%.2f, %.2f with -N]\n", LONGCALLD_MIN_CAND_AF, (double)LONGCALLD_PAIRED_MIN_CAND_AF);
+    fprintf(stderr, "    -a --alt-ratio FLOAT  min. alt. read ratio for candidate variant [%.2f; with -N %.2f,\n", LONGCALLD_MIN_CAND_AF, (double)LONGCALLD_PAIRED_MIN_CAND_AF);
+    fprintf(stderr, "                          or %.2f with --ont, whose error rate makes a lower floor noise]\n", (double)LONGCALLD_PAIRED_ONT_MIN_CAND_AF);
     fprintf(stderr, "                          with -N the ratio is measured on the pooled tumour+normal depth,\n");
     fprintf(stderr, "                          where a clonal somatic variant sits near 0.25 or below\n");
     fprintf(stderr, "    -M --min-mapq    INT  min. mapping quality score to be used [%d]\n", LONGCALLD_MIN_CAND_MQ);
