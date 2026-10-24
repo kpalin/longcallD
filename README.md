@@ -208,21 +208,25 @@ the DeepSomatic paper reports:
 
 | | TP | FP | FN | recall | precision | F1 |
 |---|---|---|---|---|---|---|
-| SNVs | 2910 | 294 | 530 | 0.8459 | 0.9082 | **0.8760** |
-| indels | 56 | 93 | 77 | 0.4211 | 0.3758 | **0.3972** |
-| records | 2966 | 387 | 607 | 0.8301 | 0.8846 | 0.8565 |
+| SNVs | 3044 | 128 | 396 | 0.8849 | 0.9596 | **0.9208** |
+| indels | 56 | 33 | 77 | 0.4211 | 0.6292 | **0.5045** |
+| records | 3100 | 161 | 473 | 0.8676 | 0.9506 | 0.9072 |
 
 For comparison, Park et al. (2025, *Nat Biotechnol*) report SNV / indel F1 of 0.9536 / 0.8151 for
 DeepSomatic and 0.9310 / 0.4550 for ClairS v0.2.0 on the same benchmark. Both are trained models;
 longcallD is not.
 
-Recall is where the gap lies. Of the SNVs still missed, roughly a fifth sit in germline runs of
-homozygosity -- stretches with about 6 heterozygous sites per 40 kb against a chromosome average of
-38, at normal depth and normal variant density. There are too few anchors there to separate the
-reads, so a somatic variant's alt reads scatter across both haplotype slots and fail the
-"other tumor haplotype is clean" test. Such sites belong in the pooled `FILTER=Unphased` path, and
-the depth-based gate that routes them does not currently notice that the haplotype assignment is
-untrustworthy rather than merely shallow.
+The indel figure is above the ClairS number; the SNV gap to both trained models is recall, not
+precision. Of the SNVs still missed, about three quarters never reach the VCF at all, and for most
+of those the pileup does carry alt reads -- a median tumour allele fraction near 0.15, which
+`--min-hap-vaf` (0.35) declines to call. The remaining quarter are emitted but demoted: mostly
+`FILTER=Ambiguous` under the tumour allele-fraction floor, a handful `LowDP`.
+
+Germline runs of homozygosity are no longer the leading cause. They were: stretches with about 6
+heterozygous sites per 40 kb against a chromosome average of 38 leave too few anchors to separate
+the reads, so a somatic variant's alt reads scatter across both haplotype slots and fail the
+"other tumor haplotype is clean" test. The haplotype grid is now distrusted where there is nothing
+to phase on, which routes those sites to the pooled `FILTER=Unphased` path instead of failing them.
 
 Reproduce with `eval/run_benchmark.sh` after fetching the fixtures with `eval/fetch_data.sh`.
 
@@ -237,6 +241,17 @@ Two defaults differ from single-sample calling, and both only when `-N` is in ef
 
 Passing either option explicitly overrides the paired default. `SPV` and `SOMSCORE` are still
 reported at every site, so the Fisher p-value remains available to filter on afterwards.
+
+`--som-artifact-mask` selects which sequencing-artifact checks reject a somatic call, as a bit
+mask. The default (`0x7d`) leaves out three of the nine: another variant nearby (`0x002`),
+low-complexity region (`0x080`) and homopolymer error (`0x100`). All three come from single-sample
+mosaic calling, where a lone low-fraction allele clustering with a repeat is good evidence of
+polymerase slippage. A paired call has already cleared the four-slot test, so on HiFi the same
+clustering mostly marks a real variant that happens to sit in a repeat: enforcing the homopolymer
+check alone rejects 1281 true somatic SNVs to remove 17 false ones, taking SNV F1 from 0.9208 to
+0.6607. Running with `LONGCALLD_ARTCHK=1` prints every call's full mask, which re-measures the
+whole table in one pass -- worth doing before trusting these defaults on another technology, since
+the strand check (`0x001`) never fires on HiFi but is live on ONT.
 
 Useful thresholds: `--min-normal-dp`/`--min-tumor-dp` (depth floor before classifying at all),
 `--min-normal-hap-dp`/`--min-tumor-hap-dp` (per-haplotype floor for the four-slot test),
