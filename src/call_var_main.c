@@ -169,7 +169,17 @@ void set_ont_opt(call_var_opt_t *opt) {
 // }
 
 call_var_opt_t *call_var_init_para(void) {
-    call_var_opt_t *opt = (call_var_opt_t*)_err_malloc(sizeof(call_var_opt_t));
+    // calloc, not malloc: every field below is assigned explicitly, but the
+    // "was this set on the command line" flags (min_af_set, som_pval_set,
+    // min_hap_vaf_set) are written only by getopt, so with malloc they were
+    // read uninitialised in finalise_sample_layout(). The paired-mode defaults
+    // were then applied or skipped according to whatever the heap held: zeroed
+    // pages from a fresh mmap applied them, reused heap did not, which made
+    // -a, --som-pval and --min-hap-vaf silently keep their single-sample values
+    // and changed both the call set and the phasing. Zeroing first makes the
+    // defaults independent of allocator state and keeps any field added later
+    // from repeating this.
+    call_var_opt_t *opt = (call_var_opt_t*)_err_calloc(1, sizeof(call_var_opt_t));
 
     opt->sample_name = NULL;
     opt->ref_fa_fn = NULL; opt->ref_fa_fai_fn = NULL; opt->reg_bed_fn = NULL;
