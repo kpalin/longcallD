@@ -18,7 +18,7 @@ extern int LONGCALLD_VERBOSE;
 //    0: ref ,or 1: alt, or
 //   -1: other alt. mostly sequencing errors, should be considered as non-informative during haplotype assignment, i.e. -1!=-1
 cand_var_t *init_cand_vars_based_on_sites(int n_var_sites, var_site_t *var_sites) {
-    cand_var_t *cand_vars = (cand_var_t*)malloc(n_var_sites * sizeof(cand_var_t));
+    cand_var_t *cand_vars = (cand_var_t*)_err_malloc(n_var_sites * sizeof(cand_var_t));
     for (int i = 0; i < n_var_sites; ++i) {
         memset(cand_vars+i, 0, sizeof(cand_var_t));
         // static information
@@ -31,14 +31,14 @@ cand_var_t *init_cand_vars_based_on_sites(int n_var_sites, var_site_t *var_sites
 
         cand_vars[i].total_cov = 0; cand_vars[i].low_qual_cov = 0; 
         cand_vars[i].n_uniq_alles = 2; // ref/alt
-        cand_vars[i].alle_covs = (int*)calloc(2, sizeof(int)); // ref/alt
-        cand_vars[i].strand_to_alle_covs = (int**)malloc(2 * sizeof(int*));
+        cand_vars[i].alle_covs = (int*)_err_calloc(2, sizeof(int)); // ref/alt
+        cand_vars[i].strand_to_alle_covs = (int**)_err_malloc(2 * sizeof(int*));
         for (int j = 0; j < 2; ++j) {
-            cand_vars[i].strand_to_alle_covs[j] = (int*)calloc(2, sizeof(int)); // ref/alt
+            cand_vars[i].strand_to_alle_covs[j] = (int*)_err_calloc(2, sizeof(int)); // ref/alt
         }
         cand_vars[i].alt_len = var_sites[i].alt_len; // cand_vars[i].alt_seq = var_sites[i].alt_seq;
         if (cand_vars[i].var_type == BAM_CINS || cand_vars[i].var_type == BAM_CDIFF) {
-            cand_vars[i].alt_seq = (uint8_t*)malloc(cand_vars[i].alt_len * sizeof(uint8_t));
+            cand_vars[i].alt_seq = (uint8_t*)_err_malloc(cand_vars[i].alt_len * sizeof(uint8_t));
             for (int j = 0; j < cand_vars[i].alt_len; ++j) cand_vars[i].alt_seq[j] = var_sites[i].alt_seq[j];
         } else cand_vars[i].alt_seq = NULL;
         cand_vars[i].alt_ref_base = 4; // unknown
@@ -120,7 +120,7 @@ int fuzzy_ovlp_var_site(var_site_t *var1, var_site_t *var2) {
 int vntr_fuzzy_comp_seq(const call_var_opt_t *opt, uint8_t *seq1, int len1, uint8_t *seq2, int len2) {
     uint8_t *long_seq, *short_seq; int long_len, short_len;
     if (len1 > len2) {
-        long_seq = (uint8_t*)malloc(len1*2*sizeof(uint8_t));
+        long_seq = (uint8_t*)_err_malloc(len1*2*sizeof(uint8_t));
         for (int i = 0; i < len1; ++i) {
             long_seq[i] = seq1[i];
             long_seq[i+len1] = seq1[i];
@@ -128,7 +128,7 @@ int vntr_fuzzy_comp_seq(const call_var_opt_t *opt, uint8_t *seq1, int len1, uint
         long_len = len1*2;
         short_seq = seq2; short_len = len2;
     } else {
-        long_seq = (uint8_t*)malloc(len2*2*sizeof(uint8_t));
+        long_seq = (uint8_t*)_err_malloc(len2*2*sizeof(uint8_t));
         for (int i = 0; i < len2; ++i) {
             long_seq[i] = seq2[i];
             long_seq[i+len2] = seq2[i];
@@ -469,7 +469,7 @@ int classify_var_cate(const call_var_opt_t *opt, char *ref_seq, hts_pos_t ref_be
 void collect_all_var_slot_counts(bam_chunk_t *chunk) {
     if (chunk->n_cand_vars <= 0 || chunk->read_var_profile == NULL) return;
     if (chunk->var_slots != NULL) { free(chunk->var_slots); chunk->var_slots = NULL; }
-    chunk->var_slots = (var_slot_counts_t*)calloc(chunk->n_cand_vars, sizeof(var_slot_counts_t));
+    chunk->var_slots = (var_slot_counts_t*)_err_calloc(chunk->n_cand_vars, sizeof(var_slot_counts_t));
     chunk->n_var_slots = chunk->n_cand_vars;
     int n_samples = chunk->n_samples > 0 ? chunk->n_samples : 1;
     for (int i = 0; i < chunk->n_cand_vars; ++i) chunk->var_slots[i].n_samples = n_samples;
@@ -591,8 +591,8 @@ static void collect_paired_somatic_artifact_masks(const call_var_opt_t *opt, bam
     collect_all_var_slot_counts(chunk);
     if (chunk->var_slots == NULL) return;
     free(chunk->som_art_mask_hap); free(chunk->som_art_mask_pooled);
-    chunk->som_art_mask_hap = (int*)calloc(chunk->n_cand_vars, sizeof(int));
-    chunk->som_art_mask_pooled = (int*)calloc(chunk->n_cand_vars, sizeof(int));
+    chunk->som_art_mask_hap = (int*)_err_calloc(chunk->n_cand_vars, sizeof(int));
+    chunk->som_art_mask_pooled = (int*)_err_calloc(chunk->n_cand_vars, sizeof(int));
     chunk->n_som_art = chunk->n_cand_vars;
     const int T = LONGCALLD_SAMPLE_TUMOR, N = LONGCALLD_SAMPLE_NORMAL;
     for (int i = 0; i < chunk->n_cand_vars; ++i) {
@@ -813,7 +813,7 @@ void copy_var(cand_var_t *to_var, cand_var_t *from_var) {
 
     // allele_covs, alt_seq, alt_len
     if (to_var->alle_covs) free(to_var->alle_covs);
-    to_var->alle_covs = (int*)malloc(from_var->n_uniq_alles * sizeof(int));
+    to_var->alle_covs = (int*)_err_malloc(from_var->n_uniq_alles * sizeof(int));
     to_var->n_uniq_alles = from_var->n_uniq_alles;
 
     for (int j = 0; j < to_var->n_uniq_alles; ++j) {
@@ -823,13 +823,13 @@ void copy_var(cand_var_t *to_var, cand_var_t *from_var) {
         to_var->alt_len = from_var->alt_len;
         free(to_var->alt_seq);
         // deletions carry alt_len == 0 and a NULL alt_seq
-        to_var->alt_seq = from_var->alt_len > 0 ? (uint8_t*)malloc(from_var->alt_len * sizeof(uint8_t)) : NULL;
+        to_var->alt_seq = from_var->alt_len > 0 ? (uint8_t*)_err_malloc(from_var->alt_len * sizeof(uint8_t)) : NULL;
     }
     if (from_var->alt_len > 0) memcpy(to_var->alt_seq, from_var->alt_seq, from_var->alt_len);
     // copy tsd-related info
     if (to_var->tsd_len > 0) free(to_var->tsd_seq);
     if (from_var->tsd_len > 0) {
-        to_var->tsd_seq = (uint8_t*)malloc(from_var->tsd_len * sizeof(uint8_t));
+        to_var->tsd_seq = (uint8_t*)_err_malloc(from_var->tsd_len * sizeof(uint8_t));
         memcpy(to_var->tsd_seq, from_var->tsd_seq, from_var->tsd_len);
     }
     to_var->checked_tsd = from_var->checked_tsd;
@@ -854,8 +854,8 @@ void low_comp_cr_start_end(cgranges_t *low_comp_cr, int32_t start, int32_t end, 
 
 // XXX no vars spanning the boundaries of noisy regions
 static void collect_noisy_reg_start_end(bam_chunk_t *chunk, const call_var_opt_t *opt, int *var_i_to_cate, int32_t *start, int32_t *end) {
-    int *max_left_var_i = (int32_t*)malloc(chunk->chunk_noisy_regs->n_r * sizeof(int32_t));
-    int *min_right_var_i = (int32_t*)malloc(chunk->chunk_noisy_regs->n_r * sizeof(int32_t));
+    int *max_left_var_i = (int32_t*)_err_malloc(chunk->chunk_noisy_regs->n_r * sizeof(int32_t));
+    int *min_right_var_i = (int32_t*)_err_malloc(chunk->chunk_noisy_regs->n_r * sizeof(int32_t));
     for (int i = 0; i < chunk->chunk_noisy_regs->n_r; ++i) {
         max_left_var_i[i] = -1; min_right_var_i[i] = -1;
     }
@@ -951,10 +951,10 @@ void pre_process_noisy_regs(bam_chunk_t *chunk, call_var_opt_t *opt) {
     cgranges_t *noisy_regs = chunk->chunk_noisy_regs;
     int64_t ovlp_i, ovlp_n, *ovlp_b = 0, max_b = 0;
     hts_pos_t beg, end;
-    uint8_t *skip_noisy_reg = (uint8_t*)calloc(noisy_regs->n_r, sizeof(uint8_t));
-    int *noisy_reg_to_total_n_reads = (int*)calloc(noisy_regs->n_r, sizeof(int));
-    int *noisy_reg_to_noisy_reads = (int*)calloc(noisy_regs->n_r, sizeof(int));
-    int *noisy_reg_to_label = (int*)calloc(noisy_regs->n_r, sizeof(int));
+    uint8_t *skip_noisy_reg = (uint8_t*)_err_calloc(noisy_regs->n_r, sizeof(uint8_t));
+    int *noisy_reg_to_total_n_reads = (int*)_err_calloc(noisy_regs->n_r, sizeof(int));
+    int *noisy_reg_to_noisy_reads = (int*)_err_calloc(noisy_regs->n_r, sizeof(int));
+    int *noisy_reg_to_label = (int*)_err_calloc(noisy_regs->n_r, sizeof(int));
     
     for (int i = 0; i < chunk->n_reads; ++i) {
         int read_i = chunk->ordered_read_ids[i];
@@ -1022,8 +1022,8 @@ void post_process_noisy_regs(bam_chunk_t *chunk, const call_var_opt_t *opt, int 
     cgranges_t *chunk_noisy_regs = chunk->chunk_noisy_regs;
     int n_noisy_regs = chunk_noisy_regs->n_r;
     cgranges_t *noisy_regs = cr_init();
-    int32_t *noisy_reg_start = (int32_t*)malloc(n_noisy_regs * sizeof(int32_t));
-    int32_t *noisy_reg_end = (int32_t*)malloc(n_noisy_regs * sizeof(int32_t));
+    int32_t *noisy_reg_start = (int32_t*)_err_malloc(n_noisy_regs * sizeof(int32_t));
+    int32_t *noisy_reg_end = (int32_t*)_err_malloc(n_noisy_regs * sizeof(int32_t));
     collect_noisy_reg_start_end(chunk, opt, var_i_to_cate, noisy_reg_start, noisy_reg_end);
     for (int reg_i = 0; reg_i < n_noisy_regs; ++reg_i) {
         cr_add(noisy_regs, "cr", noisy_reg_start[reg_i], noisy_reg_end[reg_i], cr_label(chunk->chunk_noisy_regs, reg_i));
@@ -1045,7 +1045,7 @@ static void build_var_noisy_reads_ratio_cache(bam_chunk_t *chunk) {
 
     chunk->var_noisy_read_cov_cr = cr_init();
     chunk->var_noisy_read_err_cr = cr_init();
-    chunk->var_noisy_read_marks = (int*)calloc((size_t)chunk->m_reads, sizeof(int));
+    chunk->var_noisy_read_marks = (int*)_err_calloc((size_t)chunk->m_reads, sizeof(int));
     chunk->var_noisy_read_mark_id = 0;
 
     for (int i = 0; i < chunk->n_reads; ++i) {
@@ -1100,7 +1100,7 @@ float var_noisy_reads_ratio(bam_chunk_t *chunk, hts_pos_t var_start, hts_pos_t v
     total_n_reads = (int)ovlp_n;
     if (total_n_reads > 0) {
         if (chunk->var_noisy_read_marks == NULL) {
-            chunk->var_noisy_read_marks = (int*)calloc((size_t)chunk->m_reads, sizeof(int));
+            chunk->var_noisy_read_marks = (int*)_err_calloc((size_t)chunk->m_reads, sizeof(int));
         }
         chunk->var_noisy_read_mark_id++;
         if (chunk->var_noisy_read_mark_id == INT_MAX) {
@@ -1190,7 +1190,7 @@ int var_is_cand_somatic(bam_chunk_t *chunk, const call_var_opt_t *opt, cand_var_
 // 2. will collect somatic_var_read_profile in later stage, so the alle_covs may not be correct right now
 void merge_clean_somatic_vars(const call_var_opt_t *opt, cand_var_t *cand_vars, int *var_i_to_cate, int n_cand_vars) {
     int n_somatic_vars = 0;
-    int *somatic_var_i = (int*)malloc(n_cand_vars * sizeof(int));
+    int *somatic_var_i = (int*)_err_malloc(n_cand_vars * sizeof(int));
     for (int i = 0; i < n_cand_vars; ++i) {
         if (var_i_to_cate[i] == LONGCALLD_CAND_SOMATIC_VAR) somatic_var_i[n_somatic_vars++] = i;
     }
@@ -1278,10 +1278,10 @@ int classify_cand_vars(bam_chunk_t *chunk, int n_var_sites, const call_var_opt_t
     hts_pos_t reg_beg = chunk->reg_beg, reg_end = chunk->reg_end;
     cand_var_t *cand_vars = chunk->cand_vars;
     char *ref_seq = chunk->ref_seq; hts_pos_t ref_beg = chunk->ref_beg, ref_end = chunk->ref_end;
-    int *var_i_to_cate = (int*)malloc(n_var_sites * sizeof(int));
+    int *var_i_to_cate = (int*)_err_malloc(n_var_sites * sizeof(int));
     cgranges_t *var_pos_cr = cr_init(); cgranges_t *noisy_var_cr = cr_init(); // overlapping vars: DP needs to be >= min_alt_dp
     cgranges_t *low_comp_cr = chunk->low_comp_cr;
-    chunk->var_i_to_cate = (int*)malloc(n_var_sites * sizeof(int));
+    chunk->var_i_to_cate = (int*)_err_malloc(n_var_sites * sizeof(int));
     int min_dp = opt->min_dp, min_alt_dp = opt->min_alt_dp;
     double min_af = opt->min_af, max_af = opt->max_af, min_noisy_reg_ratio = opt->min_af;//opt->min_noisy_reg_ratio;
     int var_cate = -1;
@@ -1421,7 +1421,7 @@ int classify_cand_vars(bam_chunk_t *chunk, int n_var_sites, const call_var_opt_t
 
 int collect_noisy_reg_reads1(bam_chunk_t *chunk, hts_pos_t noisy_reg_beg, hts_pos_t niosy_reg_end, int noisy_reg_i, int **noisy_reads) {
     int n_noisy_reads = 0;
-    (*noisy_reads) = (int*)malloc(chunk->n_reads * sizeof(int));
+    (*noisy_reads) = (int*)_err_malloc(chunk->n_reads * sizeof(int));
 
     for (int i = 0; i < chunk->n_reads; ++i) {
         int read_i = chunk->ordered_read_ids[i];
@@ -1541,7 +1541,7 @@ static int comp_var_site_for_sort(const void *a, const void *b) {
 int merge_var_sites(const call_var_opt_t *opt, int n_total_var_sites, var_site_t **var_sites, int tid, hts_pos_t reg_beg, hts_pos_t reg_end,
                     int n_digar, digar1_t *digars) {
     int new_total_var_sites = 0;
-    var_site_t *new_var_sites = (var_site_t*)malloc((n_total_var_sites + n_digar) * sizeof(var_site_t));
+    var_site_t *new_var_sites = (var_site_t*)_err_malloc((n_total_var_sites + n_digar) * sizeof(var_site_t));
     int i, j;
     for (i = j = 0; i < n_total_var_sites && j < n_digar; ) {
         hts_pos_t digar_pos = digars[j].pos;
@@ -1595,7 +1595,7 @@ int collect_all_cand_var_sites(const call_var_opt_t *opt, bam_chunk_t *chunk, va
     }
     if (max_var_sites == 0) return 0;
 
-    *var_sites = (var_site_t*)malloc((size_t)max_var_sites * sizeof(var_site_t));
+    *var_sites = (var_site_t*)_err_malloc((size_t)max_var_sites * sizeof(var_site_t));
     for (int i = 0; i < chunk->n_reads; ++i) {
         int read_i = chunk->ordered_read_ids[i];
         if (chunk->is_skipped[read_i]) continue;
@@ -1674,17 +1674,17 @@ int merge_var_profile(const call_var_opt_t *opt, bam_chunk_t *chunk, int n_new_v
     if (n_new_vars <= 0) return 0;
     cand_var_t *old_vars = chunk->cand_vars;
     read_var_profile_t *old_p = chunk->read_var_profile;
-    cand_var_t *merged_vars = (cand_var_t *)malloc((chunk->n_cand_vars + n_new_vars) * sizeof(cand_var_t)); 
+    cand_var_t *merged_vars = (cand_var_t *)_err_malloc((chunk->n_cand_vars + n_new_vars) * sizeof(cand_var_t)); 
     read_var_profile_t *merged_p = init_read_var_profile(chunk->n_reads, chunk->n_cand_vars + n_new_vars);
-    int *merged_var_i_to_cate = (int*)malloc((chunk->n_cand_vars + n_new_vars) * sizeof(int));
+    int *merged_var_i_to_cate = (int*)_err_malloc((chunk->n_cand_vars + n_new_vars) * sizeof(int));
     int *old_to_merged = NULL, *new_to_merged = NULL;
     int old_var_i = 0, new_var_i = 0, merged_var_i = 0;
 
     if (chunk->n_cand_vars > 0) {
-        old_to_merged = (int*)malloc((size_t)chunk->n_cand_vars * sizeof(int));
+        old_to_merged = (int*)_err_malloc((size_t)chunk->n_cand_vars * sizeof(int));
         for (int i = 0; i < chunk->n_cand_vars; ++i) old_to_merged[i] = -1;
     }
-    new_to_merged = (int*)malloc((size_t)n_new_vars * sizeof(int));
+    new_to_merged = (int*)_err_malloc((size_t)n_new_vars * sizeof(int));
     for (int i = 0; i < n_new_vars; ++i) new_to_merged[i] = -1;
 
     for (; old_var_i < chunk->n_cand_vars && new_var_i < n_new_vars; ) {
@@ -1847,11 +1847,11 @@ int make_variants(const call_var_opt_t *opt, bam_chunk_t *chunk, var_t **_var) {
     char *ref_seq = chunk->ref_seq; hts_pos_t ref_beg = chunk->ref_beg;
     hts_pos_t active_reg_beg = chunk->reg_beg, active_reg_end = chunk->reg_end;
     cand_var_t *cand_vars = chunk->cand_vars; read_var_profile_t *p = chunk->read_var_profile;
-    (*_var) = (var_t*)malloc(sizeof(var_t));
+    (*_var) = (var_t*)_err_malloc(sizeof(var_t));
     var_t *var = *_var;
     var->n = 0; var->m = n_cand_vars;
     int hap1_idx=1, hap2_idx=2, hom_idx=0;
-    var->vars = (var1_t*)malloc(n_cand_vars * sizeof(var1_t));
+    var->vars = (var1_t*)_err_malloc(n_cand_vars * sizeof(var1_t));
     int i = 0, is_hom, hom_alt_is_set, hom_alle, hap1_alle, hap2_alle;
     int target_var_cate = LONGCALLD_CLEAN_HET_SNP | LONGCALLD_CLEAN_HET_INDEL | LONGCALLD_CLEAN_HOM_VAR | LONGCALLD_NOISY_CAND_HET_VAR | LONGCALLD_NOISY_CAND_HOM_VAR;
     if (opt->out_somatic == 1) target_var_cate |= LONGCALLD_CAND_SOMATIC_VAR;
@@ -1928,7 +1928,7 @@ int make_variants(const call_var_opt_t *opt, bam_chunk_t *chunk, var_t **_var) {
 
         // retrotransposon info
         if (var->vars[i].tsd_len > 0) {
-            var->vars[i].tsd_seq = (uint8_t*)malloc(var->vars[i].tsd_len * sizeof(uint8_t));
+            var->vars[i].tsd_seq = (uint8_t*)_err_malloc(var->vars[i].tsd_len * sizeof(uint8_t));
             for (int j = 0; j < var->vars[i].tsd_len; ++j) {
                 var->vars[i].tsd_seq[j] = cand_vars[cand_i].tsd_seq[j];
             }
@@ -1944,11 +1944,11 @@ int make_variants(const call_var_opt_t *opt, bam_chunk_t *chunk, var_t **_var) {
         var->vars[i].PS = cand_vars[cand_i].phase_set;
         var->vars[i].ref_bases = get_bseq(ref_seq+var->vars[i].pos-ref_beg, var->vars[i].ref_len);
         if (is_hom) {
-            var->vars[i].alt_len = (int*)malloc(1 * sizeof(int));
-            var->vars[i].alt_bases = (uint8_t**)malloc(1 * sizeof(uint8_t*));
+            var->vars[i].alt_len = (int*)_err_malloc(1 * sizeof(int));
+            var->vars[i].alt_bases = (uint8_t**)_err_malloc(1 * sizeof(uint8_t*));
         } else {
-            var->vars[i].alt_len = (int*)malloc(2 * sizeof(int));
-            var->vars[i].alt_bases = (uint8_t**)malloc(2 * sizeof(uint8_t*));
+            var->vars[i].alt_len = (int*)_err_malloc(2 * sizeof(int));
+            var->vars[i].alt_bases = (uint8_t**)_err_malloc(2 * sizeof(uint8_t*));
         }
         var->vars[i].n_alt_allele = 0;
         var->vars[i].is_sv = 0;
@@ -1967,7 +1967,7 @@ int make_variants(const call_var_opt_t *opt, bam_chunk_t *chunk, var_t **_var) {
                     continue;
                 }
                 int alt_len = cand_vars[cand_i].alt_len; //s[hap_alle-1];
-                var->vars[i].alt_bases[var->vars[i].n_alt_allele] = (uint8_t*)malloc((alt_len+1) * sizeof(uint8_t));
+                var->vars[i].alt_bases[var->vars[i].n_alt_allele] = (uint8_t*)_err_malloc((alt_len+1) * sizeof(uint8_t));
                 if (var->vars[i].type == BAM_CDEL || var->vars[i].type == BAM_CINS) {
                     alt_len += 1;
                     if (cand_vars[cand_i].alt_ref_base != 4) var->vars[i].alt_bases[var->vars[i].n_alt_allele][0] = cand_vars[cand_i].alt_ref_base;
@@ -2034,7 +2034,7 @@ int make_variants(const call_var_opt_t *opt, bam_chunk_t *chunk, var_t **_var) {
                     var->vars[i].is_unphased_call, var->vars[i].hap_vaf, var->vars[i].paired_pval);
         }
         if (var->vars[i].AD[1] > 0) { // collect alt_read_i from read_var_profile
-            var->vars[i].alt_read_i = (int*)malloc(var->vars[i].AD[1] * sizeof(int));
+            var->vars[i].alt_read_i = (int*)_err_malloc(var->vars[i].AD[1] * sizeof(int));
             int alt_read_i_idx = 0;
             for (int k = 0; k < chunk->n_reads; ++k) {
                 int read_i = chunk->ordered_read_ids[k];
@@ -2228,14 +2228,14 @@ void make_cand_vars0(cand_var_t *var, int tid, hts_pos_t ref_pos, int var_type, 
     var->tid = tid; var->pos = ref_pos;
     var->var_type = var_type;
     var->n_uniq_alles = n_alle;
-    var->alle_covs = (int*)calloc(n_alle, sizeof(int));
+    var->alle_covs = (int*)_err_calloc(n_alle, sizeof(int));
     var->ref_len = ref_len;
     var->is_homopolymer_indel = is_homopolymer_indel;
     if (var_type == BAM_CDIFF) var->ref_base = ref_base;
     else var->alt_ref_base = alt_ref_base;
     if (alt_len > 0 && alt_seq != NULL) {
         var->alt_len = alt_len; 
-        var->alt_seq = (uint8_t*)malloc(alt_len*sizeof(uint8_t));
+        var->alt_seq = (uint8_t*)_err_malloc(alt_len*sizeof(uint8_t));
         for (int i = 0; i < alt_len; ++i) var->alt_seq[i] = alt_seq[i];
     } else {
         var->alt_len = 0;
@@ -2262,8 +2262,8 @@ void make_cand_vars0(cand_var_t *var, int tid, hts_pos_t ref_pos, int var_type, 
 // no_end_var: for somatic mode, not call variant for INDEL on both ends (partial clipping)
 int make_cand_vars_from_baln0(const call_var_opt_t *opt, bam_chunk_t *chunk, hts_pos_t noisy_reg_beg,
                              uint8_t *ref_msa_seq, uint8_t *cons_msa_seq, int msa_len, cand_var_t **cand_vars, int **var_cate, int no_end_var) {
-    *cand_vars = (cand_var_t *)malloc((msa_len + 1) * sizeof(cand_var_t));
-    *var_cate = (int *)malloc((msa_len + 1) * sizeof(int));
+    *cand_vars = (cand_var_t *)_err_malloc((msa_len + 1) * sizeof(cand_var_t));
+    *var_cate = (int *)_err_malloc((msa_len + 1) * sizeof(int));
     int n_vars = 0; int min_sv_len = opt->min_sv_len; // collect RetroTrans info
     hts_pos_t ref_pos = noisy_reg_beg; // int query_pos = 0
     int tid = chunk->tid;
@@ -2337,8 +2337,8 @@ int make_cand_vars_from_baln0(const call_var_opt_t *opt, bam_chunk_t *chunk, hts
 
 int make_cand_vars_from_msa(const call_var_opt_t *opt, bam_chunk_t *chunk, hts_pos_t noisy_reg_beg,
                             uint8_t *ref_msa_seq, uint8_t *cons_msa_seq, int msa_len, cand_var_t **cand_vars, int **var_cate, int no_end_var) {
-    uint8_t *_ref_msa_seq = (uint8_t *)malloc(msa_len * sizeof(uint8_t));
-    uint8_t *_cons_msa_seq = (uint8_t *)malloc(msa_len * sizeof(uint8_t));
+    uint8_t *_ref_msa_seq = (uint8_t *)_err_malloc(msa_len * sizeof(uint8_t));
+    uint8_t *_cons_msa_seq = (uint8_t *)_err_malloc(msa_len * sizeof(uint8_t));
     int _msa_len = 0;
     for (int i = 0; i < msa_len; ++i) {
         if (ref_msa_seq[i] != 5 || cons_msa_seq[i] != 5) {
@@ -2706,10 +2706,10 @@ int update_cand_var_profile_from_cons_aln_str2(const call_var_opt_t *opt, bam_ch
                                           cand_var_t **noisy_vars, int **noisy_var_cate, read_var_profile_t **p) {
     if (n_hap1_vars + n_hap2_vars == 0) return 0;
     int n_vars = 0;
-    (*noisy_vars) = (cand_var_t *)malloc((n_hap1_vars + n_hap2_vars) * sizeof(cand_var_t));
-    (*noisy_var_cate) = (int *)malloc((n_hap1_vars + n_hap2_vars) * sizeof(int));
+    (*noisy_vars) = (cand_var_t *)_err_malloc((n_hap1_vars + n_hap2_vars) * sizeof(cand_var_t));
+    (*noisy_var_cate) = (int *)_err_malloc((n_hap1_vars + n_hap2_vars) * sizeof(int));
     int i1 = 0, i2 = 0;
-    int *var_from_cons_idx = (int *)malloc((n_hap1_vars + n_hap2_vars) * sizeof(int));
+    int *var_from_cons_idx = (int *)_err_malloc((n_hap1_vars + n_hap2_vars) * sizeof(int));
     for (; i1 < n_hap1_vars && i2 < n_hap2_vars; ) {
         int ret = exact_comp_cand_var(opt, hap1_vars + i1, hap2_vars + i2);
         if (ret < 0) {
@@ -2930,11 +2930,11 @@ int make_somatic_vars_from_aln_str(const call_var_opt_t *opt, bam_chunk_t *chunk
         n_total_reads += clu_n_seqs[i];
         m_somatic_vars += (aln_strs[i]->aln_len) * 4;
     }
-    *noisy_somatic_vars = (cand_var_t *)malloc(m_somatic_vars * sizeof(cand_var_t));
-    *noisy_somatic_var_cate = (int *)malloc(m_somatic_vars * sizeof(int));
-    cand_var_t **read_wise_noisy_somatic_vars = (cand_var_t **)malloc(n_total_reads * sizeof(cand_var_t*));
-    int *read_wise_n_noisy_somatic_vars = (int *)malloc(n_total_reads * sizeof(int));
-    int **read_wise_noisy_somatic_var_cate = (int **)malloc(n_total_reads * sizeof(int*));
+    *noisy_somatic_vars = (cand_var_t *)_err_malloc(m_somatic_vars * sizeof(cand_var_t));
+    *noisy_somatic_var_cate = (int *)_err_malloc(m_somatic_vars * sizeof(int));
+    cand_var_t **read_wise_noisy_somatic_vars = (cand_var_t **)_err_malloc(n_total_reads * sizeof(cand_var_t*));
+    int *read_wise_n_noisy_somatic_vars = (int *)_err_malloc(n_total_reads * sizeof(int));
+    int **read_wise_noisy_somatic_var_cate = (int **)_err_malloc(n_total_reads * sizeof(int*));
     int read_i = 0;
     for (int i = 0; i < n_cons; ++i) {
         for (int j = 0; j < clu_n_seqs[i]; ++j) {
@@ -3067,7 +3067,7 @@ int make_somatic_vars_from_aln_str(const call_var_opt_t *opt, bam_chunk_t *chunk
 // copy add_vars and old_vars to new_vars, merge them based on pos
 // free unused add_vars
 int merge_vars(var_t *old_vars, var_t *add_vars) {
-    var1_t *new_vars = (var1_t*)malloc((old_vars->n + add_vars->n) * sizeof(var1_t));
+    var1_t *new_vars = (var1_t*)_err_malloc((old_vars->n + add_vars->n) * sizeof(var1_t));
     int old_i = 0, add_i = 0, new_i = 0;
     for (; old_i < old_vars->n && add_i < add_vars->n; ) {
         if (old_vars->vars[old_i].pos < add_vars->vars[add_i].pos) {
@@ -3146,12 +3146,12 @@ int collect_noisy_vars1(bam_chunk_t *chunk, const call_var_opt_t *opt, int noisy
     if (LONGCALLD_VERBOSE >= 2) fprintf(stderr, "NoisyReg: chunk_reg: %s:%" PRIi64 "-%" PRIi64 ", reg: %s:%" PRIi64 "-%" PRIi64 " %" PRIi64 " (%d)\n", chunk->tname, chunk->reg_beg, chunk->reg_end, 
                                         chunk->tname, noisy_reg_beg, noisy_reg_end, noisy_reg_end-noisy_reg_beg+1, n_noisy_reads);
     // MSA and consensus calling
-    int n_cons = 0; int *clu_n_seqs = (int*)calloc(2, sizeof(int)); int **clu_read_ids = (int**)malloc(2 * sizeof(int*));
+    int n_cons = 0; int *clu_n_seqs = (int*)_err_calloc(2, sizeof(int)); int **clu_read_ids = (int**)_err_malloc(2 * sizeof(int*));
     // for alignment of cons vs ref, read vs cons, read vs ref
-    aln_str_t **aln_strs = (aln_str_t**)malloc(2 * sizeof(aln_str_t*));
+    aln_str_t **aln_strs = (aln_str_t**)_err_malloc(2 * sizeof(aln_str_t*));
     for (int i = 0; i < 2; ++i) {
         clu_read_ids[i] = NULL;
-        aln_strs[i] = (aln_str_t*)malloc((1 + n_noisy_reads * 2) * sizeof(aln_str_t));
+        aln_strs[i] = (aln_str_t*)_err_malloc((1 + n_noisy_reads * 2) * sizeof(aln_str_t));
         for (int j = 0; j < 1+n_noisy_reads*2; ++j) {
             aln_strs[i][j].target_aln = NULL; aln_strs[i][j].query_aln = NULL; aln_strs[i][j].aln_len = 0;
         }
@@ -3224,9 +3224,9 @@ collect_noisy_vars1_end:
 int *sort_noisy_regs(bam_chunk_t *chunk) {
     cgranges_t *noisy_regs = chunk->chunk_noisy_regs;
     int n_noisy_regs = noisy_regs->n_r;
-    int *sorted_noisy_regs = (int*)malloc(n_noisy_regs * sizeof(int));
-    int *noisy_reg_lens = (int*)malloc(n_noisy_regs * sizeof(int));
-    int *noisy_reg_var_sizes = (int*)malloc(n_noisy_regs * sizeof(int));
+    int *sorted_noisy_regs = (int*)_err_malloc(n_noisy_regs * sizeof(int));
+    int *noisy_reg_lens = (int*)_err_malloc(n_noisy_regs * sizeof(int));
+    int *noisy_reg_var_sizes = (int*)_err_malloc(n_noisy_regs * sizeof(int));
     for (int i = 0; i < n_noisy_regs; ++i) {
         noisy_reg_lens[i] = cr_end(noisy_regs, i) - cr_start(noisy_regs, i);
         noisy_reg_var_sizes[i] = cr_label(noisy_regs, i);
@@ -3252,7 +3252,7 @@ int read_has_dense_seq_error(int max_n_seq_errors, int win, digar_t *digars) {
     int n_digar = digars->n_digar;
     if (n_digar <= 0) return 0; // no digars, no seq errors
     // record the position of all seq errors (mismatch, insertion, deletion)
-    hts_pos_t *seq_error_pos = (hts_pos_t*)malloc(n_digar * sizeof(hts_pos_t));
+    hts_pos_t *seq_error_pos = (hts_pos_t*)_err_malloc(n_digar * sizeof(hts_pos_t));
     int n_seq_errors = 0;
     for (int i = 0; i < n_digar; ++i) {
         if (digars->digars[i].type == BAM_CEQUAL || digars->digars[i].type == BAM_CREF_SKIP) continue;
@@ -3427,7 +3427,7 @@ void collect_var_main(const call_var_pl_t *pl, bam_chunk_t *chunk) {
         // sort noisy regions by type, length, full-cover & phased read counts, from short to long
         int *sorted_noisy_regs = sort_noisy_regs(chunk);
         // for each noisy region, call variants and update read_var_profile, then update phasing/haplotype information
-        int *noisy_reg_is_done = (int*)calloc(chunk->chunk_noisy_regs->n_r, sizeof(int));
+        int *noisy_reg_is_done = (int*)_err_calloc(chunk->chunk_noisy_regs->n_r, sizeof(int));
         while (1) {
             int new_region_is_done = 0, new_var = 0;
             for (int i = 0; i < chunk->chunk_noisy_regs->n_r; ++i) {

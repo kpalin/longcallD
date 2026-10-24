@@ -37,7 +37,7 @@ void write_vcf_header(bam_hdr_t *hdr, struct call_var_opt_t *opt) {
     bcf_hdr_append(vcf_hdr, source_str);
 
     // Command line
-    char *cmd_str = (char*)malloc(strlen(CMD) + 6);
+    char *cmd_str = (char*)_err_malloc(strlen(CMD) + 6);
     snprintf(cmd_str, strlen(CMD) + 6, "##CL=%s", CMD);
     bcf_hdr_append(vcf_hdr, cmd_str);
     free(cmd_str);
@@ -177,7 +177,7 @@ int write_var_to_vcf(var_t *vars, const struct call_var_opt_t *opt, bam_chunk_t 
     htsFile *out_vcf = opt->out_vcf;  // htsFile pointer
     int n_vars = vars->n;
     int n_output_vars = 0;
-    int buf_m = 50000; char *buffer = (char*)malloc(buf_m * sizeof(char));  // Buffer for output string
+    int buf_m = 50000; char *buffer = (char*)_err_malloc(buf_m * sizeof(char));  // Buffer for output string
     int len = 0;        // Length of the output string
 
     for (int var_i = 0; var_i < n_vars; var_i++) {
@@ -224,7 +224,7 @@ int write_var_to_vcf(var_t *vars, const struct call_var_opt_t *opt, bam_chunk_t 
         for (int j = 0; j < var.n_alt_allele; j++) base_len += var.alt_len[j];
         if (base_len > buf_m) {
             buf_m = base_len + 10000;
-            buffer = (char*)realloc(buffer, buf_m * sizeof(char));
+            buffer = (char*)_err_realloc(buffer, buf_m * sizeof(char));
         }
         for (int j = 0; j < var.ref_len; j++) 
             len += snprintf(buffer + len, buf_m - len, "%c", "ACGTN"[var.ref_bases[j]]);
@@ -306,7 +306,7 @@ int write_var_to_vcf(var_t *vars, const struct call_var_opt_t *opt, bam_chunk_t 
             append_paired_sample(&sks, opt, &var, LONGCALLD_SAMPLE_TUMOR, want_ps);
             if (len + (int)sks.l + 2 >= buf_m) {
                 buf_m = len + (int)sks.l + 1024;
-                buffer = (char*)realloc(buffer, buf_m);
+                buffer = (char*)_err_realloc(buffer, buf_m);
             }
             len += snprintf(buffer + len, buf_m - len, "%s", sks.s);
             ks_free(&sks);
@@ -353,7 +353,7 @@ int write_var_to_vcf(var_t *vars, const struct call_var_opt_t *opt, bam_chunk_t 
                     n_reads_needed += strlen(chunk->read_names[var.alt_read_i[i]]) + 1;
                 if (len + n_reads_needed >= buf_m) {
                     buf_m = len + n_reads_needed + 1024;
-                    buffer = (char*)realloc(buffer, buf_m);
+                    buffer = (char*)_err_realloc(buffer, buf_m);
                 }
                 len += snprintf(buffer + len, buf_m - len, ":");
                 if (var.AD[1] > 0) {

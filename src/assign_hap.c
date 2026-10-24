@@ -40,9 +40,9 @@ void var_init_hap_profile_cons_allele(const call_var_opt_t *opt, cand_var_t *can
     for (int _var_i = 0; _var_i < n_cand_vars; ++_var_i) {
         int var_i = var_idx[_var_i]; cand_var_t *var = cand_vars+var_i;
         if (var->hap_to_alle_profile == NULL) {
-            var->hap_to_alle_profile = (int**)malloc((LONGCALLD_DEF_PLOID+1) * sizeof(int*));
-            for (int i = 0; i <= LONGCALLD_DEF_PLOID; ++i) var->hap_to_alle_profile[i] = (int*)calloc(var->n_uniq_alles, sizeof(int));
-            var->hap_to_cons_alle = (int*)malloc((LONGCALLD_DEF_PLOID+1) * sizeof(int));
+            var->hap_to_alle_profile = (int**)_err_malloc((LONGCALLD_DEF_PLOID+1) * sizeof(int*));
+            for (int i = 0; i <= LONGCALLD_DEF_PLOID; ++i) var->hap_to_alle_profile[i] = (int*)_err_calloc(var->n_uniq_alles, sizeof(int));
+            var->hap_to_cons_alle = (int*)_err_malloc((LONGCALLD_DEF_PLOID+1) * sizeof(int));
             var->hap_to_cons_alle[0] = get_var_init_max_cov_allele(opt->is_ont, var); // hom_idx
             if (var_i_to_cate[var_i] == LONGCALLD_NOISY_CAND_HOM_VAR || var_i_to_cate[var_i] == LONGCALLD_CLEAN_HOM_VAR) {
                 for (int j = 1; j <= LONGCALLD_DEF_PLOID; ++j) var->hap_to_cons_alle[j] = 1;
@@ -64,9 +64,9 @@ void var_init_hap_profile_cons_allele(const call_var_opt_t *opt, cand_var_t *can
 
 void var_init_hap_profile_cons_allele1(const call_var_opt_t *opt, cand_var_t *var) {
     if (var->hap_to_alle_profile == NULL) {
-        var->hap_to_alle_profile = (int**)malloc((LONGCALLD_DEF_PLOID+1) * sizeof(int*));
-        for (int i = 0; i <= LONGCALLD_DEF_PLOID; ++i) var->hap_to_alle_profile[i] = (int*)calloc(var->n_uniq_alles, sizeof(int));
-        var->hap_to_cons_alle = (int*)malloc((LONGCALLD_DEF_PLOID+1) * sizeof(int));
+        var->hap_to_alle_profile = (int**)_err_malloc((LONGCALLD_DEF_PLOID+1) * sizeof(int*));
+        for (int i = 0; i <= LONGCALLD_DEF_PLOID; ++i) var->hap_to_alle_profile[i] = (int*)_err_calloc(var->n_uniq_alles, sizeof(int));
+        var->hap_to_cons_alle = (int*)_err_malloc((LONGCALLD_DEF_PLOID+1) * sizeof(int));
         var->hap_to_cons_alle[0] = get_var_init_max_cov_allele(opt->is_ont, var); // hom_idx
         for (int j = 1; j <= LONGCALLD_DEF_PLOID; ++j) var->hap_to_cons_alle[j] = -1;
     } else {
@@ -81,8 +81,8 @@ void var_init_hap_to_alle_profile(cand_var_t *cand_vars, int *var_idx, int n_can
     for (int _var_i = 0; _var_i < n_cand_vars; ++_var_i) {
         int var_i = var_idx[_var_i]; cand_var_t *var = cand_vars+var_i;
         if (var->hap_to_alle_profile == NULL) {
-            var->hap_to_alle_profile = (int**)malloc((LONGCALLD_DEF_PLOID+1) * sizeof(int*));
-            for (int i = 0; i <= LONGCALLD_DEF_PLOID; ++i) var->hap_to_alle_profile[i] = (int*)calloc(var->n_uniq_alles, sizeof(int));
+            var->hap_to_alle_profile = (int**)_err_malloc((LONGCALLD_DEF_PLOID+1) * sizeof(int*));
+            for (int i = 0; i <= LONGCALLD_DEF_PLOID; ++i) var->hap_to_alle_profile[i] = (int*)_err_calloc(var->n_uniq_alles, sizeof(int));
         } else {
             for (int j = 0; j <= LONGCALLD_DEF_PLOID; ++j) {
                 memset(var->hap_to_alle_profile[j], 0, var->n_uniq_alles * sizeof(int));
@@ -149,7 +149,7 @@ int read_to_cons_allele_score(int read_i, int hap, cand_var_t *var, int var_cate
 // int assign_read_hap_based_on_pre_reads(int read_i, cand_var_t *cand_vars, read_var_profile_t *p, int *var_i_to_cate, int target_var_cate) {
 // no check for reject counts, as this is the initialization step
 int init_assign_read_hap_based_on_cons_alle(bam_chunk_t *chunk, int read_i, cand_var_t *cand_vars, read_var_profile_t *p, int *var_i_to_cate, int target_var_cate) {
-    int *hap_scores = (int*)calloc((LONGCALLD_DEF_PLOID+1), sizeof(int));
+    int *hap_scores = (int*)_err_calloc((LONGCALLD_DEF_PLOID+1), sizeof(int));
     int n_vars_used[3] = {0, 0, 0};
 
     chunk->n_clean_agree_snps[read_i] = chunk->n_clean_conflict_snps[read_i] = 0;
@@ -348,9 +348,9 @@ void update_read_phase_set(bam_chunk_t *chunk, int *var_is_valid, read_var_profi
 // could be used for somatic variant calling
 // reads->haps & haps_to_cons_alle are UpToDate
 int iter_update_var_hap_cons_phase_set(bam_chunk_t *chunk, int *var_idx, read_var_profile_t *p, cand_var_t *cand_vars, int n_cand_vars, int *var_i_to_cate) {
-    int *het_var_idx = (int*)malloc(n_cand_vars * sizeof(int));
+    int *het_var_idx = (int*)_err_malloc(n_cand_vars * sizeof(int));
     int n_het_vars = 0;
-    int *is_het = (int*)calloc(n_cand_vars, sizeof(int));
+    int *is_het = (int*)_err_calloc(n_cand_vars, sizeof(int));
     for (int _var_i = 0; _var_i < n_cand_vars; ++_var_i) {
         int var_i = var_idx[_var_i];
         cand_var_t *var = cand_vars+var_i;
@@ -365,8 +365,8 @@ int iter_update_var_hap_cons_phase_set(bam_chunk_t *chunk, int *var_idx, read_va
 
     cgranges_t *read_var_cr = chunk->read_var_cr;
     int64_t ovlp_i, ovlp_n, *ovlp_b = 0, max_b = 0;
-    int *n_agree = (int*)calloc(n_cand_vars, sizeof(int)); // number of reads supporting current haplotype for each var
-    int *n_conflict = (int*)calloc(n_cand_vars, sizeof(int)); // number of reads conflicting current haplotype for each var
+    int *n_agree = (int*)_err_calloc(n_cand_vars, sizeof(int)); // number of reads supporting current haplotype for each var
+    int *n_conflict = (int*)_err_calloc(n_cand_vars, sizeof(int)); // number of reads conflicting current haplotype for each var
     // for each two adjacent het vars, check if they are in the same phase set
     // for (int _var_i = 1; _var_i < n_cand_vars; ++_var_i) {
         // int var_i = var_idx[_var_i];
@@ -428,10 +428,10 @@ int iter_update_var_hap_cons_phase_set(bam_chunk_t *chunk, int *var_idx, read_va
 
 // update read's haps & var's hap_to_cons_alle
 int iter_update_var_hap_to_cons_alle(const call_var_opt_t *opt, bam_chunk_t *chunk, int *var_idx, int n_cand_vars, read_var_profile_t *p, cand_var_t *cand_vars, int *var_i_to_cate, int target_var_cate) {
-    int **cur_hap_to_cons_alle = (int**)malloc(n_cand_vars * sizeof(int*));
+    int **cur_hap_to_cons_alle = (int**)_err_malloc(n_cand_vars * sizeof(int*));
     for (int _var_i = 0; _var_i < n_cand_vars; ++_var_i) {
         int var_i = var_idx[_var_i]; cand_var_t *var = cand_vars+var_i;
-        cur_hap_to_cons_alle[_var_i] = (int*)malloc((LONGCALLD_DEF_PLOID+1) * sizeof(int));
+        cur_hap_to_cons_alle[_var_i] = (int*)_err_malloc((LONGCALLD_DEF_PLOID+1) * sizeof(int));
         for (int hap = 1; hap <= LONGCALLD_DEF_PLOID; ++hap) {
             cur_hap_to_cons_alle[_var_i][hap] = var->hap_to_cons_alle[hap];
         }
@@ -510,8 +510,8 @@ int assign_hap_based_on_germline_het_vars_kmeans(const call_var_opt_t *opt, bam_
     // dimension is meaningless this early -- that is what we are about to
     // compute -- but the per-sample totals it needs are not.
     if (chunk->n_samples > 1) collect_all_var_slot_counts(chunk);
-    int n_valid_vars = 0, *valid_var_idx = (int*)malloc(chunk->n_cand_vars * sizeof(int));
-    int *var_is_valid = (int*)calloc(chunk->n_cand_vars, sizeof(int));
+    int n_valid_vars = 0, *valid_var_idx = (int*)_err_malloc(chunk->n_cand_vars * sizeof(int));
+    int *var_is_valid = (int*)_err_calloc(chunk->n_cand_vars, sizeof(int));
     // Every variant in the target category must still have its hap profile
     // allocated, because init_assign_read_hap_based_on_cons_alle() walks a
     // read's whole variant range and selects on exactly that category --
@@ -519,7 +519,7 @@ int assign_hap_based_on_germline_het_vars_kmeans(const call_var_opt_t *opt, bam_
     // hap_to_cons_alle NULL and the scorer dereferences it. So the two lists are
     // kept apart: all_cate_idx is what gets initialised, valid_var_idx is what
     // the phasing is anchored on.
-    int n_all_cate = 0, *all_cate_idx = (int*)malloc(chunk->n_cand_vars * sizeof(int));
+    int n_all_cate = 0, *all_cate_idx = (int*)_err_malloc(chunk->n_cand_vars * sizeof(int));
     int n_skipped_not_germline = 0;
     for (int i = 0; i < chunk->n_cand_vars; ++i) {
         if ((chunk->var_i_to_cate[i] & target_var_cate) == 0) continue;
@@ -549,7 +549,7 @@ int assign_hap_based_on_germline_het_vars_kmeans(const call_var_opt_t *opt, bam_
     // 1st loop: var-wise loop
     int init_var_i = select_init_var(cand_vars, valid_var_idx, n_valid_vars, var_i_to_cate);
     if (init_var_i != -1) {
-        int *var_ii = (int*)malloc(n_valid_vars * sizeof(int));
+        int *var_ii = (int*)_err_malloc(n_valid_vars * sizeof(int));
         var_ii[0] = init_var_i;
         for (int var_i = init_var_i-1; var_i >= 0; --var_i) var_ii[init_var_i-var_i] = var_i;
         for (int var_i = init_var_i+1; var_i < n_valid_vars; ++var_i) var_ii[var_i] = var_i;
@@ -614,7 +614,7 @@ int assign_hap_based_on_germline_het_vars_kmeans(const call_var_opt_t *opt, bam_
     // exists to prevent -- but once the anchors have fixed the phasing, they
     // must be read off it. Anchor first, then genotype.
     if (n_all_cate > n_valid_vars) {
-        int n_rest = 0, *rest_idx = (int*)malloc((n_all_cate - n_valid_vars) * sizeof(int));
+        int n_rest = 0, *rest_idx = (int*)_err_malloc((n_all_cate - n_valid_vars) * sizeof(int));
         for (int i = 0; i < n_all_cate; ++i)
             if (!var_is_valid[all_cate_idx[i]]) rest_idx[n_rest++] = all_cate_idx[i];
         if (n_rest > 0) {
@@ -660,7 +660,7 @@ void sort_phase_sets(hts_pos_t *uniq_phase_set, int *phase_set_to_total_depth, i
 // -2: not phased
 static int select_somatic_phase_set0(hts_pos_t *uniq_phase_set, int n_uniq_phase_set, int ***phase_set_to_hap_alle_profile, int min_somatic_hap_depth) {
     int ps_i = -1;
-    int *phase_set_to_total_depth = (int*)calloc(n_uniq_phase_set, sizeof(int));
+    int *phase_set_to_total_depth = (int*)_err_calloc(n_uniq_phase_set, sizeof(int));
     for (int i = 0; i < n_uniq_phase_set; ++i) {
         for (int j = 1; j < 3; ++j) {
             phase_set_to_total_depth[i] += (phase_set_to_hap_alle_profile[i][j][0] + phase_set_to_hap_alle_profile[i][j][1]);
@@ -691,16 +691,16 @@ static int select_somatic_phase_set0(hts_pos_t *uniq_phase_set, int n_uniq_phase
 }
 
 cand_somatic_var_aux_info_t *init_somatic_aux_info(int max_alt_dp) {
-    cand_somatic_var_aux_info_t *aux_info = (cand_somatic_var_aux_info_t*)malloc(sizeof(cand_somatic_var_aux_info_t));
+    cand_somatic_var_aux_info_t *aux_info = (cand_somatic_var_aux_info_t*)_err_malloc(sizeof(cand_somatic_var_aux_info_t));
     memset(aux_info, 0, sizeof(cand_somatic_var_aux_info_t));
-    aux_info->alt_read_ids = (int*)malloc(max_alt_dp * sizeof(int));
-    aux_info->alt_quals = (int*)malloc(max_alt_dp * sizeof(int));
-    aux_info->win_low_qual = (int*)malloc(max_alt_dp * sizeof(int));
-    aux_info->dis_to_indel_error = (int*)malloc(max_alt_dp * sizeof(int));
-    aux_info->no_dense_diff = (int*)malloc(max_alt_dp * sizeof(int));
-    aux_info->no_near_long_clipping = (int*)malloc(max_alt_dp * sizeof(int));
-    aux_info->is_not_homopolymer_error = (int*)malloc(max_alt_dp * sizeof(int));
-    aux_info->low_comp_reg_has_no_error = (int*)malloc(max_alt_dp * sizeof(int));
+    aux_info->alt_read_ids = (int*)_err_malloc(max_alt_dp * sizeof(int));
+    aux_info->alt_quals = (int*)_err_malloc(max_alt_dp * sizeof(int));
+    aux_info->win_low_qual = (int*)_err_malloc(max_alt_dp * sizeof(int));
+    aux_info->dis_to_indel_error = (int*)_err_malloc(max_alt_dp * sizeof(int));
+    aux_info->no_dense_diff = (int*)_err_malloc(max_alt_dp * sizeof(int));
+    aux_info->no_near_long_clipping = (int*)_err_malloc(max_alt_dp * sizeof(int));
+    aux_info->is_not_homopolymer_error = (int*)_err_malloc(max_alt_dp * sizeof(int));
+    aux_info->low_comp_reg_has_no_error = (int*)_err_malloc(max_alt_dp * sizeof(int));
     return aux_info;
 }
 
@@ -945,7 +945,7 @@ int collect_noisy_read_info1(const call_var_opt_t *opt, bam_chunk_t *chunk, int 
         else cover = LONGCALLD_NOISY_RIGHT_COVER; // (*fully_covers)[i] = 2;
     } else cover = 0; // (*fully_covers)[i] = 0;
     // if (2*(reg_read_end-reg_read_beg+1) < (reg_end-reg_beg+1)) return 0;
-    (*read_seqs) = (uint8_t*)malloc((reg_read_end - reg_read_beg + 1) * sizeof(uint8_t));
+    (*read_seqs) = (uint8_t*)_err_malloc((reg_read_end - reg_read_beg + 1) * sizeof(uint8_t));
     for (int j = reg_read_beg; j <= reg_read_end; ++j) {
         (*read_seqs)[j-reg_read_beg] = seq_nt16_int[bam_seqi(read_digars->bseq, j)];
     }
@@ -1012,8 +1012,8 @@ int get_hp_compressed_seq(uint8_t *seq, int len, uint8_t *hp_seq, int *hp_seq_le
 }
 
 int is_hp_compressed_match(uint8_t *seq1, int len1, uint8_t *seq2, int len2) {
-    uint8_t *hp_seq1 = (uint8_t*)malloc(len1 + 1); int *hp_seq_len1 = (int*)malloc((len1 + 1) * sizeof(int));
-    uint8_t *hp_seq2 = (uint8_t*)malloc(len2 + 1); int *hp_seq_len2 = (int*)malloc((len2 + 1) * sizeof(int));
+    uint8_t *hp_seq1 = (uint8_t*)_err_malloc(len1 + 1); int *hp_seq_len1 = (int*)_err_malloc((len1 + 1) * sizeof(int));
+    uint8_t *hp_seq2 = (uint8_t*)_err_malloc(len2 + 1); int *hp_seq_len2 = (int*)_err_malloc((len2 + 1) * sizeof(int));
     int hp_len1 = get_hp_compressed_seq(seq1, len1, hp_seq1, hp_seq_len1);
     int hp_len2 = get_hp_compressed_seq(seq2, len2, hp_seq2, hp_seq_len2);
     // fprintf(stderr, "hp_len1: %d hp_len2: %d\n", hp_len1, hp_len2);
@@ -1121,8 +1121,8 @@ int var_is_homopolymer_error(const call_var_opt_t *opt, bam_chunk_t *chunk, int 
             all_ins_len -= var->ref_len;
         }
     }
-    uint8_t *hap_reg_seq = (uint8_t*)malloc(ref_reg_end - ref_reg_beg + all_ins_len + 1);
-    uint8_t *ref_reg_seq = (uint8_t*)malloc(ref_reg_end - ref_reg_beg + 1);
+    uint8_t *hap_reg_seq = (uint8_t*)_err_malloc(ref_reg_end - ref_reg_beg + all_ins_len + 1);
+    uint8_t *ref_reg_seq = (uint8_t*)_err_malloc(ref_reg_end - ref_reg_beg + 1);
     hts_pos_t last_pos = ref_reg_beg; int hap_reg_len = 0;
     for (int i = 0; i < chunk->n_cand_vars; ++i) {
         cand_var_t *var = chunk->cand_vars + i;
@@ -1170,7 +1170,7 @@ int var_is_homopolymer_error(const call_var_opt_t *opt, bam_chunk_t *chunk, int 
 }
 
 int get_read_win_median_qual(digar_t *d, int alt_qi, int len) {
-    int *quals = (int*)malloc(len * sizeof(int));
+    int *quals = (int*)_err_malloc(len * sizeof(int));
     for (int i = 0; i < len; ++i) {
         int pos = alt_qi + i;
         if (pos < 0 || pos >= d->qlen) {
@@ -1226,7 +1226,7 @@ int has_dense_diff(bam_chunk_t *chunk, cand_var_t *var, int var_i, digar_t *diga
     int win=100, max_diff=5, dis=500;
     int n_digar = digar->n_digar;
     if (n_digar <= 0) return 0; // no digars,
-    hts_pos_t *diff_pos = (hts_pos_t*)malloc(n_digar * sizeof(hts_pos_t));
+    hts_pos_t *diff_pos = (hts_pos_t*)_err_malloc(n_digar * sizeof(hts_pos_t));
     hts_pos_t var_pos = var->pos, var_end = var->pos + var->ref_len - 1;
     if (var->var_type == BAM_CINS) var_end = var->pos; // for insertion, consider the position only
     int n_diff = 0;
@@ -1678,10 +1678,10 @@ void mark_somatic_reads(const call_var_opt_t *opt, bam_chunk_t *chunk, int targe
     int *var_i_to_cate = chunk->var_i_to_cate; cand_var_t *cand_vars = chunk->cand_vars;
     int somatic_win = opt->somatic_win; // default 1000-bp window
     int somatic_max_var = opt->somatic_win_max_vars; // maximum number of somatic variants in a dense window
-    hts_pos_t *somatic_var_beg = (hts_pos_t*)malloc(chunk->n_cand_vars * sizeof(hts_pos_t));
-    hts_pos_t *somatic_var_end = (hts_pos_t*)malloc(chunk->n_cand_vars * sizeof(hts_pos_t));
-    int *somatic_var_i = (int*)malloc(chunk->n_cand_vars * sizeof(int));
-    int *is_invalid_somatic_var = (int*)calloc(chunk->n_cand_vars, sizeof(int)); // mark somatic variants
+    hts_pos_t *somatic_var_beg = (hts_pos_t*)_err_malloc(chunk->n_cand_vars * sizeof(hts_pos_t));
+    hts_pos_t *somatic_var_end = (hts_pos_t*)_err_malloc(chunk->n_cand_vars * sizeof(hts_pos_t));
+    int *somatic_var_i = (int*)_err_malloc(chunk->n_cand_vars * sizeof(int));
+    int *is_invalid_somatic_var = (int*)_err_calloc(chunk->n_cand_vars, sizeof(int)); // mark somatic variants
     int n_somatic_vars = 0;
     for (int var_i = 0; var_i < chunk->n_cand_vars; ++var_i) {
         if ((var_i_to_cate[var_i] & target_var_cate) == 0) continue; // skip non-target variants
@@ -1751,11 +1751,11 @@ hts_pos_t select_somatic_phase_set_alt_hap(const call_var_opt_t *opt, bam_chunk_
     ovlp_n = cr_overlap(read_var_cr, "cr", var_i, var_i+1, &ovlp_b, &max_b);
 
     int min_somatic_hap_depth = opt->min_somatic_hap_dp;
-    hts_pos_t *uniq_phase_set = (hts_pos_t*)calloc(ovlp_n, sizeof(hts_pos_t)); int n_uniq_phase_set = 0;
-    int ***phase_set_to_hap_alle_profile = (int***)calloc(ovlp_n, sizeof(int**));
+    hts_pos_t *uniq_phase_set = (hts_pos_t*)_err_calloc(ovlp_n, sizeof(hts_pos_t)); int n_uniq_phase_set = 0;
+    int ***phase_set_to_hap_alle_profile = (int***)_err_calloc(ovlp_n, sizeof(int**));
     for (int i = 0; i < ovlp_n; ++i) {
-        phase_set_to_hap_alle_profile[i] = (int**)calloc(3, sizeof(int*));
-        for (int j = 0; j < 3; ++j) phase_set_to_hap_alle_profile[i][j] = (int*)calloc(var->n_uniq_alles, sizeof(int));
+        phase_set_to_hap_alle_profile[i] = (int**)_err_calloc(3, sizeof(int*));
+        for (int j = 0; j < 3; ++j) phase_set_to_hap_alle_profile[i][j] = (int*)_err_calloc(var->n_uniq_alles, sizeof(int));
     }
     for (ovlp_i = 0; ovlp_i < ovlp_n; ++ovlp_i) {
         int read_i = cr_label(read_var_cr, ovlp_b[ovlp_i]);

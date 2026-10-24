@@ -21,7 +21,7 @@ static read_var_profile_t *init_read_var_profile_inner(int n_reads, int *read_id
     size_t n_profile_bytes = (size_t)n_reads * sizeof(read_var_profile_t);
     size_t n_var_values = (size_t)n_reads * (size_t)n_total_vars;
     size_t n_value_bytes = n_var_values * sizeof(int);
-    uint8_t *raw = (uint8_t*)malloc(n_profile_bytes + n_value_bytes * 2);
+    uint8_t *raw = (uint8_t*)_err_malloc(n_profile_bytes + n_value_bytes * 2);
     read_var_profile_t *p = (read_var_profile_t*)raw;
     int *alleles = NULL, *alt_qi = NULL;
 
@@ -99,10 +99,10 @@ static void longcalld_copy_digar_read_buffers(bam_chunk_t *chunk, bam1_t *read, 
     size_t packed_bseq_bytes = ((size_t)qlen + 1) / 2;
 
     digar->qlen = qlen;
-    digar->bseq = packed_bseq_bytes > 0 ? (uint8_t *)malloc(packed_bseq_bytes) : NULL;
+    digar->bseq = packed_bseq_bytes > 0 ? (uint8_t *)_err_malloc(packed_bseq_bytes) : NULL;
     if (packed_bseq_bytes > 0) memcpy(digar->bseq, bam_get_seq(read), packed_bseq_bytes);
 
-    digar->qual = qlen > 0 ? (uint8_t *)malloc((size_t)qlen) : NULL;
+    digar->qual = qlen > 0 ? (uint8_t *)_err_malloc((size_t)qlen) : NULL;
     if (qlen > 0) memcpy(digar->qual, bam_get_qual(read), (size_t)qlen);
     for (uint32_t i = 0; i < qlen; ++i) {
         chunk->qual_counts[digar->qual[i]]++;
@@ -120,7 +120,7 @@ static inline uint32_t *longcalld_push_cigar(int *n_cigar, int *m_cigar, uint32_
 	if (*n_cigar == 0 || op != (cigar[(*n_cigar) - 1]&0xf)) {
 		if (*n_cigar == *m_cigar) {
 			*m_cigar = *m_cigar? (*m_cigar)<<1 : 4;
-			cigar = (uint32_t*)realloc(cigar, (*m_cigar) << 2);
+			cigar = (uint32_t*)_err_realloc(cigar, (*m_cigar) << 2);
 		}
 		cigar[(*n_cigar)++] = len<<4 | op;
 	} else cigar[(*n_cigar)-1] += len<<4;
@@ -136,11 +136,11 @@ typedef struct {
 } xid_queue_t;
 
 xid_queue_t *init_xid_queue(int max_sites, int max_s, int win) {
-    xid_queue_t *q = (xid_queue_t*)malloc(sizeof(xid_queue_t));
-    q->pos = (hts_pos_t*)malloc(max_sites * sizeof(hts_pos_t));
-    q->counts = (int*)malloc(max_sites * sizeof(int));
-    q->lens = (int*)malloc(max_sites * sizeof(int));
-    q->is_dense = (int*)calloc(max_sites, sizeof(int));
+    xid_queue_t *q = (xid_queue_t*)_err_malloc(sizeof(xid_queue_t));
+    q->pos = (hts_pos_t*)_err_malloc(max_sites * sizeof(hts_pos_t));
+    q->counts = (int*)_err_malloc(max_sites * sizeof(int));
+    q->lens = (int*)_err_malloc(max_sites * sizeof(int));
+    q->is_dense = (int*)_err_calloc(max_sites, sizeof(int));
     q->size_m = max_sites;
     q->front = 0; q->rear = -1; q->count = 0;
     q->max_s = max_s; q->win = win;
@@ -150,10 +150,10 @@ xid_queue_t *init_xid_queue(int max_sites, int max_s, int win) {
 void realloc_xid_queue(xid_queue_t *q) {
     if (q->rear+1 >= q->size_m) {
         q->size_m *= 2;
-        q->pos = (hts_pos_t*)realloc(q->pos, q->size_m * sizeof(hts_pos_t));
-        q->counts = (int*)realloc(q->counts, q->size_m * sizeof(int));
-        q->lens = (int*)realloc(q->lens, q->size_m * sizeof(int));
-        q->is_dense = (int*)realloc(q->is_dense, q->size_m * sizeof(int));
+        q->pos = (hts_pos_t*)_err_realloc(q->pos, q->size_m * sizeof(hts_pos_t));
+        q->counts = (int*)_err_realloc(q->counts, q->size_m * sizeof(int));
+        q->lens = (int*)_err_realloc(q->lens, q->size_m * sizeof(int));
+        q->is_dense = (int*)_err_realloc(q->is_dense, q->size_m * sizeof(int));
         for (int i = q->rear+1; i < q->size_m; ++i) q->is_dense[i] = 0;
     }
 }
@@ -235,7 +235,7 @@ int get_var_site_start(var_site_t *var_sites, int cur_site_i, int n_total_pos, h
 // only for mismatch and insertion
 uint8_t *make_alt_seq(digar1_t *digar, const uint8_t *bseq) {
     if (digar->type == BAM_CDEL) return NULL;
-    uint8_t *alt_seq = (uint8_t*)malloc((digar->len) * sizeof(uint8_t));
+    uint8_t *alt_seq = (uint8_t*)_err_malloc((digar->len) * sizeof(uint8_t));
     for (int i = 0; i < digar->len; ++i) {
         alt_seq[i] = seq_nt16_int[bam_seqi(bseq, digar->qi+i)];
     }
@@ -574,19 +574,19 @@ digar1_t *push_digar_alt_seq(digar1_t *digar, int *n_digar, int *m_digar, digar1
     if (*n_digar == 0 || same_digar1(digar[*n_digar-1], d) == 0) { // not the same as the last digar
         if (*n_digar == *m_digar) {
             *m_digar = *m_digar ? (*m_digar << 1) : 4;
-            digar = (digar1_t*)realloc(digar, *m_digar * sizeof(digar1_t));
+            digar = (digar1_t*)_err_realloc(digar, *m_digar * sizeof(digar1_t));
         }
         digar[*n_digar].pos = d.pos; digar[*n_digar].type = d.type;
         digar[*n_digar].len = d.len; digar[*n_digar].alt_seq = NULL;
         if (d.type == BAM_CDIFF || d.type == BAM_CINS) {
-            digar[*n_digar].alt_seq = (uint8_t*)malloc(d.len * sizeof(uint8_t));
+            digar[*n_digar].alt_seq = (uint8_t*)_err_malloc(d.len * sizeof(uint8_t));
             for (int i = 0; i < d.len; ++i) digar[*n_digar].alt_seq[i] =  d.alt_seq[i];
         }
         digar[*n_digar].qi = d.qi; digar[*n_digar].is_low_qual = d.is_low_qual;
         (*n_digar)++;
     } else {
         if (digar[*n_digar-1].type == BAM_CINS) {
-            uint8_t *alt_seq = (uint8_t*)realloc(digar[*n_digar-1].alt_seq, (digar[*n_digar-1].len + d.len) * sizeof(uint8_t));
+            uint8_t *alt_seq = (uint8_t*)_err_realloc(digar[*n_digar-1].alt_seq, (digar[*n_digar-1].len + d.len) * sizeof(uint8_t));
             for (int i = digar[*n_digar-1].len; i < digar[*n_digar-1].len + d.len; ++i)
                 alt_seq[i] = d.alt_seq[i - digar[*n_digar-1].len];
             digar[*n_digar-1].alt_seq = alt_seq;
@@ -601,7 +601,7 @@ digar1_t *push_digar0(digar1_t *digar, int *n_digar, int *m_digar, digar1_t d) {
     if (*n_digar == 0 || same_digar1(digar[*n_digar-1], d) == 0) { // not the same as the last digar
         if (*n_digar == *m_digar) {
             *m_digar = *m_digar ? (*m_digar << 1) : 4;
-            digar = (digar1_t*)realloc(digar, *m_digar * sizeof(digar1_t));
+            digar = (digar1_t*)_err_realloc(digar, *m_digar * sizeof(digar1_t));
         }
         digar[*n_digar].pos = d.pos; digar[*n_digar].type = d.type;
         digar[*n_digar].len = d.len; digar[*n_digar].alt_seq = d.alt_seq;
@@ -609,7 +609,7 @@ digar1_t *push_digar0(digar1_t *digar, int *n_digar, int *m_digar, digar1_t d) {
         (*n_digar)++;
     } else {
         if (digar[*n_digar-1].type == BAM_CINS) {
-            uint8_t *alt_seq = (uint8_t*)realloc(digar[*n_digar-1].alt_seq, (digar[*n_digar-1].len + d.len) * sizeof(uint8_t));
+            uint8_t *alt_seq = (uint8_t*)_err_realloc(digar[*n_digar-1].alt_seq, (digar[*n_digar-1].len + d.len) * sizeof(uint8_t));
             for (int i = digar[*n_digar-1].len; i < digar[*n_digar-1].len + d.len; ++i) 
                 alt_seq[i] = d.alt_seq[i - digar[*n_digar-1].len];
             digar[*n_digar-1].alt_seq = alt_seq;
@@ -675,8 +675,8 @@ int is_ont_palindrome_clip(const call_var_opt_t *opt, bam1_t *read) {
             char *sa_entry = strtok_r(sa_value, ";", &sa_saveptr);
             while (sa_entry) {
                 int sa_entry_len = strlen(sa_entry);
-                char *rname = (char*)malloc((sa_entry_len+1) * sizeof(char));
-                char *cigar = (char*)malloc((sa_entry_len+1) * sizeof(char));
+                char *rname = (char*)_err_malloc((sa_entry_len+1) * sizeof(char));
+                char *cigar = (char*)_err_malloc((sa_entry_len+1) * sizeof(char));
                 char strand; int pos, mapq, flag;
                 sscanf(sa_entry, "%[^,],%d,%c,%[^,],%d,%d", rname, &pos, &strand, cigar, &mapq, &flag);
                 // Estimate end position from CIGAR
@@ -713,12 +713,12 @@ int collect_digar_from_eqx_cigar(bam_chunk_t *chunk, int read_i, const struct ca
     int max_s = opt->noisy_reg_max_xgaps, win = opt->noisy_reg_slide_win;
     double max_noisy_frac_per_read = opt->max_noisy_frac_per_read, max_var_ratio_per_read = opt->max_var_ratio_per_read;
     int end_clip_reg = opt->end_clip_reg, end_clip_reg_flank_win = opt->end_clip_reg_flank_win;
-    digar->n_digar = 0; digar->m_digar = 2 * n_cigar; digar->digars = (digar1_t*)malloc(n_cigar * 2 * sizeof(digar1_t));
+    digar->n_digar = 0; digar->m_digar = 2 * n_cigar; digar->digars = (digar1_t*)_err_malloc(n_cigar * 2 * sizeof(digar1_t));
     digar->noisy_regs = cr_init();
     digar->beg = pos; digar->end = bam_endpos(read); digar->is_rev = bam_is_rev(read);
     uint32_t qlen = read->core.l_qseq;
     longcalld_copy_digar_read_buffers(chunk, read, digar);
-    int _n_digar = 0, _m_digar = 2 * n_cigar; digar1_t *_digars = (digar1_t*)malloc(_m_digar * sizeof(digar1_t));
+    int _n_digar = 0, _m_digar = 2 * n_cigar; digar1_t *_digars = (digar1_t*)_err_malloc(_m_digar * sizeof(digar1_t));
     int rlen = bam_cigar2rlen(n_cigar, cigar); int tlen = chunk->whole_ref_len;
     xid_queue_t *q = init_xid_queue(rlen, max_s, win); // for noisy region
     hts_pos_t noisy_start = -1, noisy_end = -1; int cr_q_start = -1, cr_q_end = -1;
@@ -735,7 +735,7 @@ int collect_digar_from_eqx_cigar(bam_chunk_t *chunk, int read_i, const struct ca
         if (op == BAM_CDIFF) {
             for (int j = 0; j < len; ++j) {
                 _uni_realloc(_digars, _n_digar, _m_digar, digar1_t);
-                uint8_t *x_seq = (uint8_t*)malloc(sizeof(uint8_t));
+                uint8_t *x_seq = (uint8_t*)_err_malloc(sizeof(uint8_t));
                 x_seq[0] = seq_nt16_int[bam_seqi(digar->bseq, qi)];
                 if (digar->qual[qi] >= opt->min_bq) { // skip low-quality bases for noisy regions
                     push_xid_size_queue_win(q, pos, 1, 1, digar->noisy_regs, &noisy_start, &noisy_end, &cr_q_start, &cr_q_end);
@@ -762,7 +762,7 @@ int collect_digar_from_eqx_cigar(bam_chunk_t *chunk, int read_i, const struct ca
             pos += len;
         } else if (op == BAM_CINS) {
             _uni_realloc(_digars, _n_digar, _m_digar, digar1_t);
-            uint8_t *ins_seq = (uint8_t*)malloc(len * sizeof(uint8_t));
+            uint8_t *ins_seq = (uint8_t*)_err_malloc(len * sizeof(uint8_t));
             for (int j = 0; j < len; ++j) ins_seq[j] = seq_nt16_int[bam_seqi(digar->bseq, qi+j)];
             int is_low_qual = 1;
             for (int _i = 0; _i < len; ++_i) {
@@ -861,11 +861,11 @@ int collect_digar_from_cs_tag(bam_chunk_t *chunk, int read_i, const struct call_
     double max_noisy_frac_per_read = opt->max_noisy_frac_per_read, max_var_ratio_per_read = opt->max_var_ratio_per_read;
     int end_clip_reg = opt->end_clip_reg, end_clip_reg_flank_win = opt->end_clip_reg_flank_win;
 
-    digar->n_digar = 0; digar->m_digar = 2 * n_cigar; digar->digars = (digar1_t*)malloc(n_cigar * 2 * sizeof(digar1_t));
+    digar->n_digar = 0; digar->m_digar = 2 * n_cigar; digar->digars = (digar1_t*)_err_malloc(n_cigar * 2 * sizeof(digar1_t));
     digar->noisy_regs = cr_init();
     uint32_t qlen = read->core.l_qseq;
     longcalld_copy_digar_read_buffers(chunk, read, digar);
-    int _n_digar = 0, _m_digar = 2 * n_cigar; digar1_t *_digars = (digar1_t*)malloc(_m_digar * sizeof(digar1_t));
+    int _n_digar = 0, _m_digar = 2 * n_cigar; digar1_t *_digars = (digar1_t*)_err_malloc(_m_digar * sizeof(digar1_t));
     char *cs = bam_aux2Z(cs_tag);
     int rlen = bam_cigar2rlen(n_cigar, cigar); int tlen = chunk->whole_ref_len;
     xid_queue_t *q = init_xid_queue(rlen, max_s, win);
@@ -911,7 +911,7 @@ int collect_digar_from_cs_tag(bam_chunk_t *chunk, int read_i, const struct call_
             pos += len; qi += len;
         } else if (*cs == '*') { // mismatch: 1bp
             _uni_realloc(_digars, _n_digar, _m_digar, digar1_t);
-            uint8_t *x_seq = (uint8_t*)malloc(sizeof(uint8_t));
+            uint8_t *x_seq = (uint8_t*)_err_malloc(sizeof(uint8_t));
             x_seq[0] = nst_nt4_table[(int)*(cs+2)];
             if (digar->qual[qi] >= opt->min_bq) {
                 push_xid_size_queue_win(q, pos, 1, 1, digar->noisy_regs, &noisy_start, &noisy_end, &cr_q_start, &cr_q_end);
@@ -925,7 +925,7 @@ int collect_digar_from_cs_tag(bam_chunk_t *chunk, int read_i, const struct call_
             while (isalpha(*cs)) {
                 len++; cs++;
             }
-            uint8_t *ins_seq = (uint8_t*)malloc(len * sizeof(uint8_t));
+            uint8_t *ins_seq = (uint8_t*)_err_malloc(len * sizeof(uint8_t));
             for (int i = 0; i < len; ++i) ins_seq[i] = nst_nt4_table[(int)*(cs-len+i)];
             int is_low_qual = 1;
             for (int _i = 0; _i < len; ++_i) {
@@ -1019,11 +1019,11 @@ int collect_digar_from_MD_tag(bam_chunk_t *chunk, int read_i, const struct call_
     double max_noisy_frac_per_read = opt->max_noisy_frac_per_read, max_var_ratio_per_read = opt->max_var_ratio_per_read;
     int end_clip_reg = opt->end_clip_reg, end_clip_reg_flank_win = opt->end_clip_reg_flank_win;
 
-    digar->n_digar = 0; digar->m_digar = 2 * n_cigar; digar->digars = (digar1_t*)malloc(n_cigar * 2 * sizeof(digar1_t));
+    digar->n_digar = 0; digar->m_digar = 2 * n_cigar; digar->digars = (digar1_t*)_err_malloc(n_cigar * 2 * sizeof(digar1_t));
     digar->noisy_regs = cr_init();
     uint32_t qlen = read->core.l_qseq;
     longcalld_copy_digar_read_buffers(chunk, read, digar);
-    int _n_digar = 0, _m_digar = 2 * n_cigar; digar1_t *_digars = (digar1_t*)malloc(_m_digar * sizeof(digar1_t));
+    int _n_digar = 0, _m_digar = 2 * n_cigar; digar1_t *_digars = (digar1_t*)_err_malloc(_m_digar * sizeof(digar1_t));
     char *md = bam_aux2Z(s); int md_i = 0;
     // printf("MD: %s\n", md);
     int rlen = bam_cigar2rlen(n_cigar, cigar); int tlen = chunk->whole_ref_len;
@@ -1078,7 +1078,7 @@ int collect_digar_from_MD_tag(bam_chunk_t *chunk, int read_i, const struct call_
                 } else if (isalpha(md[md_i])) { // X
                     // if (qual[qi] >= min_bq) {
                     _uni_realloc(_digars, _n_digar, _m_digar, digar1_t);
-                    uint8_t *x_seq = (uint8_t*)malloc(sizeof(uint8_t));
+                    uint8_t *x_seq = (uint8_t*)_err_malloc(sizeof(uint8_t));
                     x_seq[0] = seq_nt16_int[bam_seqi(digar->bseq, qi)];
                     if (digar->qual[qi] >= opt->min_bq) {
                         push_xid_size_queue_win(q, pos, 1, 1, digar->noisy_regs, &noisy_start, &noisy_end, &cr_q_start, &cr_q_end);
@@ -1107,7 +1107,7 @@ int collect_digar_from_MD_tag(bam_chunk_t *chunk, int read_i, const struct call_
             if (md[md_i] == '0') md_i++; // skip 0 after D
         } else if (op == BAM_CINS) {
             _uni_realloc(_digars, _n_digar, _m_digar, digar1_t);
-            uint8_t *ins_seq = (uint8_t*)malloc(len * sizeof(uint8_t));
+            uint8_t *ins_seq = (uint8_t*)_err_malloc(len * sizeof(uint8_t));
             for (int j = 0; j < len; ++j) ins_seq[j] = seq_nt16_int[bam_seqi(digar->bseq, qi+j)];
             int is_low_qual = 1;
             for (int _i = 0; _i < len; ++_i) {
@@ -1191,11 +1191,11 @@ int collect_digar_from_ref_seq(bam_chunk_t *chunk, int read_i, const struct call
     double max_noisy_frac_per_read = opt->max_noisy_frac_per_read, max_var_ratio_per_read = opt->max_var_ratio_per_read;
     int end_clip_reg = opt->end_clip_reg, end_clip_reg_flank_win = opt->end_clip_reg_flank_win;
 
-    digar->n_digar = 0; digar->m_digar = 2 * n_cigar; digar->digars = (digar1_t*)malloc(n_cigar * 2 * sizeof(digar1_t));
+    digar->n_digar = 0; digar->m_digar = 2 * n_cigar; digar->digars = (digar1_t*)_err_malloc(n_cigar * 2 * sizeof(digar1_t));
     digar->noisy_regs = cr_init();
     uint32_t qlen = read->core.l_qseq;
     longcalld_copy_digar_read_buffers(chunk, read, digar);
-    int _n_digar = 0, _m_digar = 2 * n_cigar; digar1_t *_digars = (digar1_t*)malloc(_m_digar * sizeof(digar1_t));
+    int _n_digar = 0, _m_digar = 2 * n_cigar; digar1_t *_digars = (digar1_t*)_err_malloc(_m_digar * sizeof(digar1_t));
     int rlen = bam_cigar2rlen(n_cigar, cigar); int tlen = chunk->whole_ref_len;
     xid_queue_t *q = init_xid_queue(rlen, max_s, win);
     hts_pos_t noisy_start = -1, noisy_end = -1; int cr_q_start = -1, cr_q_end = -1;
@@ -1232,7 +1232,7 @@ int collect_digar_from_ref_seq(bam_chunk_t *chunk, int read_i, const struct call
                         eq_len = 0;
                     }
                     _uni_realloc(_digars, _n_digar, _m_digar, digar1_t);
-                    uint8_t *x_seq = (uint8_t*)malloc(sizeof(uint8_t));
+                    uint8_t *x_seq = (uint8_t*)_err_malloc(sizeof(uint8_t));
                     x_seq[0] = read_base; //seq_nt16_int[bam_seqi(digar->bseq, qi)];
                     if (digar->qual[qi] >= opt->min_bq) {
                         push_xid_size_queue_win(q, pos, 1, 1, digar->noisy_regs, &noisy_start, &noisy_end, &cr_q_start, &cr_q_end);
@@ -1260,7 +1260,7 @@ int collect_digar_from_ref_seq(bam_chunk_t *chunk, int read_i, const struct call
             pos += len;
         } else if (op == BAM_CINS) {
             _uni_realloc(_digars, _n_digar, _m_digar, digar1_t);
-            uint8_t *ins_seq = (uint8_t*)malloc(len * sizeof(uint8_t));
+            uint8_t *ins_seq = (uint8_t*)_err_malloc(len * sizeof(uint8_t));
             for (int j = 0; j < len; ++j) ins_seq[j] = seq_nt16_int[bam_seqi(digar->bseq, qi+j)];
             // set_digar(_digars+_n_digar, pos, BAM_CINS, len, qi); // insertion
             int is_low_qual = 1;
@@ -1335,37 +1335,37 @@ int collect_digar_from_ref_seq(bam_chunk_t *chunk, int read_i, const struct call
 
 int bam_chunk_init0(bam_chunk_t *chunk, const struct call_var_opt_t *opt, int n_reads, int n_bam) {
     // input
-    chunk->n_reads = 0; chunk->m_reads = n_reads; chunk->ordered_read_ids = (int*)malloc(n_reads * sizeof(int));
+    chunk->n_reads = 0; chunk->m_reads = n_reads; chunk->ordered_read_ids = (int*)_err_malloc(n_reads * sizeof(int));
     if (need_read_names(opt)) {
-        chunk->read_names = (char**)malloc(n_reads * sizeof(char*));
+        chunk->read_names = (char**)_err_malloc(n_reads * sizeof(char*));
         for (int i = 0; i < n_reads; i++) chunk->read_names[i] = NULL;
     }
     chunk->n_bam = n_bam;
-    chunk->bam_read_off = (int*)calloc(n_bam, sizeof(int));
-    chunk->n_up_ovlp_reads = (int*)calloc(n_bam, sizeof(int)); chunk->n_up_ovlp_skip_reads = (int*)calloc(n_bam, sizeof(int));
-    chunk->up_ovlp_read_i = (int**)malloc(n_bam * sizeof(int*));
-    chunk->n_down_ovlp_reads = (int*)calloc(n_bam, sizeof(int)); chunk->n_down_ovlp_skip_reads = (int*)calloc(n_bam, sizeof(int));
-    chunk->down_ovlp_read_i = (int**)malloc(n_bam * sizeof(int*));
+    chunk->bam_read_off = (int*)_err_calloc(n_bam, sizeof(int));
+    chunk->n_up_ovlp_reads = (int*)_err_calloc(n_bam, sizeof(int)); chunk->n_up_ovlp_skip_reads = (int*)_err_calloc(n_bam, sizeof(int));
+    chunk->up_ovlp_read_i = (int**)_err_malloc(n_bam * sizeof(int*));
+    chunk->n_down_ovlp_reads = (int*)_err_calloc(n_bam, sizeof(int)); chunk->n_down_ovlp_skip_reads = (int*)_err_calloc(n_bam, sizeof(int));
+    chunk->down_ovlp_read_i = (int**)_err_malloc(n_bam * sizeof(int*));
     for (int i = 0; i < n_bam; ++i) {
-        chunk->up_ovlp_read_i[i] = (int*)malloc(n_reads * sizeof(int));
-        chunk->down_ovlp_read_i[i] = (int*)malloc(n_reads * sizeof(int));
+        chunk->up_ovlp_read_i[i] = (int*)_err_malloc(n_reads * sizeof(int));
+        chunk->down_ovlp_read_i[i] = (int*)_err_malloc(n_reads * sizeof(int));
     }
-    chunk->reads = (bam1_t**)malloc(n_reads * sizeof(bam1_t*));
+    chunk->reads = (bam1_t**)_err_malloc(n_reads * sizeof(bam1_t*));
     chunk->ref_seq = NULL;
     chunk->low_comp_cr = NULL;
     // intermediate
-    chunk->qual_counts = (int*)calloc(256, sizeof(int));
-    chunk->is_skipped = (uint8_t*)calloc(n_reads, sizeof(uint8_t));
-    chunk->read_sigs = (uint64_t*)calloc(n_reads, sizeof(uint64_t));
-    chunk->read_sample_idx = (uint8_t*)calloc(n_reads, sizeof(uint8_t));
+    chunk->qual_counts = (int*)_err_calloc(256, sizeof(int));
+    chunk->is_skipped = (uint8_t*)_err_calloc(n_reads, sizeof(uint8_t));
+    chunk->read_sigs = (uint64_t*)_err_calloc(n_reads, sizeof(uint64_t));
+    chunk->read_sample_idx = (uint8_t*)_err_calloc(n_reads, sizeof(uint8_t));
     chunk->n_samples = opt->n_samples;
-    chunk->n_sample_reads = (int*)calloc(opt->n_samples > 0 ? opt->n_samples : 1, sizeof(int));
+    chunk->n_sample_reads = (int*)_err_calloc(opt->n_samples > 0 ? opt->n_samples : 1, sizeof(int));
     chunk->is_invalid = 0;
-    chunk->n_clean_agree_snps = (int*)malloc(n_reads * sizeof(int));
-    chunk->n_clean_conflict_snps = (int*)malloc(n_reads * sizeof(int));
-    chunk->is_ont_palindrome = (uint8_t*)calloc(n_reads, sizeof(uint8_t));
-    chunk->is_skipped_for_somatic = (uint8_t*)calloc(n_reads, sizeof(uint8_t));
-    chunk->digars = (digar_t*)calloc(n_reads, sizeof(digar_t));
+    chunk->n_clean_agree_snps = (int*)_err_malloc(n_reads * sizeof(int));
+    chunk->n_clean_conflict_snps = (int*)_err_malloc(n_reads * sizeof(int));
+    chunk->is_ont_palindrome = (uint8_t*)_err_calloc(n_reads, sizeof(uint8_t));
+    chunk->is_skipped_for_somatic = (uint8_t*)_err_calloc(n_reads, sizeof(uint8_t));
+    chunk->digars = (digar_t*)_err_calloc(n_reads, sizeof(digar_t));
     for (int i = 0; i < n_reads; i++) {
         chunk->reads[i] = bam_init1();
         chunk->digars[i].n_digar = chunk->digars[i].m_digar = 0;
@@ -1380,9 +1380,9 @@ int bam_chunk_init0(bam_chunk_t *chunk, const struct call_var_opt_t *opt, int n_
     chunk->var_noisy_read_marks = NULL; chunk->var_noisy_read_mark_id = 0;
     // output:
     chunk->flip_hap = 0;
-    chunk->haps = (int*)calloc(n_reads, sizeof(int)); // read-wise
-    chunk->phase_scores = (int*)calloc(n_reads, sizeof(int)); // read-wise
-    chunk->phase_sets = (hts_pos_t*)malloc(n_reads * sizeof(hts_pos_t)); // read-wise
+    chunk->haps = (int*)_err_calloc(n_reads, sizeof(int)); // read-wise
+    chunk->phase_scores = (int*)_err_calloc(n_reads, sizeof(int)); // read-wise
+    chunk->phase_sets = (hts_pos_t*)_err_malloc(n_reads * sizeof(hts_pos_t)); // read-wise
     for (int i = 0; i < n_reads; i++) chunk->phase_sets[i] = -1; // -1 means no phase set
     return 0;
 }
@@ -1402,25 +1402,25 @@ int bam_chunk_realloc(bam_chunk_t *chunk, const struct call_var_opt_t *opt) {
         chunk->var_noisy_read_marks = NULL;
     }
     chunk->var_noisy_read_mark_id = 0;
-    chunk->reads = (bam1_t**)realloc(chunk->reads, m_reads * sizeof(bam1_t*));
+    chunk->reads = (bam1_t**)_err_realloc(chunk->reads, m_reads * sizeof(bam1_t*));
     if (need_read_names(opt)) 
-        chunk->read_names = (char**)realloc(chunk->read_names, m_reads * sizeof(char*));
-    chunk->ordered_read_ids = (int*)realloc(chunk->ordered_read_ids, m_reads * sizeof(int));
+        chunk->read_names = (char**)_err_realloc(chunk->read_names, m_reads * sizeof(char*));
+    chunk->ordered_read_ids = (int*)_err_realloc(chunk->ordered_read_ids, m_reads * sizeof(int));
     for (int i = 0; i < chunk->n_bam; ++i) {
-        chunk->up_ovlp_read_i[i] = (int*)realloc(chunk->up_ovlp_read_i[i], m_reads * sizeof(int));
-        chunk->down_ovlp_read_i[i] = (int*)realloc(chunk->down_ovlp_read_i[i], m_reads * sizeof(int));
+        chunk->up_ovlp_read_i[i] = (int*)_err_realloc(chunk->up_ovlp_read_i[i], m_reads * sizeof(int));
+        chunk->down_ovlp_read_i[i] = (int*)_err_realloc(chunk->down_ovlp_read_i[i], m_reads * sizeof(int));
     }
-    chunk->is_skipped = (uint8_t*)realloc(chunk->is_skipped, m_reads * sizeof(uint8_t));
-    chunk->read_sigs = (uint64_t*)realloc(chunk->read_sigs, m_reads * sizeof(uint64_t));
-    chunk->read_sample_idx = (uint8_t*)realloc(chunk->read_sample_idx, m_reads * sizeof(uint8_t));
-    chunk->n_clean_agree_snps = (int*)realloc(chunk->n_clean_agree_snps, m_reads * sizeof(int));
-    chunk->n_clean_conflict_snps = (int*)realloc(chunk->n_clean_conflict_snps, m_reads * sizeof(int));
-    chunk->is_ont_palindrome = (uint8_t*)realloc(chunk->is_ont_palindrome, m_reads * sizeof(uint8_t));
-    chunk->is_skipped_for_somatic = (uint8_t*)realloc(chunk->is_skipped_for_somatic, m_reads * sizeof(uint8_t));
-    chunk->digars = (digar_t*)realloc(chunk->digars, m_reads * sizeof(digar_t));
-    chunk->haps = (int*)realloc(chunk->haps, m_reads * sizeof(int));
-    chunk->phase_scores = (int*)realloc(chunk->phase_scores, m_reads * sizeof(int));
-    chunk->phase_sets = (hts_pos_t*)realloc(chunk->phase_sets, m_reads * sizeof(hts_pos_t));
+    chunk->is_skipped = (uint8_t*)_err_realloc(chunk->is_skipped, m_reads * sizeof(uint8_t));
+    chunk->read_sigs = (uint64_t*)_err_realloc(chunk->read_sigs, m_reads * sizeof(uint64_t));
+    chunk->read_sample_idx = (uint8_t*)_err_realloc(chunk->read_sample_idx, m_reads * sizeof(uint8_t));
+    chunk->n_clean_agree_snps = (int*)_err_realloc(chunk->n_clean_agree_snps, m_reads * sizeof(int));
+    chunk->n_clean_conflict_snps = (int*)_err_realloc(chunk->n_clean_conflict_snps, m_reads * sizeof(int));
+    chunk->is_ont_palindrome = (uint8_t*)_err_realloc(chunk->is_ont_palindrome, m_reads * sizeof(uint8_t));
+    chunk->is_skipped_for_somatic = (uint8_t*)_err_realloc(chunk->is_skipped_for_somatic, m_reads * sizeof(uint8_t));
+    chunk->digars = (digar_t*)_err_realloc(chunk->digars, m_reads * sizeof(digar_t));
+    chunk->haps = (int*)_err_realloc(chunk->haps, m_reads * sizeof(int));
+    chunk->phase_scores = (int*)_err_realloc(chunk->phase_scores, m_reads * sizeof(int));
+    chunk->phase_sets = (hts_pos_t*)_err_realloc(chunk->phase_sets, m_reads * sizeof(hts_pos_t));
     for (int i = chunk->m_reads; i < m_reads; i++) {
         chunk->reads[i] = bam_init1();
         chunk->digars[i].n_digar = chunk->digars[i].m_digar = 0;
@@ -1674,7 +1674,7 @@ int bam_get_NM(bam1_t *read) {
 }
 
 void sort_chunk_reads(bam_chunk_t *chunk) {
-    bam_read_sort_t *read_sorts = (bam_read_sort_t*)malloc(chunk->n_reads * sizeof(bam_read_sort_t));
+    bam_read_sort_t *read_sorts = (bam_read_sort_t*)_err_malloc(chunk->n_reads * sizeof(bam_read_sort_t));
     for (int i = 0; i < chunk->n_reads; ++i) {
         read_sorts[i].read_i = i;
         read_sorts[i].pos = chunk->reads[i]->core.pos;
@@ -1790,7 +1790,7 @@ static inline int get_nm_from_digar(digar1_t *d, int n_digar) {
 
 static inline kstring_t *get_md_from_digar(digar1_t *d, int n_digar, const char *ref_seq, hts_pos_t ref_beg, hts_pos_t ref_end) {
     // Calculate MD tag from CIGAR string
-    kstring_t *MD_str = (kstring_t*)calloc(1, sizeof(kstring_t));
+    kstring_t *MD_str = (kstring_t*)_err_calloc(1, sizeof(kstring_t));
     hts_pos_t pos; // Start position in reference sequence
     int eq_len = 0, prev_was_del = 0;
     for (int i = 0; i < n_digar; ++i) {
@@ -1834,7 +1834,7 @@ static inline kstring_t *get_md_from_digar(digar1_t *d, int n_digar, const char 
 
 static inline kstring_t *get_cs_from_digar(digar1_t *d, int n_digar, const char *ref_seq, hts_pos_t ref_beg, hts_pos_t ref_end) {
     // Calculate cs tag from CIGAR string
-    kstring_t *cs_str = (kstring_t*)calloc(1, sizeof(kstring_t));
+    kstring_t *cs_str = (kstring_t*)_err_calloc(1, sizeof(kstring_t));
     hts_pos_t pos; // Start position in reference sequence
     int prev_was_del = 0;
     for (int i = 0; i < n_digar; ++i) {
@@ -1955,7 +1955,7 @@ int refine_bam1(bam_chunk_t *chunk, int read_i, bam1_t *b) {
         b->core.pos = new_pos - 1; // Update to 0-based
     }
     // update b->cigar based on chunk->digars[read_i]
-    uint32_t *new_cigar = (uint32_t*)malloc(chunk->digars[read_i].n_digar * sizeof(uint32_t));
+    uint32_t *new_cigar = (uint32_t*)_err_malloc(chunk->digars[read_i].n_digar * sizeof(uint32_t));
     int new_n_cigar = 0, new_m_cigar = chunk->digars[read_i].n_digar;
     for (int i = 0; i < chunk->digars[read_i].n_digar; ++i) {
         new_cigar = longcalld_push_cigar(&new_n_cigar, &new_m_cigar, new_cigar,
@@ -1992,7 +1992,7 @@ int refine_bam1(bam_chunk_t *chunk, int read_i, bam1_t *b) {
     int old_data_len = b->l_data, new_data_len = b->l_data + (new_n_cigar-old_n_cigar) * sizeof(uint32_t);
     if (new_data_len > b->m_data) sam_realloc_bam_data(b, new_data_len);
     // fprintf(stderr, "old_l_data: %d, new_l_data: %d, %d\n", old_data_len, new_data_len, b->m_data);
-    uint8_t *new_data = (uint8_t*)malloc(b->m_data);
+    uint8_t *new_data = (uint8_t*)_err_malloc(b->m_data);
 
     // Copy: QNAME
     int qname_len = b->core.l_qname;
@@ -2022,11 +2022,11 @@ int refine_bam1(bam_chunk_t *chunk, int read_i, bam1_t *b) {
 // ---------------------------------------------------------------------------
 
 aln_out_t *aln_out_init(htsFile *fp, bam_hdr_t *hdr, int is_cram, int no_reorder, hts_pos_t window) {
-    aln_out_t *o = (aln_out_t*)calloc(1, sizeof(aln_out_t));
+    aln_out_t *o = (aln_out_t*)_err_calloc(1, sizeof(aln_out_t));
     o->fp = fp; o->hdr = hdr; o->is_cram = is_cram != 0;
     o->no_reorder = no_reorder != 0;
     o->window = no_reorder ? 0 : window;
-    o->m_buf = 256; o->buf = (bam1_t**)malloc(o->m_buf * sizeof(bam1_t*));
+    o->m_buf = 256; o->buf = (bam1_t**)_err_malloc(o->m_buf * sizeof(bam1_t*));
     o->n_buf = 0; o->last_tid = -1; o->last_pos = -1; o->n_written = 0;
     return o;
 }
@@ -2084,7 +2084,7 @@ void aln_out_push(aln_out_t *o, bam1_t *b, const char *tname) {
 
     if (o->n_buf == o->m_buf) {
         o->m_buf <<= 1;
-        o->buf = (bam1_t**)realloc(o->buf, o->m_buf * sizeof(bam1_t*));
+        o->buf = (bam1_t**)_err_realloc(o->buf, o->m_buf * sizeof(bam1_t*));
     }
     // Insertion sort from the back: the stream is nearly sorted, so this
     // almost always lands at the end after a single comparison.
@@ -2251,11 +2251,11 @@ int write_read_to_bam(bam_chunk_t *chunk, const struct call_var_opt_t *opt, cons
     // as bam_read_off[i] + (this file's callable ordinal). The per-read signature
     // check in write_processed_read_to_bam() verifies that arithmetic on every
     // record, which is what makes this safe to restructure.
-    hts_itr_t **iters = (hts_itr_t**)calloc(n_bam, sizeof(hts_itr_t*));
-    bam1_t **cur = (bam1_t**)calloc(n_bam, sizeof(bam1_t*));
-    int *have = (int*)calloc(n_bam, sizeof(int));
-    int *read_i = (int*)calloc(n_bam, sizeof(int));        // callable reads seen in this file
-    int *skip_read_i = (int*)calloc(n_bam, sizeof(int));   // filtered-out reads seen in this file
+    hts_itr_t **iters = (hts_itr_t**)_err_calloc(n_bam, sizeof(hts_itr_t*));
+    bam1_t **cur = (bam1_t**)_err_calloc(n_bam, sizeof(bam1_t*));
+    int *have = (int*)_err_calloc(n_bam, sizeof(int));
+    int *read_i = (int*)_err_calloc(n_bam, sizeof(int));        // callable reads seen in this file
+    int *skip_read_i = (int*)_err_calloc(n_bam, sizeof(int));   // filtered-out reads seen in this file
 
     for (int i = 0; i < n_bam; ++i) {
         bam_hdr_t *header = opt->headers[i];

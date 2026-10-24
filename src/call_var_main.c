@@ -183,7 +183,7 @@ call_var_opt_t *call_var_init_para(void) {
 
     opt->sample_name = NULL;
     opt->ref_fa_fn = NULL; opt->ref_fa_fai_fn = NULL; opt->reg_bed_fn = NULL;
-    opt->input_is_list = 0; opt->n_in_bam_fn = 1; opt->m_in_bam_fn = 4; opt->in_bam_fns = (char**)malloc(4 * sizeof(char*));
+    opt->input_is_list = 0; opt->n_in_bam_fn = 1; opt->m_in_bam_fn = 4; opt->in_bam_fns = (char**)_err_malloc(4 * sizeof(char*));
     for (int i = 0; i < 4; i++) opt->in_bam_fns[i] = NULL;
     opt->n_normal_bam_fn = 0; opt->m_normal_bam_fn = 0; opt->normal_bam_fns = NULL;
     opt->n_tumor_bam_fn = 0; opt->n_samples = 1; opt->bam_i_to_sample = NULL;
@@ -437,19 +437,19 @@ static void make_var_worker_for(void *_data, long ii, int tid) {
 static void reg_chunks_realloc(call_var_pl_t *pl) {
     if (pl->n_reg_chunks >= pl->m_reg_chunks) {
         pl->m_reg_chunks *= 2;
-        pl->reg_chunks = (reg_chunks_t*)realloc(pl->reg_chunks, pl->m_reg_chunks * sizeof(reg_chunks_t));
+        pl->reg_chunks = (reg_chunks_t*)_err_realloc(pl->reg_chunks, pl->m_reg_chunks * sizeof(reg_chunks_t));
         for (int k = pl->n_reg_chunks; k < pl->m_reg_chunks; k++) {
             pl->reg_chunks[k].n_regions = 0;
             pl->reg_chunks[k].m_regions = 512;
-            pl->reg_chunks[k].reg_tids = (int*)malloc(pl->reg_chunks[k].m_regions * sizeof(int));
-            pl->reg_chunks[k].reg_begs = (hts_pos_t*)malloc(pl->reg_chunks[k].m_regions * sizeof(hts_pos_t));
-            pl->reg_chunks[k].reg_ends = (hts_pos_t*)malloc(pl->reg_chunks[k].m_regions * sizeof(hts_pos_t));
+            pl->reg_chunks[k].reg_tids = (int*)_err_malloc(pl->reg_chunks[k].m_regions * sizeof(int));
+            pl->reg_chunks[k].reg_begs = (hts_pos_t*)_err_malloc(pl->reg_chunks[k].m_regions * sizeof(hts_pos_t));
+            pl->reg_chunks[k].reg_ends = (hts_pos_t*)_err_malloc(pl->reg_chunks[k].m_regions * sizeof(hts_pos_t));
         }
     }
 }
 
 void set_exclude_ctg(call_var_opt_t *opt, char *ctg) {
-    opt->exc_tnames = (char**)realloc(opt->exc_tnames, (opt->n_exc_tnames+1) * sizeof(char*));
+    opt->exc_tnames = (char**)_err_realloc(opt->exc_tnames, (opt->n_exc_tnames+1) * sizeof(char*));
     opt->exc_tnames[opt->n_exc_tnames] = strdup(ctg);
     opt->n_exc_tnames++;
 }
@@ -457,7 +457,7 @@ void set_exclude_ctg(call_var_opt_t *opt, char *ctg) {
 void set_extra_input_bam(call_var_opt_t *opt, char *fn) {
     if (opt->n_in_bam_fn >= opt->m_in_bam_fn) {
         opt->m_in_bam_fn *= 2;
-        opt->in_bam_fns = (char**)realloc(opt->in_bam_fns, opt->m_in_bam_fn * sizeof(char*));
+        opt->in_bam_fns = (char**)_err_realloc(opt->in_bam_fns, opt->m_in_bam_fn * sizeof(char*));
     }
     opt->in_bam_fns[opt->n_in_bam_fn] = retrieve_full_url(fn);
     opt->n_in_bam_fn++;
@@ -466,7 +466,7 @@ void set_extra_input_bam(call_var_opt_t *opt, char *fn) {
 void set_normal_input_bam(call_var_opt_t *opt, char *fn) {
     if (opt->n_normal_bam_fn >= opt->m_normal_bam_fn) {
         opt->m_normal_bam_fn = opt->m_normal_bam_fn ? opt->m_normal_bam_fn * 2 : 4;
-        opt->normal_bam_fns = (char**)realloc(opt->normal_bam_fns, opt->m_normal_bam_fn * sizeof(char*));
+        opt->normal_bam_fns = (char**)_err_realloc(opt->normal_bam_fns, opt->m_normal_bam_fn * sizeof(char*));
     }
     opt->normal_bam_fns[opt->n_normal_bam_fn++] = retrieve_full_url(fn);
 }
@@ -481,13 +481,13 @@ void finalise_sample_layout(call_var_opt_t *opt) {
     for (int i = 0; i < opt->n_normal_bam_fn; ++i) {
         if (opt->n_in_bam_fn >= opt->m_in_bam_fn) {
             opt->m_in_bam_fn *= 2;
-            opt->in_bam_fns = (char**)realloc(opt->in_bam_fns, opt->m_in_bam_fn * sizeof(char*));
+            opt->in_bam_fns = (char**)_err_realloc(opt->in_bam_fns, opt->m_in_bam_fn * sizeof(char*));
         }
         opt->in_bam_fns[opt->n_in_bam_fn++] = opt->normal_bam_fns[i];
         opt->normal_bam_fns[i] = NULL; // ownership moved
     }
     opt->n_samples = opt->n_normal_bam_fn > 0 ? 2 : 1;
-    opt->bam_i_to_sample = (int*)malloc(opt->n_in_bam_fn * sizeof(int));
+    opt->bam_i_to_sample = (int*)_err_malloc(opt->n_in_bam_fn * sizeof(int));
     for (int i = 0; i < opt->n_in_bam_fn; ++i)
         opt->bam_i_to_sample[i] = (i < opt->n_tumor_bam_fn) ? LONGCALLD_SAMPLE_TUMOR : LONGCALLD_SAMPLE_NORMAL;
     if (opt->n_samples > 1) {
@@ -542,7 +542,7 @@ void set_bam_list_file(call_var_opt_t *opt, char *fn) {
     }
     // change [1 .. n_extra_file .. n_file-1] to [1 .. n_file-1 .. n_extra_file]
     if (n_extra_file > 0) {
-        char **extra_fns = (char**)malloc(n_extra_file * sizeof(char*));
+        char **extra_fns = (char**)_err_malloc(n_extra_file * sizeof(char*));
         for (int i = 0; i < n_extra_file; ++i) {
             extra_fns[i] = opt->in_bam_fns[1 + i];
         }
@@ -604,9 +604,9 @@ ChromosomeType classify_chromosome(const char *chr) {
 static void reg_chunks_region_realloc(reg_chunks_t *reg_chunks) {
     if (reg_chunks->n_regions >= reg_chunks->m_regions) {
         reg_chunks->m_regions *= 2;
-        reg_chunks->reg_tids = (int*)realloc(reg_chunks->reg_tids, reg_chunks->m_regions * sizeof(int));
-        reg_chunks->reg_begs = (hts_pos_t*)realloc(reg_chunks->reg_begs, reg_chunks->m_regions * sizeof(hts_pos_t));
-        reg_chunks->reg_ends = (hts_pos_t*)realloc(reg_chunks->reg_ends, reg_chunks->m_regions * sizeof(hts_pos_t));
+        reg_chunks->reg_tids = (int*)_err_realloc(reg_chunks->reg_tids, reg_chunks->m_regions * sizeof(int));
+        reg_chunks->reg_begs = (hts_pos_t*)_err_realloc(reg_chunks->reg_begs, reg_chunks->m_regions * sizeof(hts_pos_t));
+        reg_chunks->reg_ends = (hts_pos_t*)_err_realloc(reg_chunks->reg_ends, reg_chunks->m_regions * sizeof(hts_pos_t));
     }
 }
 
@@ -680,8 +680,8 @@ static int collect_regions_from_bed_file(call_var_opt_t *opt, call_var_pl_t *pl)
     // collect regions
     bam_hdr_t *hdr = pl->io_aux[0].headers[0];
     int n_regions = 0, m_regions = 1024;
-    char **regions = (char**)malloc(m_regions * sizeof(char*));
-    for (int i = 0; i < m_regions; ++i) regions[i] = (char*)malloc(1024);
+    char **regions = (char**)_err_malloc(m_regions * sizeof(char*));
+    for (int i = 0; i < m_regions; ++i) regions[i] = (char*)_err_malloc(1024);
     while (fgets(line, sizeof(line), fp)) {
         if (line[0] == '#') continue; // skip header/comment
         // exclude \n in line if necessary
@@ -705,8 +705,8 @@ static int collect_regions_from_bed_file(call_var_opt_t *opt, call_var_pl_t *pl)
         if (beg > end || beg <= 0 || end <= 0) continue;
         if (n_regions == m_regions) {
             m_regions *= 2; // should be m, not n_regions
-            regions = (char**)realloc(regions, m_regions * sizeof(char*));
-            for (int i = n_regions; i < m_regions; ++i) regions[i] = (char*)malloc(1024);
+            regions = (char**)_err_realloc(regions, m_regions * sizeof(char*));
+            for (int i = n_regions; i < m_regions; ++i) regions[i] = (char*)_err_malloc(1024);
         }
         sprintf(regions[n_regions], "%s:%" PRIi64 "-%" PRIi64 "", tname, beg, end);
         n_regions++;
@@ -721,13 +721,13 @@ static int collect_regions(call_var_pl_t *pl, call_var_opt_t *opt, int n_regions
     int min_reg_chunks_per_run = pl->min_reg_chunks_per_run;
     int max_reg_len_per_chunk = pl->max_reg_len_per_chunk;
     pl->n_reg_chunks = 0; pl->m_reg_chunks = 100;
-    pl->reg_chunks = (reg_chunks_t*)malloc(pl->m_reg_chunks * sizeof(reg_chunks_t));
+    pl->reg_chunks = (reg_chunks_t*)_err_malloc(pl->m_reg_chunks * sizeof(reg_chunks_t));
     for (int i = 0; i < pl->m_reg_chunks; i++) {
         pl->reg_chunks[i].n_regions = 0;
         pl->reg_chunks[i].m_regions = 512;
-        pl->reg_chunks[i].reg_tids = (int*)malloc(pl->reg_chunks[i].m_regions * sizeof(int));
-        pl->reg_chunks[i].reg_begs = (hts_pos_t*)malloc(pl->reg_chunks[i].m_regions * sizeof(hts_pos_t));
-        pl->reg_chunks[i].reg_ends = (hts_pos_t*)malloc(pl->reg_chunks[i].m_regions * sizeof(hts_pos_t));
+        pl->reg_chunks[i].reg_tids = (int*)_err_malloc(pl->reg_chunks[i].m_regions * sizeof(int));
+        pl->reg_chunks[i].reg_begs = (hts_pos_t*)_err_malloc(pl->reg_chunks[i].m_regions * sizeof(hts_pos_t));
+        pl->reg_chunks[i].reg_ends = (hts_pos_t*)_err_malloc(pl->reg_chunks[i].m_regions * sizeof(hts_pos_t));
     }
     // check if region(s) is provided
     if (n_regions > 0) {
@@ -804,7 +804,7 @@ static void call_var_pl_open_fa_bam(call_var_opt_t *opt, call_var_pl_t *pl, char
             _err_error_exit("Input from pipe/stdin is not supported\n");
         _err_info("Opening alignment file: %s\n", opt->in_bam_fns[j]);
     }
-    pl->io_aux = (call_var_io_aux_t*)malloc(pl->n_threads * sizeof(call_var_io_aux_t));
+    pl->io_aux = (call_var_io_aux_t*)_err_malloc(pl->n_threads * sizeof(call_var_io_aux_t));
     // Checked once the headers are read, below: every input must declare the
     // same contigs in the same order. tid is just an index into that list, so
     // two inputs that disagree would silently put records on the wrong
@@ -815,9 +815,9 @@ static void call_var_pl_open_fa_bam(call_var_opt_t *opt, call_var_pl_t *pl, char
     for (int i = 0; i < pl->n_threads; ++i){
         call_var_io_aux_t *aux = &pl->io_aux[i];
         aux->n_bam = opt->n_in_bam_fn;
-        aux->bams = (samFile **)calloc(aux->n_bam, sizeof(samFile *));
-        aux->headers = (bam_hdr_t **)calloc(aux->n_bam, sizeof(bam_hdr_t *));
-        aux->idxs = (hts_idx_t **)calloc(aux->n_bam, sizeof(hts_idx_t *));
+        aux->bams = (samFile **)_err_calloc(aux->n_bam, sizeof(samFile *));
+        aux->headers = (bam_hdr_t **)_err_calloc(aux->n_bam, sizeof(bam_hdr_t *));
+        aux->idxs = (hts_idx_t **)_err_calloc(aux->n_bam, sizeof(hts_idx_t *));
         if (!aux->bams || !aux->headers || !aux->idxs) _err_error_exit("Memory allocation failure\n");
         aux->fai = fai_load3(opt->ref_fa_fn, opt->ref_fa_fai_fn, NULL, FAI_CREATE);
         if (aux->fai == NULL)
@@ -861,9 +861,9 @@ static void call_var_pl_open_fa_bam(call_var_opt_t *opt, call_var_pl_t *pl, char
     // --out-normal-bam was given, while write_read_to_bam() is reached whenever
     // either output exists -- a null dereference on the first record.
     if (opt->out_aln_fp != NULL || opt->out_naln_fp != NULL) {
-        opt->bams = (samFile **)calloc(opt->n_in_bam_fn, sizeof(samFile *));
-        opt->headers = (bam_hdr_t **)calloc(opt->n_in_bam_fn, sizeof(bam_hdr_t *));
-        opt->idxs = (hts_idx_t **)calloc(opt->n_in_bam_fn, sizeof(hts_idx_t *));
+        opt->bams = (samFile **)_err_calloc(opt->n_in_bam_fn, sizeof(samFile *));
+        opt->headers = (bam_hdr_t **)_err_calloc(opt->n_in_bam_fn, sizeof(bam_hdr_t *));
+        opt->idxs = (hts_idx_t **)_err_calloc(opt->n_in_bam_fn, sizeof(hts_idx_t *));
         if (!opt->bams || !opt->headers || !opt->idxs) _err_error_exit("Memory allocation failure\n");
         for (int j = 0; j < opt->n_in_bam_fn; ++j) {
             opt->bams[j] = sam_open(opt->in_bam_fns[j], "r"); if (opt->bams[j] == NULL) _err_error_exit("Failed to open alignment file \'%s\'\n", opt->in_bam_fns[j]);
@@ -907,7 +907,7 @@ static void call_var_pl_open_fa_bam(call_var_opt_t *opt, call_var_pl_t *pl, char
         opt->sample_name = strdup(opt->in_bam_fns[0]);
         if (opt->n_in_bam_fn > 1) { // cat all input bam file names
             for (int i = 1; i < opt->n_in_bam_fn; ++i) {
-                opt->sample_name = realloc(opt->sample_name, strlen(opt->sample_name) + strlen(opt->in_bam_fns[i]) + 2);
+                opt->sample_name = _err_realloc(opt->sample_name, strlen(opt->sample_name) + strlen(opt->in_bam_fns[i]) + 2);
                 sprintf(opt->sample_name + strlen(opt->sample_name), ",%s", opt->in_bam_fns[i]);
             }
         }
@@ -918,7 +918,7 @@ static void call_var_pl_open_fa_bam(call_var_opt_t *opt, call_var_pl_t *pl, char
     // rejected by bcftools outright, so a collision is resolved rather than
     // emitted.
     if (opt->n_samples > 1) {
-        opt->sample_names = (char**)calloc(opt->n_samples, sizeof(char*));
+        opt->sample_names = (char**)_err_calloc(opt->n_samples, sizeof(char*));
         for (int smp = 0; smp < opt->n_samples; ++smp) {
             if (opt->sample_names[smp] != NULL) continue;
             for (int j = 0; j < opt->n_in_bam_fn; ++j) {
@@ -942,7 +942,7 @@ static void call_var_pl_open_fa_bam(call_var_opt_t *opt, call_var_pl_t *pl, char
                          "Use --tumor-name/--normal-name to choose your own.\n", opt->sample_names[LONGCALLD_SAMPLE_TUMOR]);
             for (int smp = 0; smp < 2; ++smp) {
                 char *old_nm = opt->sample_names[smp];
-                char *nm = (char*)malloc(strlen(old_nm) + 3);
+                char *nm = (char*)_err_malloc(strlen(old_nm) + 3);
                 sprintf(nm, "%s_%c", old_nm, smp == LONGCALLD_SAMPLE_NORMAL ? 'N' : 'T');
                 free(old_nm); opt->sample_names[smp] = nm;
             }
@@ -1125,10 +1125,10 @@ static void *call_var_worker_pipeline(void *shared, int step, void *in) { // kt_
         if (pl->reg_chunk_i >= pl->n_reg_chunks) return 0;
         if (LONGCALLD_VERBOSE >= 2) _err_info("Step 0: load BAM & call variants.\n");
         // _err_info("Processing contig(s): %d/%d ...\n", pl->reg_chunk_i+1, pl->n_reg_chunks);
-        call_var_step_t *s = calloc(1, sizeof(call_var_step_t));
+        call_var_step_t *s = _err_calloc(1, sizeof(call_var_step_t));
         s->pl = pl;
         s->n_chunks = pl->reg_chunks[pl->reg_chunk_i].n_regions;
-        s->chunks = calloc(s->n_chunks, sizeof(bam_chunk_t));
+        s->chunks = _err_calloc(s->n_chunks, sizeof(bam_chunk_t));
         // _err_info("Processing ctg-id: %d, n_chunks: %d (%d/%d)\n", pl->reg_chunks[pl->reg_chunk_i].reg_tids[0], s->n_chunks, pl->reg_chunk_i+1, pl->n_reg_chunks);
         kt_for(pl->n_threads, collect_bam_call_var_worker_for, s, s->n_chunks);
         pl->reg_chunk_i++;
@@ -1139,7 +1139,7 @@ static void *call_var_worker_pipeline(void *shared, int step, void *in) { // kt_
                             //         2) update phase set and haplotype (flip if needed)
         if (LONGCALLD_VERBOSE >= 2) _err_info("Step 2: stitch & make variants\n");
         if (((call_var_step_t*)in)->n_chunks > 0) {
-            ((call_var_step_t*)in)->vars = calloc(((call_var_step_t*)in)->n_chunks, sizeof(var_t));
+            ((call_var_step_t*)in)->vars = _err_calloc(((call_var_step_t*)in)->n_chunks, sizeof(var_t));
             stitch_var_main((call_var_step_t*)in, ((call_var_step_t*)in)->chunks);
             kt_for(pl->n_threads, make_var_worker_for, in, ((call_var_step_t*)in)->n_chunks);
         }

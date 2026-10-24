@@ -123,18 +123,18 @@ int make_te_kmer_idx(call_var_opt_t *opt) {
         _err_error_exit("Cannot open TE sequence file: %s\n", opt->te_seq_fn);
     }
     int m_te_seqs = 3; // Alu, L1, SVA
-    opt->te_seq_names = (char**)malloc(m_te_seqs*sizeof(char*));
-    opt->te_for_h = (kmer32_hash_t**)malloc(m_te_seqs*sizeof(kmer32_hash_t*));
-    opt->te_rev_h = (kmer32_hash_t**)malloc(m_te_seqs*sizeof(kmer32_hash_t*));
+    opt->te_seq_names = (char**)_err_malloc(m_te_seqs*sizeof(char*));
+    opt->te_for_h = (kmer32_hash_t**)_err_malloc(m_te_seqs*sizeof(kmer32_hash_t*));
+    opt->te_rev_h = (kmer32_hash_t**)_err_malloc(m_te_seqs*sizeof(kmer32_hash_t*));
     kseq_t *ks = kseq_init(f);
     kseq_rewind(ks);
     int n_te_seqs = 0;
     while (kseq_read(ks) >= 0) {
         if (n_te_seqs >= m_te_seqs) {
             m_te_seqs = m_te_seqs * 2;
-            opt->te_seq_names = (char**)realloc(opt->te_seq_names, m_te_seqs*sizeof(char*));
-            opt->te_for_h = (kmer32_hash_t**)realloc(opt->te_for_h, m_te_seqs*sizeof(kmer32_hash_t*));
-            opt->te_rev_h = (kmer32_hash_t**)realloc(opt->te_rev_h, m_te_seqs*sizeof(kmer32_hash_t*));
+            opt->te_seq_names = (char**)_err_realloc(opt->te_seq_names, m_te_seqs*sizeof(char*));
+            opt->te_for_h = (kmer32_hash_t**)_err_realloc(opt->te_for_h, m_te_seqs*sizeof(kmer32_hash_t*));
+            opt->te_rev_h = (kmer32_hash_t**)_err_realloc(opt->te_rev_h, m_te_seqs*sizeof(kmer32_hash_t*));
         }
         opt->te_seq_names[n_te_seqs] = strdup(ks->name.s);
         opt->te_for_h[n_te_seqs] = make_kmer_hash_tables(ks->seq.s, ks->seq.l, n_te_seqs, opt->te_kmer_len, 0);

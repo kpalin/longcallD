@@ -405,7 +405,7 @@ int collect_reg_ref_cseq(bam_chunk_t *chunk, hts_pos_t *reg_beg, hts_pos_t *reg_
     char *ref_seq = chunk->ref_seq; hts_pos_t ref_beg = chunk->ref_beg, ref_end = chunk->ref_end;
     if (*reg_beg < ref_beg) *reg_beg = ref_beg;
     if (*reg_end > ref_end) *reg_end = ref_end;
-    *ref_cseq = (char*)malloc((*reg_end - *reg_beg + 1) * sizeof(char));
+    *ref_cseq = (char*)_err_malloc((*reg_end - *reg_beg + 1) * sizeof(char));
     for (int i = *reg_beg; i <= *reg_end; ++i) { // collect upper-case ref seq
         (*ref_cseq)[i-*reg_beg] = toupper(ref_seq[i-ref_beg]);
     }
@@ -418,7 +418,7 @@ int collect_reg_ref_bseq(bam_chunk_t *chunk, hts_pos_t *reg_beg, hts_pos_t *reg_
     if (*reg_end > ref_end) *reg_end = ref_end;
 
     // fprintf(stderr, "Collecting ref_bseq: %" PRIi64 " %" PRIi64 " %" PRIi64 " %" PRIi64 "\n", reg_beg, reg_end, ref_beg, ref_end);
-    *ref_bseq = (uint8_t*)malloc((*reg_end - *reg_beg + 1) * sizeof(uint8_t));
+    *ref_bseq = (uint8_t*)_err_malloc((*reg_end - *reg_beg + 1) * sizeof(uint8_t));
     for (int i = *reg_beg; i <= *reg_end; ++i) {
         (*ref_bseq)[i-*reg_beg] = nst_nt4_table[(int)ref_seq[i-ref_beg]];
     }
