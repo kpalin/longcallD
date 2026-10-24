@@ -1544,6 +1544,83 @@ int no_phase_snv_is_somatic(const call_var_opt_t *opt, bam_chunk_t *chunk, int v
     return is_somatic;
 }
 
+// Which artifact checks this call's alt reads fail, as a bitmask.
+//
+// The predicates are the ones phased_snv_is_somatic() already applied in the
+// single-sample mosaic path. Nothing reached them from paired calling, so until
+// now a paired somatic call had no artifact test applied to it at all.
+//
+// They are worth reaching for. On HCC1395 chr1 the false somatic SNVs do not
+// follow the tumour's own mutational spectrum -- T>C is 23% of them against 11%
+// of the true calls, C>G 13% against 27% -- so they are not simply variants the
+// truth set omits. 20% sit within 5 bp of another call against 3.1% of the true
+// ones, which is clustered mismatches carried by a few misaligned reads. And
+// 77% sit below 0.10 tumour allele fraction, where 10% of the TRUE calls also
+// sit, so allele fraction alone cannot separate them.
+//
+// A mask rather than an early return, because the checks were tuned for
+// single-sample mosaic calling at mosaic allele fractions and there is no
+// reason to assume all of them transfer. Reporting every call's full mask makes
+// the per-check cost measurable in one run instead of one run per check.
+//
+// Depth and allele-fraction tests are deliberately left out: paired mode has
+// its own, and two places deciding one thing is how thresholds drift apart.
+static int somatic_artifact_mask1(const call_var_opt_t *opt, bam_chunk_t *chunk,
+                                  cand_somatic_var_aux_info_t *aux) {
+    int n = aux->hap_alt_dp, m = 0;
+    // No alt read to measure. That is not evidence of an artifact: every check
+    // below reads allele index 1, so a record whose ALT came from slot evidence
+    // at another allele index arrives here with nothing to look at. On chr1
+    // this happens for 162 somatic calls, 132 of them true positives, so
+    // treating it as "all nine checks failed" would discard them.
+    if (n <= 0) return 0;
+    if (opt->is_ont && (aux->hap_alt_for_cov == 0 || aux->hap_alt_rev_cov == 0)) m |= LONGCALLD_ART_STRAND;
+    if (aux->min_dis_to_var < opt->min_somatic_dis_to_var) m |= LONGCALLD_ART_DIS_TO_VAR;
+    if (median_int(aux->alt_quals, n) < chunk->median_qual) m |= LONGCALLD_ART_ALT_QUAL;
+    if (median_int(aux->win_low_qual, n) < chunk->first_quar_qual) m |= LONGCALLD_ART_WIN_QUAL;
+    if (median_int(aux->dis_to_indel_error, n) < opt->min_somatic_dis_to_seq_error) m |= LONGCALLD_ART_INDEL_ERR;
+    if (median_int(aux->no_dense_diff, n) == 0) m |= LONGCALLD_ART_DENSE_DIFF;
+    if (median_int(aux->no_near_long_clipping, n) == 0) m |= LONGCALLD_ART_LONG_CLIP;
+    if (min_int(aux->low_comp_reg_has_no_error, n) == 0) m |= LONGCALLD_ART_LOW_COMP;
+    if (min_int(aux->is_not_homopolymer_error, n) == 0) m |= LONGCALLD_ART_HOMOPOLYMER;
+    return m;
+}
+
+// alt_hap/ps restrict the evidence to the haplotype the call was made on; pass
+// -1 for both when the call was decided on pooled counts, which then collects
+// every overlapping read.
+//
+// Under LONGCALLD_ARTCHK the raw statistics are reported rather than just the
+// verdict, so every threshold in somatic_artifact_mask1() can be re-swept from
+// a single run instead of one run per threshold per value.
+int paired_somatic_artifact_mask(const call_var_opt_t *opt, bam_chunk_t *chunk,
+                                 int var_i, int alt_hap, int64_t ps) {
+    if (chunk->read_var_cr == NULL || chunk->digars == NULL || chunk->read_var_profile == NULL) return 0;
+    int64_t ovlp_n, *ovlp_b = 0, max_b = 0;
+    ovlp_n = cr_overlap(chunk->read_var_cr, "cr", var_i, var_i+1, &ovlp_b, &max_b);
+    int m = 0;
+    if (ovlp_n > 0) {
+        cand_somatic_var_aux_info_t *aux = collect_somatic_var_aux_info(opt, chunk, ps, alt_hap, var_i, ovlp_n, ovlp_b);
+        m = somatic_artifact_mask1(opt, chunk, aux);
+        if (getenv("LONGCALLD_ARTCHK") != NULL) {
+            int n = aux->hap_alt_dp;
+            fprintf(stderr, "ARTRAW\t%" PRId64 "\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n",
+                    chunk->cand_vars[var_i].pos, alt_hap, m, n,
+                    aux->hap_alt_for_cov, aux->hap_alt_rev_cov, aux->min_dis_to_var,
+                    n > 0 ? median_int(aux->alt_quals, n) : -1, chunk->median_qual,
+                    n > 0 ? median_int(aux->win_low_qual, n) : -1, chunk->first_quar_qual,
+                    n > 0 ? median_int(aux->dis_to_indel_error, n) : -1,
+                    n > 0 ? median_int(aux->no_dense_diff, n) : -1,
+                    n > 0 ? median_int(aux->no_near_long_clipping, n) : -1,
+                    n > 0 ? min_int(aux->low_comp_reg_has_no_error, n) : -1,
+                    n > 0 ? min_int(aux->is_not_homopolymer_error, n) : -1);
+        }
+        free_somatic_var_aux_info(aux);
+    }
+    if (ovlp_b != NULL) free(ovlp_b);
+    return m;
+}
+
 // check all filters
 int phased_var_is_somatic(const call_var_opt_t *opt, bam_chunk_t *chunk, int var_i, cand_somatic_var_aux_info_t *aux_info) {
     cand_var_t *var = chunk->cand_vars + var_i;

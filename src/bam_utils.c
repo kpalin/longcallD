@@ -1375,6 +1375,7 @@ int bam_chunk_init0(bam_chunk_t *chunk, const struct call_var_opt_t *opt, int n_
     // variant
     chunk->n_cand_vars = 0; chunk->cand_vars = NULL; chunk->var_i_to_cate = NULL;
     chunk->read_var_profile = NULL; chunk->read_var_cr = NULL;
+    chunk->som_art_mask_hap = NULL; chunk->som_art_mask_pooled = NULL; chunk->n_som_art = 0;
     chunk->var_noisy_read_cov_cr = NULL; chunk->var_noisy_read_err_cr = NULL;
     chunk->var_noisy_read_marks = NULL; chunk->var_noisy_read_mark_id = 0;
     // output:
@@ -1529,6 +1530,8 @@ void bam_chunk_post_free(bam_chunk_t *chunk, const struct call_var_opt_t *opt) {
     }
     free(chunk->bam_read_off);
     free(chunk->var_slots);
+    free(chunk->som_art_mask_hap); free(chunk->som_art_mask_pooled);
+    chunk->som_art_mask_hap = NULL; chunk->som_art_mask_pooled = NULL; chunk->n_som_art = 0;
     free(chunk->n_up_ovlp_reads); free(chunk->n_down_ovlp_reads); free(chunk->n_up_ovlp_skip_reads); free(chunk->n_down_ovlp_skip_reads);
     free(chunk->up_ovlp_read_i); free(chunk->down_ovlp_read_i);
     if (opt->out_aln_fp != NULL && opt->refine_bam) bam_chunk_free_digar(chunk);

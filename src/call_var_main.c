@@ -98,6 +98,7 @@ const struct option call_var_opt [] = {
     { "max-poa-msa-cells", 1, NULL, 0},
     { "som-pval", 1, NULL, 0},
     { "min-hap-vaf", 1, NULL, 0},
+    { "som-artifact-mask", 1, NULL, 0},
     { "max-unphased-frac", 1, NULL, 0},
     { "max-hap-alt-frac", 1, NULL, 0},
     { "min-som-vaf", 1, NULL, 0},
@@ -212,6 +213,7 @@ call_var_opt_t *call_var_init_para(void) {
     opt->min_som_vaf = LONGCALLD_MIN_SOM_VAF;
     opt->min_som_indel_vaf = LONGCALLD_MIN_SOM_INDEL_VAF;
     opt->min_som_rep_indel_vaf = LONGCALLD_MIN_SOM_REP_INDEL_VAF;
+    opt->som_artifact_mask = LONGCALLD_ART_DEFAULT;
     opt->min_normal_phase_af = LONGCALLD_MIN_CAND_AF;
     opt->max_normal_phase_af = LONGCALLD_MAX_CAND_AF;
     opt->max_noisy_reg_cov = LONGCALLD_MAX_NOISY_REG_COV;
@@ -1217,6 +1219,15 @@ static void call_var_usage(void) {//main usage
     fprintf(stderr, "                          or short tandem repeat, where slippage manufactures real reads\n");
     fprintf(stderr, "                          carrying a real indel that is not a somatic mutation. Lower all\n");
     fprintf(stderr, "                          three for a low-purity tumour, where clonal VAF is itself low\n");
+    fprintf(stderr, "       --som-artifact-mask INT\n");
+    fprintf(stderr, "                          which artifact checks reject a somatic call, as a bit mask\n");
+    fprintf(stderr, "                          [0x%x]: 0x002 another variant nearby, 0x004 low alt base\n", LONGCALLD_ART_DEFAULT);
+    fprintf(stderr, "                          quality, 0x008 low-quality window, 0x010 indel error nearby,\n");
+    fprintf(stderr, "                          0x020 dense mismatches, 0x040 long soft clip nearby, 0x080\n");
+    fprintf(stderr, "                          low-complexity region, 0x100 homopolymer error, 0x001 single\n");
+    fprintf(stderr, "                          strand (ONT only). 0 disables all of them. The three left out\n");
+    fprintf(stderr, "                          of the default (0x002, 0x080, 0x100) were measured to reject\n");
+    fprintf(stderr, "                          far more true somatic calls than artifacts on HiFi\n");
     fprintf(stderr, "       --max-unphased-frac FLOAT\n");
     fprintf(stderr, "                          share of reads with no haplotype above which the four-slot grid\n");
     fprintf(stderr, "                          is not trusted and the pooled test is used instead [%.2f]. Guards\n", (double)LONGCALLD_MAX_UNPHASED_FRAC);
@@ -1379,6 +1390,7 @@ int call_var_main_mode(int argc, char *argv[], int paired_cli) {
                     else if (strcmp(call_var_opt[op_idx].name, "max-poa-msa-cells") == 0) opt->max_poa_msa_cells = strtoll(optarg, NULL, 10);
                     else if (strcmp(call_var_opt[op_idx].name, "som-pval") == 0) { opt->som_pval = atof(optarg); opt->som_pval_set = 1; }
                     else if (strcmp(call_var_opt[op_idx].name, "min-hap-vaf") == 0) { opt->min_hap_vaf = atof(optarg); opt->min_hap_vaf_set = 1; }
+                    else if (strcmp(call_var_opt[op_idx].name, "som-artifact-mask") == 0) opt->som_artifact_mask = (int)strtol(optarg, NULL, 0);
                     else if (strcmp(call_var_opt[op_idx].name, "max-unphased-frac") == 0) opt->max_unphased_frac = atof(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "max-hap-alt-frac") == 0) opt->max_hap_alt_frac = atof(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "min-som-vaf") == 0) opt->min_som_vaf = atof(optarg);

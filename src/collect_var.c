@@ -563,6 +563,52 @@ static int ref_pos_in_repeat(const char *ref_seq, hts_pos_t beg, hts_pos_t end, 
     return 0;
 }
 
+// Artifact evidence for every candidate that could come out somatic.
+//
+// classify_paired_var() runs in step 2, by which point read_var_cr, the digars
+// and the read-variant profiles are gone -- bam_chunk_mid_free() drops them
+// between the two steps, and reaching for them there read freed memory. So the
+// evidence is gathered here, in step 1, and carried forward as two bitmasks per
+// candidate.
+//
+// Only candidates that could actually be classified somatic are walked, which
+// is a few thousand per chromosome rather than all ~390,000: the tumour needs
+// enough alt reads, and a normal that looks like it carries the variant makes
+// the call germline or normal-only, never somatic, under either branch of the
+// classifier.
+//
+// Two masks because the classifier has two branches, and which one it takes is
+// not known until step 2. Haplotype relabelling during stitching does not
+// invalidate the haplotype-restricted mask: a flip swaps the labels of both
+// samples together, so the same physical reads are selected either way.
+static void collect_paired_somatic_artifact_masks(const call_var_opt_t *opt, bam_chunk_t *chunk) {
+    if (chunk->n_cand_vars <= 0 || chunk->read_var_cr == NULL) return;
+    if (opt->som_artifact_mask == 0 && getenv("LONGCALLD_ARTCHK") == NULL) return; // nothing will consume them
+    // Not a redundant recompute: the slots built in
+    // assign_hap_based_on_germline_het_vars_kmeans() predate haplotype
+    // assignment, and picking which haplotype carries the alt needs the
+    // haplotype dimension those slots do not yet have.
+    collect_all_var_slot_counts(chunk);
+    if (chunk->var_slots == NULL) return;
+    free(chunk->som_art_mask_hap); free(chunk->som_art_mask_pooled);
+    chunk->som_art_mask_hap = (int*)calloc(chunk->n_cand_vars, sizeof(int));
+    chunk->som_art_mask_pooled = (int*)calloc(chunk->n_cand_vars, sizeof(int));
+    chunk->n_som_art = chunk->n_cand_vars;
+    const int T = LONGCALLD_SAMPLE_TUMOR, N = LONGCALLD_SAMPLE_NORMAL;
+    for (int i = 0; i < chunk->n_cand_vars; ++i) {
+        const var_slot_counts_t *sc = chunk->var_slots + i;
+        int t_alt = smp_alt(sc, T), n_alt = smp_alt(sc, N), n_dp = smp_dp(sc, N);
+        if (t_alt < opt->min_somatic_alt_dp) continue;
+        if (slot_has_alt(sc, N, 1, opt) || slot_has_alt(sc, N, 2, opt)) continue; // germline or normal-only
+        if (n_dp > 0 && (double)n_alt / n_dp >= opt->min_af) continue;            // germline on pooled counts
+        int s1 = sc->alt[T][1] + sc->alt[N][1], s2 = sc->alt[T][2] + sc->alt[N][2];
+        int h = s1 > s2 ? 1 : (s2 > s1 ? 2 : (s1 > 0 ? 1 : 0));
+        if (h != 0)
+            chunk->som_art_mask_hap[i] = paired_somatic_artifact_mask(opt, chunk, i, h, sc->ps);
+        chunk->som_art_mask_pooled[i] = paired_somatic_artifact_mask(opt, chunk, i, -1, -1);
+    }
+}
+
 // Alt reads a slot may hold and still count as clean.
 static int clean_slot_limit(const call_var_opt_t *opt, const var_slot_counts_t *sc, int s, int h) {
     int lim = opt->max_hap_alt;
@@ -1956,6 +2002,20 @@ int make_variants(const call_var_opt_t *opt, bam_chunk_t *chunk, var_t **_var) {
                 // block's haplotypes, and must say which.
                 if (var->vars[i].PS == 0 && !var->vars[i].is_unphased_call)
                     var->vars[i].PS = chunk->var_slots[cand_i].ps;
+                // Which slot carries the allele is one question; whether the
+                // reads carrying it are error is another, and paired mode used
+                // to ask only the first.
+                if (var->vars[i].paired_class == LONGCALLD_PAIRED_SOMATIC && cand_i < chunk->n_som_art) {
+                    int art = var->vars[i].is_unphased_call ? chunk->som_art_mask_pooled[cand_i]
+                                                            : chunk->som_art_mask_hap[cand_i];
+                    if (getenv("LONGCALLD_ARTCHK") != NULL)
+                        fprintf(stderr, "ARTCHK\t%" PRId64 "\t%d\t%d\t%d\t%.4f\n", var->vars[i].pos, art,
+                                var->vars[i].type == BAM_CDIFF, var->vars[i].is_unphased_call, var->vars[i].hap_vaf);
+                    if (art & opt->som_artifact_mask) {
+                        var->vars[i].paired_class = LONGCALLD_PAIRED_AMBIG;
+                        var->vars[i].som_hap = 0; var->vars[i].hap_vaf = 0; var->vars[i].paired_pval = 1.0;
+                    }
+                }
             }
         }
         // LONGCALLD_SLOTCHK=1 dumps the per-(sample, haplotype) tallies beside the
@@ -3396,6 +3456,10 @@ void collect_var_main(const call_var_pl_t *pl, bam_chunk_t *chunk) {
     }
     // 5. call somatic variants based on phased reads
     if (opt->out_somatic == 1) collect_somatic_var(chunk, opt);
+    // 6. artifact evidence for anything that could be called somatic in paired
+    //    mode. It has to happen here: the read-level evidence is freed by
+    //    bam_chunk_mid_free() before step 2 reaches make_variants().
+    if (chunk->n_samples > 1) collect_paired_somatic_artifact_masks(opt, chunk);
 }
 
 // stitch ii-1 and ii

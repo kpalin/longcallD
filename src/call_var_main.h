@@ -40,6 +40,48 @@
 #define LONGCALLD_MIN_SOM_VAF 0.05            // tumour VAF floor, substitutions
 #define LONGCALLD_MIN_SOM_INDEL_VAF 0.15      // tumour VAF floor, indels
 #define LONGCALLD_MIN_SOM_REP_INDEL_VAF 0.30  // tumour VAF floor, indels in a repeat
+
+// Artifact checks a paired somatic call is put through. Each bit is one check;
+// --som-artifact-mask selects which are enforced, and LONGCALLD_ARTCHK=1
+// reports every call's full mask so the set can be re-measured.
+#define LONGCALLD_ART_STRAND      0x001 // alt seen on one strand only (ONT only)
+#define LONGCALLD_ART_DIS_TO_VAR  0x002 // another variant within min_somatic_dis_to_var
+#define LONGCALLD_ART_ALT_QUAL    0x004 // median alt base quality below the chunk median
+#define LONGCALLD_ART_WIN_QUAL    0x008 // low-quality window around the alt base
+#define LONGCALLD_ART_INDEL_ERR   0x010 // an indel error within min_somatic_dis_to_seq_error
+#define LONGCALLD_ART_DENSE_DIFF  0x020 // alt reads carry dense mismatches
+#define LONGCALLD_ART_LONG_CLIP   0x040 // a long soft clip nearby
+#define LONGCALLD_ART_LOW_COMP    0x080 // error inside a low-complexity region
+#define LONGCALLD_ART_HOMOPOLYMER 0x100 // homopolymer error
+#define LONGCALLD_ART_ALL         0x1ff
+// Enforced by default: the six checks that cost essentially no true positives
+// on PacBio HiFi. Measured over 7260 paired somatic calls on chr1 (SEQC2
+// HCC1395, som.py inside the HC BED; the instrumented run lost chr1:137.5-150Mb,
+// so the counts below cover the rest), as the TP and FP each check would remove
+// if enforced alone:
+//
+//   STRAND         0 TP /  0 FP   (ONT only, inert here)
+//   ALT_QUAL       1 TP /  2 FP
+//   WIN_QUAL       0 TP /  1 FP
+//   INDEL_ERR      1 TP /  2 FP
+//   DENSE_DIFF     2 TP /  2 FP
+//   LONG_CLIP      0 TP /  1 FP
+//   DIS_TO_VAR    67 TP /  8 FP   <- excluded
+//   LOW_COMP     120 TP /  4 FP   <- excluded
+//   HOMOPOLYMER 1281 TP / 17 FP   <- excluded
+//
+// The three excluded checks come from the single-sample mosaic path, where a
+// candidate is a lone low-fraction allele and clustering with a repeat is good
+// evidence of slippage. A paired somatic call already had to clear the
+// four-slot test, so the same clustering mostly marks real variants sitting in
+// repeats: enforcing HOMOPOLYMER alone takes SNV F1 from 0.9171 to 0.6607.
+// The default set takes SNV F1 from 0.9171 to 0.9208 and indel F1 from 0.4978
+// to 0.5045 on full chr1, removing 31 false positives for 4 true ones. Most of
+// what it catches is a cluster of pooled-branch calls in the repeat-rich 1q21
+// region, which is the shape DENSE_DIFF and LONG_CLIP exist to recognise.
+#define LONGCALLD_ART_DEFAULT (LONGCALLD_ART_STRAND | LONGCALLD_ART_ALT_QUAL | \
+                               LONGCALLD_ART_WIN_QUAL | LONGCALLD_ART_INDEL_ERR | \
+                               LONGCALLD_ART_DENSE_DIFF | LONGCALLD_ART_LONG_CLIP)
 #define LONGCALLD_DEF_PLOID 2 // diploid
 #define LONGCALLD_REF_ALLELE 0
 #define LONGCALLD_ALT_ALLELE1 1
@@ -186,6 +228,7 @@ typedef struct call_var_opt_t {
     double min_som_vaf;               // tumour VAF floor for a somatic substitution
     double min_som_indel_vaf;         // tumour VAF floor for a somatic indel
     double min_som_rep_indel_vaf;     // tumour VAF floor for a somatic indel in a homopolymer or short tandem repeat
+    int som_artifact_mask;            // LONGCALLD_ART_* bits enforced on paired somatic calls
     int min_normal_phase_dp; // paired mode: min normal depth for a variant to drive phasing
     // Paired tumour/normal classification thresholds.
     int min_normal_dp, min_tumor_dp;         // per-sample depth floor before we say anything

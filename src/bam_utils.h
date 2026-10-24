@@ -125,6 +125,13 @@ typedef struct bam_chunk_t {
     int n_cand_vars; cand_var_t *cand_vars;
     int *var_i_to_cate;
     var_slot_counts_t *var_slots; int n_var_slots; // size: n_cand_vars; paired mode only
+    //   Artifact-check bitmasks for candidates that could be somatic, indexed by
+    //   candidate. Gathered at the end of step 1 because the evidence they rest
+    //   on -- read_var_cr, the digars, the read-variant profiles -- is freed by
+    //   bam_chunk_mid_free() before step 2 reaches make_variants(). Two per
+    //   candidate: one restricted to the haplotype carrying the alt, one over
+    //   every overlapping read, for a call decided on pooled counts.
+    int *som_art_mask_hap, *som_art_mask_pooled; int n_som_art; // size: n_cand_vars; paired mode only
     read_var_profile_t *read_var_profile; cgranges_t *read_var_cr;
     cgranges_t *var_noisy_read_cov_cr, *var_noisy_read_err_cr;
     int *var_noisy_read_marks, var_noisy_read_mark_id;
