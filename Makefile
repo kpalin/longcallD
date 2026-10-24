@@ -181,6 +181,17 @@ $(shell [ "$$(cat .build-mode 2>/dev/null)" = "$(SAN_MODE)" ] || printf '%s' "$(
 
 $(OBJS): .build-mode
 
+# The commit hash reaches the binary as a -D on CFLAGS, which the compiler's
+# dependency tracking cannot see. So an incremental build after a commit left
+# whichever objects happened not to need recompiling stamped with the previous
+# commit, and bin/longcallD reported a version it was not built from -- in a
+# VCF's ##source line and a BAM's @PG VN, the one field that records which
+# build produced a result. Same stamp-file idiom as .build-mode above, and the
+# object list comes from grep so a new user of the macro is covered by itself.
+$(shell [ "$$(cat .build-version 2>/dev/null)" = "$(LONGCALLD_VERSION)" ] || printf '%s' "$(LONGCALLD_VERSION)" > .build-version)
+VERSION_OBJS := $(patsubst %.c,%.o,$(shell grep -l LONGCALLD_VERSION $(SRC_DIR)/*.c 2>/dev/null))
+$(VERSION_OBJS): .build-version
+
 all: $(HTS_ALL) $(EDLIB) $(ABPOA_LIB) $(WFA2_LIB) $(BIN)
 
 $(HTS_ALL): $(HTSLIB)
@@ -224,7 +235,7 @@ $(SRC_DIR)/align.o: $(SRC_DIR)/align.c
 .PHONY: all hts_all abpoa_all wfa2_all clean clean_all clean_hts clean_abpoa clean_wfa2
 
 clean:
-	rm -f $(SRC_DIR)/*.o $(SRC_DIR)/*.d $(EDLIB_DIR)/src/*.d $(BIN) .build-mode
+	rm -f $(SRC_DIR)/*.o $(SRC_DIR)/*.d $(EDLIB_DIR)/src/*.d $(BIN) .build-mode .build-version
 clean_all:
 	rm -f $(SRC_DIR)/*.o $(SRC_DIR)/*.d $(EDLIB_DIR)/src/*.d $(BIN) $(HTSLIB) $(ABPOA_LIB) $(WFA2_LIB)
 clean_hts:

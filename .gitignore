@@ -70,3 +70,5 @@ pg
 
 # build-mode stamp (normal vs sanitizer objects)
 .build-mode
+# commit stamp, so the embedded version matches the build
+.build-version
