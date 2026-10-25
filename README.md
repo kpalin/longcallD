@@ -216,13 +216,9 @@ the DeepSomatic paper reports:
 
 | | TP | FP | FN | recall | precision | F1 |
 |---|---|---|---|---|---|---|
-| SNVs | 3092 | 150 | 348 | 0.8988 | 0.9537 | **0.9255** |
-| indels | 57 | 33 | 76 | 0.4286 | 0.6333 | **0.5112** |
-| records | 3149 | 183 | 424 | 0.8813 | 0.9451 | 0.9121 |
-
-> These figures were measured before the re-alignment trigger was separated from `-a`, which
-> changed the HiFi paired default from 0.05 to 0.20 and so changes which regions are re-aligned.
-> They are being re-measured; treat them as provisional until this note is gone.
+| SNVs | 3090 | 136 | 350 | 0.8983 | 0.9578 | **0.9271** |
+| indels | 59 | 31 | 74 | 0.4436 | 0.6556 | **0.5291** |
+| records | 3149 | 167 | 424 | 0.8813 | 0.9496 | 0.9142 |
 
 For comparison, Park et al. (2025, *Nat Biotechnol*) report SNV / indel F1 of 0.9536 / 0.8151 for
 DeepSomatic and 0.9310 / 0.4550 for ClairS v0.2.0 on the same benchmark. Both are trained models;
@@ -267,10 +263,10 @@ whole-genome at different coverage, so they are not interchangeable with these.
 Two things are worth reading off this table rather than inferred from the F1. Precision holds up
 on SNVs (0.85 against HiFi's 0.95) while recall does not (0.60 against 0.90), so the gap is
 missed variants, not spurious ones. And **47% of somatic calls fall back to the pooled
-`UNPHASED` test, against 15% on HiFi** -- the four-slot haplotype test that the paired mode is
-built around is reaching only about half the ONT calls, so this number is substantially carried
-by the weaker evidence path. Phase-block fragmentation, not threshold tuning, is what bounds ONT
-accuracy today.
+`UNPHASED` test, against 37% on HiFi** (1474 of 3130, against 1492 of 3999) -- the four-slot
+haplotype test that the paired mode is built around is reaching only about half the ONT calls, so
+this number is substantially carried by the weaker evidence path. Phase-block fragmentation, not
+threshold tuning, is what bounds ONT accuracy today, and it is a large share on HiFi too.
 
 Indels are not usable on ONT: 227 false positives against 133 truth variants. Every false
 positive inspected sits on or beside a homopolymer run, while neither false negative does, so
@@ -308,8 +304,9 @@ low-complexity region (`0x080`) and homopolymer error (`0x100`). All three come 
 mosaic calling, where a lone low-fraction allele clustering with a repeat is good evidence of
 polymerase slippage. A paired call has already cleared the four-slot test, so on HiFi the same
 clustering mostly marks a real variant that happens to sit in a repeat: enforcing the homopolymer
-check alone rejects 1281 true somatic SNVs to remove 17 false ones, taking SNV F1 from 0.9255 to
-0.6607. Running with `LONGCALLD_ARTCHK=1` prints every call's full mask, which re-measures the
+check alone rejects 1281 true somatic SNVs to remove 17 false ones, collapsing SNV F1 to 0.6607
+(measured against the then-current 0.9255, before the re-alignment trigger was separated from
+`-a`; the ratio is what matters and it is not close). Running with `LONGCALLD_ARTCHK=1` prints every call's full mask, which re-measures the
 whole table in one pass -- worth doing before trusting these defaults on another technology, since
 the strand check (`0x001`) never fires on HiFi but is live on ONT.
 

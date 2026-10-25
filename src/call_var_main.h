@@ -47,7 +47,10 @@
 // haplotype-consensus vote did not find. See make_variants(). Tuned on full
 // chr1 (SEQC2 HCC1395, som.py inside the HC BED): 0.25 gives SNV F1 0.9255 and
 // indel F1 0.5112 against 0.9208 / 0.5045 at 0.35, gaining 48 true somatic
-// calls for 22 false ones.
+// calls for 22 false ones. Measured before the re-alignment trigger was
+// separated from -a, which moved the whole curve up slightly (0.25 now scores
+// 0.9271 / 0.5291); the comparison between the two settings is what picked the
+// value, and it was not re-run.
 //
 // The optimum is region-dependent, which a single chromosome number hides. On
 // a 25 Mb window where recall is already 0.94 the same relaxation only buys
