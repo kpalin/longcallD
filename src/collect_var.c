@@ -485,12 +485,18 @@ void collect_all_var_slot_counts(bam_chunk_t *chunk) {
     // sit OUTSIDE the span of the phase set they claimed, a median 2.5-3.5 kb
     // past its edge, against 3.5-18% of the calls the grid decided cleanly.
     //
-    // A streaming majority vote: one candidate and one counter per variant, no
-    // per-variant map. It returns the true majority block whenever one exists,
-    // and a plurality otherwise, which is self-correcting -- a wrongly chosen
-    // block leaves most reads in slot 0 below, and max_unphased_frac then sends
-    // the call to the pooled test, which is the honest answer for a variant no
-    // single block covers.
+    // A streaming Boyer-Moore majority vote: one candidate and one counter per
+    // variant, no per-variant map. It returns the true majority block whenever
+    // one exists. Where none does it returns whichever candidate survived the
+    // cancellation, which is order-dependent and need not even be the plurality
+    // -- the surviving count is not a majority verification, so a block holding
+    // one read of five can come out of it.
+    //
+    // That is acceptable because the next pass is self-correcting rather than
+    // because the vote is strong: a wrongly chosen block leaves most reads in
+    // slot 0 below, and the trust gate then sends the call to the pooled test,
+    // which is the honest answer for a variant no single block covers. A vote
+    // that cancels to exactly zero yields ps = 0, which puts every read there.
     hts_pos_t *ps_cand = (hts_pos_t*)_err_calloc(chunk->n_cand_vars, sizeof(hts_pos_t));
     int *ps_votes = (int*)_err_calloc(chunk->n_cand_vars, sizeof(int));
     for (int pass = 0; pass < 2; ++pass) {
@@ -2097,8 +2103,6 @@ int make_variants(const call_var_opt_t *opt, bam_chunk_t *chunk, var_t **_var) {
         // travels with the verdict rather than being recomputed.
         if (chunk->var_slots != NULL) {
             var->vars[i].slots = chunk->var_slots[cand_i];
-            // An indel's event starts one base after the anchor the record is
-            // written at, which is the base the repeat test has to look at.
             if (chunk->n_samples > 1) {
                 classify_paired_var(opt, var->vars + i);
                 // A somatic variant is never a phasing anchor, so it carries no

@@ -217,19 +217,20 @@ the DeepSomatic paper reports:
 
 | | TP | FP | FN | recall | precision | F1 |
 |---|---|---|---|---|---|---|
-| SNVs | 3090 | 136 | 350 | 0.8983 | 0.9578 | **0.9271** |
-| indels | 59 | 31 | 74 | 0.4436 | 0.6556 | **0.5291** |
-| records | 3149 | 167 | 424 | 0.8813 | 0.9496 | 0.9142 |
+| SNVs | 3087 | 137 | 353 | 0.8974 | 0.9575 | **0.9265** |
+| indels | 54 | 12 | 79 | 0.4060 | 0.8182 | **0.5427** |
+| records | 3141 | 149 | 432 | 0.8791 | 0.9547 | 0.9153 |
 
 For comparison, Park et al. (2025, *Nat Biotechnol*) report SNV / indel F1 of 0.9536 / 0.8151 for
 DeepSomatic and 0.9310 / 0.4550 for ClairS v0.2.0 on the same benchmark. Both are trained models;
 longcallD is not.
 
 The indel figure is above the ClairS number; the SNV gap to both trained models is recall, not
-precision. Of the SNVs still missed, about three quarters never reach the VCF at all, and for most
-of those the pileup does carry alt reads at a tumour allele fraction below what
-`--min-hap-vaf` will call. The remaining quarter are emitted but demoted: mostly
-`FILTER=Ambiguous` under the tumour allele-fraction floor, a handful `LowDP`.
+precision. Of the 353 SNVs still missed, about two thirds (236) never reach the VCF at all, and
+for most of those the pileup does carry alt reads at a tumour allele fraction below what
+`--min-hap-vaf` will call. The remaining third (117) are emitted but demoted: 109
+`FILTER=Ambiguous` under the tumour allele-fraction floor, 5 `LowDP`, and 3 that pass but are
+scored against a different ALT.
 
 How much that threshold costs depends on where you measure, which is worth knowing before
 tuning it further. Lowering it from 0.35 to 0.25 is worth +48 true somatic SNVs for +22 false
@@ -243,6 +244,15 @@ heterozygous sites per 40 kb against a chromosome average of 38 leave too few an
 the reads, so a somatic variant's alt reads scatter across both haplotype slots and fail the
 "other tumor haplotype is clean" test. The haplotype grid is now distrusted where there is nothing
 to phase on, which routes those sites to the pooled `FILTER=Unphased` path instead of failing them.
+
+Indel precision is the figure that moved most in this table's last refresh, 0.6556 to 0.8182, on
+a net 19 fewer false indels for 5 fewer true ones. Two changes landed in that interval, and the
+attribution is not measured end to end: replaying `--som-artifact-mask-indel`'s repeat check
+(`0x200`) against the reference over the previous run's calls accounts for 18 of the 19 and 4 of
+the 5, leaving the phase-set fix responsible for the small remainder and for the 3-call SNV
+change. The repeat check was tuned on ONT and inherited here, so on HiFi it is a transfer that
+happened to hold, not a tuned threshold. Indel recall remains the weakest number in the table,
+and the 133 truth indels behind it are too few to tune against.
 
 Reproduce with `eval/run_benchmark.sh` after fetching the fixtures with `eval/fetch_data.sh`.
 
@@ -264,18 +274,20 @@ whole-genome at different coverage, so they are not interchangeable with these.
 Two things are worth reading off this table rather than inferred from the F1. Precision holds up
 on SNVs (0.85 against HiFi's 0.95) while recall does not (0.60 against 0.90), so the gap is
 missed variants, not spurious ones. And **47% of somatic calls fell back to the pooled
-`UNPHASED` test, against 37% on HiFi** (1474 of 3130, against 1492 of 3999) -- the four-slot
+`UNPHASED` test, against 36% on HiFi** (1474 of 3130, against 1425 of 3952) -- the four-slot
 haplotype test that the paired mode is built around was reaching only about half the ONT calls,
-so these figures are substantially carried by the weaker evidence path.
+so these figures are substantially carried by the weaker evidence path. Every paired run logs
+both counts, so this split needs no post-processing to check.
 
 That share is **not** a measure of phase-block fragmentation, which is what it was first read as.
 Every input to the decision is in the VCF -- `HDP`/`HAD` carry the grid and `DP` minus their sum
 is the unassigned count -- so the diverted calls can be split by which gate rejected them without
-re-running anything. The trust gate on unassigned reads accounts for 88% of ONT diversions and
-90% of HiFi ones, and is the *sole* cause of 62% and 64%; the per-haplotype depth floors account
+re-running anything. The trust gate on unassigned reads accounted for 88% of ONT diversions and
+90% of HiFi ones, and was the *sole* cause of 62% and 64%; the per-haplotype depth floors account
 for the rest. Both of the defects behind that have since been fixed (see *Phase sets and the
-grid* below), so the two percentages above describe the run that produced this table, not the
-current caller.
+grid* below). The HiFi figure above is from a run that includes those fixes; **the ONT table and
+every ONT percentage in this section are not** -- ONT has not been re-run since, so treat them as
+describing the caller as it was, and expect the diverted share to be lower now.
 
 Indels are not usable on ONT: 227 false positives against 133 truth variants. They are
 basecaller slippage -- measured on a later, unfiltered run of the same pair, the false somatic
@@ -356,12 +368,13 @@ that reports no `PS` is one the pooled fallback decided, and carries `UNPHASED` 
 
 #### Thresholds
 
-Two defaults differ from single-sample calling, and both only when `-N` is in effect:
+Three defaults differ from single-sample calling, and all three only when `-N` is in effect:
 
 | Option | `call` | `paired` | why |
 |---|---|---|---|
 | `-a/--alt-ratio` | 0.20 | 0.05, or **0.15 with `--ont`** | candidate allele fraction is measured on the **pooled** tumor+normal depth, where a clonal heterozygous somatic variant sits near 0.25 and a subclonal one well below |
 | `--som-pval` | 1e-3 | 1.0 | the per-haplotype depth floors and the clean-slot requirement already supply the specificity; the Fisher test is underpowered on a quarter of the reads and only cost recall |
+| `--min-hap-vaf` | off | 0.25 | joint phasing deliberately puts both samples' reads on the same haplotype, so a variant only one sample carries is outvoted there by the other sample's reference reads; there is no second sample to be outvoted by in single-sample mode. Described in full below |
 
 The dilution argument behind the low `-a` is technology-independent, but the noise floor is not:
 at ONT per-base error, an alt fraction of 0.05 on a pooled pile is indistinguishable from
@@ -372,9 +385,19 @@ it. The recall the low floor exists to protect was not coming from it. HiFi stay
 is what the chr1 figures above were measured with; that span is too short to quote an ONT F1
 against the chr1 table, so it is reported here as a threshold choice, not as an accuracy result.
 
-Passing either option explicitly overrides the paired default. `SPV` and `SOMSCORE` are still
+Passing any of the three explicitly overrides the paired default. `SPV` and `SOMSCORE` are still
 reported at every site, so the Fisher p-value remains available to filter on afterwards. Every
 paired run logs the thresholds it actually used, so a mis-set run is visible in its own log.
+
+One threshold that used to move with `-a` no longer does. `--noisy-rat` (0.20, both modes) is the
+fraction of a region's reads that must look noisy before the region is re-aligned with abPOA, and
+it shared a value with `-a` only because single-sample calling sets both to 0.20. Lowering `-a` to
+0.05 for paired calling therefore dropped the re-alignment trigger to one read in twenty as well,
+and on ONT nearly every region clears that bar, so the caller re-aligned almost everywhere. The
+two ask different questions -- one about alignment quality, the other about how small an allele
+fraction is worth calling -- and now have separate fields. On ONT chr1:1-5,000,000 the decoupling
+cut somatic SNV false positives from 23 to 14 and peak RSS from 4.23 to 3.62 GB at unchanged
+recall; passing `--noisy-rat 0.05` reproduces the old coupled behaviour record for record.
 
 `--som-artifact-mask` selects which sequencing-artifact checks reject a somatic call, as a bit
 mask. The default (`0x7d`) leaves out three of the nine: another variant nearby (`0x002`),
@@ -384,9 +407,10 @@ polymerase slippage. A paired call has already cleared the four-slot test, so on
 clustering mostly marks a real variant that happens to sit in a repeat: enforcing the homopolymer
 check alone rejects 1281 true somatic SNVs to remove 17 false ones, collapsing SNV F1 to 0.6607
 (measured against the then-current 0.9255, before the re-alignment trigger was separated from
-`-a`; the ratio is what matters and it is not close). Running with `LONGCALLD_ARTCHK=1` prints every call's full mask, which re-measures the
-whole table in one pass -- worth doing before trusting these defaults on another technology, since
-the strand check (`0x001`) never fires on HiFi but is live on ONT.
+`-a`; the ratio is what matters and it is not close). Running with `LONGCALLD_ARTCHK=1` prints
+every call's full mask, which re-measures the whole table in one pass -- worth doing before
+trusting these defaults on another technology, since the strand check (`0x001`) never fires on
+HiFi but is live on ONT.
 
 `--som-artifact-mask-indel` (default `0x27d`) is the same mask for insertions and deletions, which
 fail in different ways: every count in the table above is really a statement about substitutions,
@@ -396,12 +420,28 @@ computed only for substitutions and so can never fire on an indel.
 
 Useful thresholds: `--min-normal-dp`/`--min-tumor-dp` (depth floor before classifying at all),
 `--min-normal-hap-dp`/`--min-tumor-hap-dp` (per-haplotype floor for the four-slot test),
-`--max-hap-alt` (alt reads tolerated in a slot that should be clean), `--som-pval`,
-`--min-normal-phase-dp` (normal depth needed for a variant to anchor phasing), and
+`--max-hap-alt`/`--max-hap-alt-frac` (alt reads tolerated in a slot that should be clean, as an
+absolute count and as a fraction of that slot's own depth; the larger of the two wins),
+`--som-pval`, `--min-normal-phase-dp` (normal depth needed for a variant to anchor phasing), and
 `--min-normal-phase-af`/`--max-normal-phase-af` (the allele-fraction window a normal site must sit
 in to anchor it). The last pair is deliberately separate from `-a`: lowering the detection
 threshold to find low-fraction somatic variants is no reason to let a 5%-allele-fraction normal
 site decide which parental chromosome is which.
+
+The fractional form of `--max-hap-alt` is the one that does the work. At `--max-hap-alt 0` a
+single mis-assigned read disqualified a call, which on HiFi chr1 alone accounted for 63 missed
+somatic SNVs whose other tumour slot held one or two stray alt reads; `--max-hap-alt-frac` (0.20)
+scales the tolerance to the slot's depth instead.
+
+Three floors set how much tumour allele fraction a somatic call has to show, chosen by what kind
+of variant it is: `--min-som-vaf` (0.05) for substitutions, `--min-som-indel-vaf` (0.15) for
+indels, and `--min-som-rep-indel-vaf` (0.30) for an indel in a homopolymer or short tandem repeat.
+Indels need far more than substitutions because slippage produces real reads carrying a real indel
+that is not a somatic mutation, and the floor is raised only where the slippage is: a flat floor
+high enough to clear it would discard every clonal indel below 50% purity. Lower all three for a
+low-purity tumour, where clonal VAF is itself low. Note that these floors only demote a call where
+slippage *could* explain it; `--som-artifact-mask-indel`'s `0x200` rejects it where slippage
+*already* explains it, which is the stronger test and the one that fixed ONT indels.
 
 `--min-hap-vaf` (default 0.25 with `-N`, off otherwise) is the alt fraction a single
 (sample, haplotype) slot needs before it can put an ALT allele on a record that the pooled
