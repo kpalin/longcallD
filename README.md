@@ -263,36 +263,50 @@ The same chromosome, truth set and high-confidence regions, on the ONT R10.4.1 t
 
 | | TP | FP | FN | recall | precision | F1 |
 |---|---|---|---|---|---|---|
-| SNVs | 2068 | 370 | 1372 | 0.6012 | 0.8482 | **0.7036** |
-| indels | 45 | 227 | 88 | 0.3383 | 0.1654 | **0.2222** |
-| records | 2113 | 602 | 1460 | 0.5914 | 0.7783 | 0.6721 |
+| SNVs | 2062 | 185 | 1378 | 0.5994 | 0.9177 | **0.7252** |
+| indels | 42 | 60 | 91 | 0.3158 | 0.4118 | **0.3574** |
+| records | 2104 | 249 | 1469 | 0.5889 | 0.8942 | 0.7101 |
 
 No comparator figures are quoted here: no published ONT result for chr1 inside this
 high-confidence BED has been found, and the ONT numbers that are published elsewhere are
 whole-genome at different coverage, so they are not interchangeable with these.
 
-Two things are worth reading off this table rather than inferred from the F1. Precision holds up
-on SNVs (0.85 against HiFi's 0.95) while recall does not (0.60 against 0.90), so the gap is
-missed variants, not spurious ones. And **47% of somatic calls fell back to the pooled
-`UNPHASED` test, against 36% on HiFi** (1474 of 3130, against 1425 of 3952) -- the four-slot
-haplotype test that the paired mode is built around was reaching only about half the ONT calls,
-so these figures are substantially carried by the weaker evidence path. Every paired run logs
-both counts, so this split needs no post-processing to check.
+Two things are worth reading off this table rather than inferred from the F1. The gap to HiFi is
+recall, not precision: 0.60 against 0.90, while precision is 0.92 against 0.96. And **43% of
+somatic calls fall back to the pooled `UNPHASED` test, against 36% on HiFi** (1173 of 2722,
+against 1425 of 3952) -- the four-slot haplotype test that the paired mode is built around
+reaches well under half the ONT calls, so these figures are substantially carried by the weaker
+evidence path. Every paired run logs both counts, so this split needs no post-processing.
 
 That share is **not** a measure of phase-block fragmentation, which is what it was first read as.
 Every input to the decision is in the VCF -- `HDP`/`HAD` carry the grid and `DP` minus their sum
 is the unassigned count -- so the diverted calls can be split by which gate rejected them without
-re-running anything. The trust gate on unassigned reads accounted for 88% of ONT diversions and
-90% of HiFi ones, and was the *sole* cause of 62% and 64%; the per-haplotype depth floors account
-for the rest. Both of the defects behind that have since been fixed (see *Phase sets and the
-grid* below). The HiFi figure above is from a run that includes those fixes; **the ONT table and
-every ONT percentage in this section are not** -- ONT has not been re-run since, so treat them as
-describing the caller as it was, and expect the diverted share to be lower now.
+re-running anything. On the run that prompted the investigation, the trust gate on unassigned
+reads accounted for 88% of ONT diversions and 90% of HiFi ones, and was the *sole* cause of 62%
+and 64%; the per-haplotype depth floors accounted for the rest. Both defects behind that have
+since been fixed (see *Phase sets and the grid*), and the diverted share duly fell, 47% to 43% on
+ONT -- the percentages quoted in this paragraph describe the pre-fix run that produced them, not
+the table above.
 
-Indels are not usable on ONT: 227 false positives against 133 truth variants. They are
-basecaller slippage -- measured on a later, unfiltered run of the same pair, the false somatic
-indels sit in a homopolymer run of median length 12 and are a median 1 bp long, where the true
-ones sit at median run length 1 and are a median 13 bp long.
+What those fixes bought on ONT is precision, at a recall cost of six SNVs. Against the last
+pre-fix full-chr1 run of the same pair:
+
+| | SNV TP/FP | SNV F1 | indel TP/FP | indel F1 | wall | windows lost |
+|---|---|---|---|---|---|---|
+| before | 2068 / 370 | 0.7036 | 45 / 227 | 0.2222 | ~5 h | 2, recovered by subdivision |
+| after | 2062 / 185 | 0.7252 | 42 / 60 | 0.3574 | 31 min | none |
+
+SNV false positives halved and indel false positives fell by nearly four fifths, for 6 and 3 true
+calls respectively. The wall-clock and memory change is `9ac80ac` (the read/variant profile
+allocated per read band): the earlier run aborted two whole windows under the benchmark's
+`ulimit -v` cap and had to re-call them in halves, where this one completed all 50 windows at
+about 1 GB. A run that has to subdivide is also a run that could silently have dropped a window,
+which is how 40 Mb of an earlier chromosome went missing from a scored result.
+
+Indels remain the weak point on ONT, but no longer unusable: 60 false positives against 133 truth
+variants, from 227. They are basecaller slippage -- measured on an unfiltered run of the same
+pair, the false somatic indels sit in a homopolymer run of median length 12 and are a median 1 bp
+long, where the true ones sit at median run length 1 and are a median 13 bp long.
 
 The obvious fix does not work, in two different ways, and both are worth recording because both
 looked right:
@@ -320,9 +334,12 @@ the 285 somatic indel calls (40 TP / 245 FP against the truth set inside the HC 
 Most of that is free: a homopolymer run of 9 removes 115 of the 245 false positives and costs
 **no** true calls, because no true somatic indel on chr1 sits in a run that long. Shorter runs
 are where the true indels live, which is why cutting at 5 -- what the pre-existing repeat flag
-does, for the VAF floor -- loses 7 true calls to gain 10 fewer false ones. These counts come
-from a run post-dating the table above, so they are not a correction to its 45/227/88 row; that
-row predates both this and the phase-set fix below.
+does, for the VAF floor -- loses 7 true calls to gain 10 fewer false ones.
+
+This sweep already includes the phase-set fix, so its rows rank the four mask settings against
+each other on one footing. Its absolute counts are still not the table's: the `0x27d` row reads
+37/57 where the table reads 42/60, a different run of the same configuration, so quote the table
+and read the sweep for the ordering and the cost of each bit.
 
 #### Phase sets and the grid
 
