@@ -59,9 +59,22 @@ done
 # som.py dropped it and the two evidence regimes could not be compared.
 chk "UNPHASED is INFO, not FILTER" "0 1" \
     "$(grep -c '##FILTER=<ID=Unphased,' "$T/paired.vcf") $(grep -c '##INFO=<ID=UNPHASED,' "$T/paired.vcf")"
-for tag in NORMALONLY LOH SOMHAP HAPVAF SPV; do
+for tag in NORMALONLY LOH SOMHAP HAPVAF SPV TVAF; do
   chk "INFO $tag is declared" 1 "$(grep -c "##INFO=<ID=$tag," "$T/paired.vcf")"
 done
+# HAPVAF is the alt fraction WITHIN a haplotype; TVAF is the same count over the
+# pooled tumour depth. For a clonal heterozygous somatic variant they differ by
+# a factor of two, so a call must report exactly one of them: HAPVAF when a
+# haplotype was resolved, TVAF when it was not. Emitting the pooled value under
+# HAPVAF is what this guards -- it contradicted HAPVAF's own header and would
+# have flattened the purity curve, where HAPVAF is expected to track purity
+# directly and the pooled fraction tracks purity/2.
+chk "no call reports HAPVAF without a haplotype" 0 \
+    "$(awk -F'\t' '!/^#/ && $8 ~ /UNPHASED/ && $8 ~ /HAPVAF=/' "$T/paired.vcf" | wc -l)"
+chk "no call reports TVAF with a haplotype" 0 \
+    "$(awk -F'\t' '!/^#/ && $8 ~ /SOMHAP=/ && $8 ~ /TVAF=/' "$T/paired.vcf" | wc -l)"
+chk "every somatic call reports one of the two" 0 \
+    "$(awk -F'\t' '!/^#/ && $8 ~ /(^|;)SOMATIC(;|$)/ && $8 !~ /HAPVAF=/ && $8 !~ /TVAF=/' "$T/paired.vcf" | wc -l)"
 for tag in HDP HAD; do
   chk "FORMAT $tag is declared" 1 "$(grep -c "##FORMAT=<ID=$tag," "$T/paired.vcf")"
 done

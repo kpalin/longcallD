@@ -81,6 +81,7 @@ void write_vcf_header(bam_hdr_t *hdr, struct call_var_opt_t *opt) {
         bcf_hdr_append(vcf_hdr, "##INFO=<ID=LOH,Number=0,Type=Flag,Description=\"Normal-only because the tumour has lost that chromosome copy\">");
         bcf_hdr_append(vcf_hdr, "##INFO=<ID=SOMHAP,Number=1,Type=Integer,Description=\"Tumour haplotype carrying the somatic alt (1 or 2)\">");
         bcf_hdr_append(vcf_hdr, "##INFO=<ID=HAPVAF,Number=1,Type=Float,Description=\"Alt fraction within that haplotype; estimates purity x cancer-cell fraction, unlike the pooled VAF which reads purity/2 for a clonal het\">");
+        bcf_hdr_append(vcf_hdr, "##INFO=<ID=TVAF,Number=1,Type=Float,Description=\"Alt fraction over the pooled tumour depth, reported in place of HAPVAF on UNPHASED calls where no haplotype was resolved; reads purity/2 for a clonal het\">");
         bcf_hdr_append(vcf_hdr, "##INFO=<ID=SPV,Number=1,Type=Float,Description=\"Fisher exact p, the somatic slot against the other three\">");
     }
     // bcf_hdr_append(vcf_hdr, "##INFO=<ID=REPCLSFAM,Number=1,Type=String,Description=\"Repeat class/family\">");
@@ -275,8 +276,19 @@ int write_var_to_vcf(var_t *vars, const struct call_var_opt_t *opt, bam_chunk_t 
         if (var.te_seq_i >= 0) len += snprintf(buffer + len, buf_m - len, "MEI;");
         len += snprintf(buffer + len, buf_m - len, "END=%" PRId64 "", var.pos + var.ref_len - 1);
         if (opt->n_samples > 1 && var.paired_class == LONGCALLD_PAIRED_SOMATIC) {
-            if (var.som_hap > 0) len += snprintf(buffer + len, buf_m - len, ";SOMHAP=%d", var.som_hap);
-            len += snprintf(buffer + len, buf_m - len, ";HAPVAF=%.4f;SPV=%.3g", var.hap_vaf, var.paired_pval);
+            if (var.som_hap > 0) {
+                len += snprintf(buffer + len, buf_m - len, ";SOMHAP=%d;HAPVAF=%.4f", var.som_hap, var.hap_vaf);
+            } else {
+                // An unphased call has no haplotype, so it has no within-haplotype
+                // fraction either: classify_paired_vars() fills hap_vaf from the
+                // pooled tumour depth there. That is half the HAPVAF of the same
+                // clonal het variant, and emitting it under HAPVAF contradicted
+                // that key's own header and silently mixed two scales in whatever
+                // read it -- notably the purity curve, where HAPVAF is supposed to
+                // track purity directly while the pooled VAF tracks purity/2.
+                len += snprintf(buffer + len, buf_m - len, ";TVAF=%.4f", var.hap_vaf);
+            }
+            len += snprintf(buffer + len, buf_m - len, ";SPV=%.3g", var.paired_pval);
         }
         if (var.is_sv) { 
             len += snprintf(buffer + len, buf_m - len, ";%s;%s", SVTYPE, SVLEN);
