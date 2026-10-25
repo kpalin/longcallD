@@ -212,7 +212,24 @@ log "scoring with som.py"
 "$ROOT/eval/sompy.sh" -q "$OUT/query.vcf.gz" -o "$OUT/sompy.$MODE" -l chr1 \
   || die "som.py failed"
 
-cat <<EOF
+# The published figures below are PacBio HiFi. Printing them under an ONT run
+# would assert a comparison that is not being made -- the same mistake in kind
+# as the hardcoded input BAMs this script used to have, where the label said
+# ONT and the data said HiFi. No chr1 ONT figures restricted to this
+# high-confidence BED have been located for any comparator, and the ONT numbers
+# that are published (for example on the ClairS repository) are whole-genome at
+# a different coverage, so they are not interchangeable with these.
+if [[ $EXTRA == *--ont* ]]; then
+  cat <<EOF
+
+No published comparator figures are available for ONT on this benchmark
+(chr1, SEQC2 HCC1395 v1.2.1, inside High-Confidence_Regions_v1.2.bed).
+The PacBio HiFi figures this script quotes for HiFi runs are NOT comparable
+across technologies and are deliberately not shown here.
+
+EOF
+else
+  cat <<EOF
 
 Reference figures for the same truth set, region and technology
 (Park et al. 2025, Nat Biotechnol):
@@ -221,4 +238,5 @@ Reference figures for the same truth set, region and technology
   ClairS v0.2.0               SNV F1 0.9310   indel F1 0.4550
 
 EOF
+fi
 log "done: $OUT/sompy.$MODE.stats.csv"
