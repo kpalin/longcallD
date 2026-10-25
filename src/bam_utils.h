@@ -308,6 +308,8 @@ void bam_chunk_post_free(bam_chunk_t *chunk, const struct call_var_opt_t *opt);
 void bam_chunks_post_free(bam_chunk_t *chunks, int n_chunks, const struct call_var_opt_t *opt);
 struct read_var_profile_t *init_read_var_profile(int n_reads, int n_total_vars);
 struct read_var_profile_t *init_read_var_profile_with_ids(int n_reads, int *read_ids, int n_total_vars);
+struct read_var_profile_t *init_read_var_profile_banded(int n_reads, int *read_ids, const int *caps);
+int read_var_band_width(struct cand_var_t *cand_vars, int n_cand_vars, const digar_t *digar);
 void free_read_var_profile(struct read_var_profile_t *p, int n_reads);
 char *extract_sample_name_from_bam_header(bam_hdr_t *header);
 

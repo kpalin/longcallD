@@ -17,9 +17,26 @@ KHASH_MAP_INIT_STR(rphase, read_phase_t)
 extern int LONGCALLD_VERBOSE;
 
 
-static read_var_profile_t *init_read_var_profile_inner(int n_reads, int *read_ids, int n_total_vars) {
+// The profile is a read x variant table, but it is indexed RELATIVE to each
+// read's own start_var_idx -- every access in the codebase is
+// `alleles[var_i - start_var_idx]` -- so only the band of variants a read
+// actually spans was ever meant to be addressable. Giving every read a full
+// n_total_vars row cost 8 bytes per read-variant pair whether that pair could
+// exist or not, and a read spans tens of kb of a multi-megabase chunk.
+//
+// That was the binding memory limit, not the abPOA matrices it was attributed
+// to: on the ONT paired chr1 benchmark it reached a single 2 GB request and
+// aborted 5 of the 50 windows under the run's memory cap, silently leaving
+// 40 Mb of the chromosome out of the results.
+//
+// `caps`, when given, is the per-read band width; NULL keeps the dense layout
+// for the callers whose variant count is small enough not to care.
+static read_var_profile_t *init_read_var_profile_inner(int n_reads, int *read_ids,
+                                                       int n_total_vars, const int *caps) {
     size_t n_profile_bytes = (size_t)n_reads * sizeof(read_var_profile_t);
-    size_t n_var_values = (size_t)n_reads * (size_t)n_total_vars;
+    size_t n_var_values = 0;
+    if (caps == NULL) n_var_values = (size_t)n_reads * (size_t)n_total_vars;
+    else for (int i = 0; i < n_reads; ++i) if (caps[i] > 0) n_var_values += (size_t)caps[i];
     size_t n_value_bytes = n_var_values * sizeof(int);
     uint8_t *raw = (uint8_t*)_err_malloc(n_profile_bytes + n_value_bytes * 2);
     read_var_profile_t *p = (read_var_profile_t*)raw;
@@ -29,25 +46,40 @@ static read_var_profile_t *init_read_var_profile_inner(int n_reads, int *read_id
 
     alleles = (int*)(raw + n_profile_bytes);
     alt_qi = alleles + n_var_values;
-    memset(alleles, 0xFF, n_value_bytes);
-    memset(alt_qi, 0xFF, n_value_bytes);
+    if (n_value_bytes > 0) {
+        memset(alleles, 0xFF, n_value_bytes);
+        memset(alt_qi, 0xFF, n_value_bytes);
+    }
 
+    size_t off = 0;
     for (int i = 0; i < n_reads; ++i) {
+        int cap = caps == NULL ? n_total_vars : (caps[i] > 0 ? caps[i] : 0);
         p[i].read_id = (read_ids == NULL ? i : read_ids[i]);
         p[i].start_var_idx = -1;
         p[i].end_var_idx = -2;
-        p[i].alleles = alleles + (size_t)i * (size_t)n_total_vars;
-        p[i].alt_qi = alt_qi + (size_t)i * (size_t)n_total_vars;
+        p[i].cap = cap;
+        p[i].alleles = alleles + off;
+        p[i].alt_qi = alt_qi + off;
+        off += (size_t)cap;
     }
     return p;
 }
 
 read_var_profile_t *init_read_var_profile(int n_reads, int n_total_vars) {
-    return init_read_var_profile_inner(n_reads, NULL, n_total_vars);
+    return init_read_var_profile_inner(n_reads, NULL, n_total_vars, NULL);
 }
 
 read_var_profile_t *init_read_var_profile_with_ids(int n_reads, int *read_ids, int n_total_vars) {
-    return init_read_var_profile_inner(n_reads, read_ids, n_total_vars);
+    return init_read_var_profile_inner(n_reads, read_ids, n_total_vars, NULL);
+}
+
+// caps[i] is how many consecutive variants read i can reach, counted by the
+// caller that knows how it will walk them.
+read_var_profile_t *init_read_var_profile_banded(int n_reads, int *read_ids, const int *caps) {
+    // Without caps every row would be zero-width and the first write would
+    // abort, which is a confusing way to learn the argument was forgotten.
+    if (caps == NULL) _err_error_exit("init_read_var_profile_banded: caps is required\n");
+    return init_read_var_profile_inner(n_reads, read_ids, 0, caps);
 }
 
 void free_read_var_profile(read_var_profile_t *p, int n_reads) {
@@ -219,6 +251,46 @@ int get_var_start(cand_var_t *var_sites, int cur_site_i, int n_total_pos, hts_po
     return left;
 }
 
+// How many consecutive variants the walk in
+// update_read_vs_all_var_profile_from_digar() can reach for one read. It starts
+// at get_var_start(digar->beg) and advances var_i only past a variant that
+// compares at or before the current digar, so the band ends at the last variant
+// that compares at or before the LAST digar.
+//
+// Two things make that wider than the read's [beg, end]:
+//
+//  - A digar can sit one past digar->end. Measured on the bundled ONT file,
+//    read 358 spans 1,357,970-1,358,512 while its last digar is at 1,358,513,
+//    and the variant there is tallied. So the bound comes from the digars, which
+//    are sorted by position, not from the recorded end.
+//  - An insertion or deletion is keyed one base left of its anchor --
+//    get_var_start() above compares `pos - 1` for anything that is not a
+//    substitution -- so an indel recorded at end+1 still sorts at end.
+//
+// Both were found by the bounds check in update_read_var_profile_with_allele()
+// rather than by reading the code, which is the argument for having it.
+int read_var_band_width(cand_var_t *cand_vars, int n_cand_vars, const digar_t *digar) {
+    if (n_cand_vars <= 0 || digar == NULL) return 0;
+    hts_pos_t beg = digar->beg, end = digar->end;
+    if (digar->n_digar > 0) {
+        if (digar->digars[0].pos < beg) beg = digar->digars[0].pos;
+        digar1_t *last = digar->digars + digar->n_digar - 1;
+        hts_pos_t last_end = last->pos;
+        if (last->type == BAM_CDEL) last_end += last->len; // spans the deleted bases
+        if (last_end > end) end = last_end;
+    }
+    if (end < beg) return 0;
+    int lo = get_var_start(cand_vars, 0, n_cand_vars, beg);
+    if (lo >= n_cand_vars) return 0;
+    int hi = lo;
+    while (hi < n_cand_vars) {
+        hts_pos_t eff = cand_vars[hi].var_type == BAM_CDIFF ? cand_vars[hi].pos : cand_vars[hi].pos - 1;
+        if (eff > end) break;
+        hi++;
+    }
+    return hi - lo; // hi is one past the last reachable variant
+}
+
 int get_var_site_start(var_site_t *var_sites, int cur_site_i, int n_total_pos, hts_pos_t start) {
     hts_pos_t target = start > 0 ? start - 1 : start;
     int left = cur_site_i, right = n_total_pos;
@@ -257,6 +329,15 @@ void update_read_var_profile_with_allele(int var_i, int allele_i, int alt_qi, re
     if (read_var_profile->start_var_idx == -1) read_var_profile->start_var_idx = var_i;
     read_var_profile->end_var_idx = var_i;
     int _var_i = var_i - read_var_profile->start_var_idx;
+    // The row holds only the band the caller predicted this read could reach.
+    // Writing past it would land in the next read's row and corrupt a different
+    // read's alleles with no error, which is the one failure mode a packed
+    // layout introduces -- so it is checked rather than trusted.
+    if (_var_i < 0 || _var_i >= read_var_profile->cap)
+        _err_error_exit("read %d: variant %d outside its profile band [%d,%d) of %d\n",
+                        read_var_profile->read_id, var_i, read_var_profile->start_var_idx,
+                        read_var_profile->start_var_idx + read_var_profile->cap,
+                        read_var_profile->cap);
     read_var_profile->alleles[_var_i] = allele_i; // ref:0, alt:1~n, or -1: not ref/alt
     read_var_profile->alt_qi[_var_i] = alt_qi; // position of alt base in read, -1 if not alt
 }

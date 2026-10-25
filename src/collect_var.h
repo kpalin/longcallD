@@ -118,6 +118,7 @@ typedef struct read_var_profile_t {
     int start_var_idx, end_var_idx; // 0 .. n_total_cand_vars-1
     int *alleles; // 0:ref, 1:alt, -1:non-ref/alt, -2: alt & low_qual
     int *alt_qi; // 0-based query position (for =XI); for DEL, qi is the first read base after the deletion; -1 for non-alt
+    int cap; // entries allocated for alleles/alt_qi: the band this read can reach, not n_total_vars
     // int *alt_base_pos, *digar_i; // alt_base position in read, size: end_var_idx-start_var_idx+1
 } read_var_profile_t;
 

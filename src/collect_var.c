@@ -1734,7 +1734,6 @@ int merge_var_profile(const call_var_opt_t *opt, bam_chunk_t *chunk, int n_new_v
     cand_var_t *old_vars = chunk->cand_vars;
     read_var_profile_t *old_p = chunk->read_var_profile;
     cand_var_t *merged_vars = (cand_var_t *)_err_malloc((chunk->n_cand_vars + n_new_vars) * sizeof(cand_var_t)); 
-    read_var_profile_t *merged_p = init_read_var_profile(chunk->n_reads, chunk->n_cand_vars + n_new_vars);
     int *merged_var_i_to_cate = (int*)_err_malloc((chunk->n_cand_vars + n_new_vars) * sizeof(int));
     int *old_to_merged = NULL, *new_to_merged = NULL;
     int old_var_i = 0, new_var_i = 0, merged_var_i = 0;
@@ -1780,6 +1779,36 @@ int merge_var_profile(const call_var_opt_t *opt, bam_chunk_t *chunk, int n_new_v
         merged_vars[merged_var_i++] = new_vars[new_var_i];
     }
 
+    // The merged band of a read is where its old and new bands land in merged
+    // numbering, which is only known now that the two maps are built -- hence
+    // allocating here rather than above. The maps are monotone, so the band is
+    // bounded by the lowest and highest merged index the read maps to; it is not
+    // the number of entries written, because another read's new variants can be
+    // interleaved between two of this read's.
+    int *merged_caps = (int*)_err_calloc(chunk->n_reads > 0 ? chunk->n_reads : 1, sizeof(int));
+    for (int i = 0; i < chunk->n_reads; ++i) {
+        int read_i = chunk->ordered_read_ids[i];
+        if (chunk->is_skipped[read_i]) continue;
+        int lo = merged_var_i, hi = -1;
+        if (old_p != NULL && old_to_merged != NULL) {
+            for (int v = old_p[read_i].start_var_idx; v >= 0 && v <= old_p[read_i].end_var_idx; ++v) {
+                int m = old_to_merged[v];
+                if (m < 0) continue;
+                if (m < lo) lo = m;
+                if (m > hi) hi = m;
+            }
+        }
+        for (int v = new_p[read_i].start_var_idx; v >= 0 && v <= new_p[read_i].end_var_idx; ++v) {
+            int m = new_to_merged[v];
+            if (m < 0) continue;
+            if (m < lo) lo = m;
+            if (m > hi) hi = m;
+        }
+        merged_caps[read_i] = hi >= lo ? hi - lo + 1 : 0;
+    }
+    read_var_profile_t *merged_p = init_read_var_profile_banded(chunk->n_reads, NULL, merged_caps);
+    free(merged_caps);
+
     // Copy each read profile once, merging old/new alleles in final variant order.
     for (int i = 0; i < chunk->n_reads; ++i) {
         int read_i = chunk->ordered_read_ids[i];
@@ -1824,7 +1853,17 @@ read_var_profile_t *collect_read_var_profile(const call_var_opt_t *opt, bam_chun
     int n_cand_vars = chunk->n_cand_vars;
     cand_var_t *cand_vars = chunk->cand_vars;
     int *var_i_to_cate = chunk->var_i_to_cate;
-    read_var_profile_t *p = init_read_var_profile(chunk->n_reads, n_cand_vars);
+    // Each read reaches only the variants inside its own reference span, so the
+    // row it needs is that band and not all n_cand_vars. This is the allocation
+    // that used to abort whole windows of the chr1 benchmark.
+    int *caps = (int*)_err_calloc(chunk->n_reads > 0 ? chunk->n_reads : 1, sizeof(int));
+    for (int i = 0; i < chunk->n_reads; ++i) {
+        int read_i = chunk->ordered_read_ids[i];
+        if (chunk->is_skipped[read_i]) continue;
+        caps[read_i] = read_var_band_width(cand_vars, n_cand_vars, chunk->digars + read_i);
+    }
+    read_var_profile_t *p = init_read_var_profile_banded(chunk->n_reads, NULL, caps);
+    free(caps);
     cgranges_t *read_var_cr = cr_init();
     // 3rd pass: collect read-wise SNP profiles
     if (opt->out_somatic) {
