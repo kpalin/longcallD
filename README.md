@@ -173,6 +173,7 @@ The VCF has two sample columns, `NORMAL` then `TUMOR`:
 | `INFO/NORMALONLY`, `INFO/LOH` | normal-only, and whether the tumor has lost that copy |
 | `INFO/SOMHAP` | which tumor haplotype carries the alt |
 | `INFO/HAPVAF` | alt fraction **within that haplotype** |
+| `INFO/TVAF` | alt fraction over the **pooled** tumor depth, on `UNPHASED` calls only |
 | `INFO/SPV` | Fisher exact p, that slot against the other three |
 | `FORMAT/HDP`, `FORMAT/HAD` | per-haplotype depth and alt depth |
 
@@ -180,6 +181,11 @@ The VCF has two sample columns, `NORMAL` then `TUMOR`:
 somatic variant is `purity/2`, confounding purity, ploidy and cellular fraction. The
 within-haplotype fraction estimates purity x cancer-cell-fraction directly: a clonal variant reads
 1.0 where the pooled VAF would read about 0.25.
+
+A somatic call that no haplotype could be resolved for carries `UNPHASED` and reports `TVAF`
+instead. The two keys are mutually exclusive on purpose: they differ by a factor of two for the
+same clonal variant, so a single key holding either would quietly mix the two scales in anything
+that read it.
 
 Across the two columns, `HDP` and `HAD` are the grid the verdict was decided on, so a disputed call
 can be checked from the VCF alone:
@@ -202,6 +208,8 @@ longcallD paired -t16 ref.fa tumor.bam normal.bam \
 
 #### Accuracy
 
+##### PacBio HiFi
+
 Scored with `som.py` against the SEQC2 HCC1395 v1.2.1 truth set inside its high-confidence
 regions, on chr1 of the PacBio HiFi tumor/normal pair -- the same truth set, region and technology
 the DeepSomatic paper reports:
@@ -211,6 +219,10 @@ the DeepSomatic paper reports:
 | SNVs | 3092 | 150 | 348 | 0.8988 | 0.9537 | **0.9255** |
 | indels | 57 | 33 | 76 | 0.4286 | 0.6333 | **0.5112** |
 | records | 3149 | 183 | 424 | 0.8813 | 0.9451 | 0.9121 |
+
+> These figures were measured before the re-alignment trigger was separated from `-a`, which
+> changed the HiFi paired default from 0.05 to 0.20 and so changes which regions are re-aligned.
+> They are being re-measured; treat them as provisional until this note is gone.
 
 For comparison, Park et al. (2025, *Nat Biotechnol*) report SNV / indel F1 of 0.9536 / 0.8151 for
 DeepSomatic and 0.9310 / 0.4550 for ClairS v0.2.0 on the same benchmark. Both are trained models;
@@ -236,6 +248,37 @@ the reads, so a somatic variant's alt reads scatter across both haplotype slots 
 to phase on, which routes those sites to the pooled `FILTER=Unphased` path instead of failing them.
 
 Reproduce with `eval/run_benchmark.sh` after fetching the fixtures with `eval/fetch_data.sh`.
+
+##### Oxford Nanopore
+
+The same chromosome, truth set and high-confidence regions, on the ONT R10.4.1 tumor/normal pair
+(tumor 43.8x, normal 30.8x), with `--ont`:
+
+| | TP | FP | FN | recall | precision | F1 |
+|---|---|---|---|---|---|---|
+| SNVs | 2068 | 370 | 1372 | 0.6012 | 0.8482 | **0.7036** |
+| indels | 45 | 227 | 88 | 0.3383 | 0.1654 | **0.2222** |
+| records | 2113 | 602 | 1460 | 0.5914 | 0.7783 | 0.6721 |
+
+No comparator figures are quoted here: no published ONT result for chr1 inside this
+high-confidence BED has been found, and the ONT numbers that are published elsewhere are
+whole-genome at different coverage, so they are not interchangeable with these.
+
+Two things are worth reading off this table rather than inferred from the F1. Precision holds up
+on SNVs (0.85 against HiFi's 0.95) while recall does not (0.60 against 0.90), so the gap is
+missed variants, not spurious ones. And **47% of somatic calls fall back to the pooled
+`UNPHASED` test, against 15% on HiFi** -- the four-slot haplotype test that the paired mode is
+built around is reaching only about half the ONT calls, so this number is substantially carried
+by the weaker evidence path. Phase-block fragmentation, not threshold tuning, is what bounds ONT
+accuracy today.
+
+Indels are not usable on ONT: 227 false positives against 133 truth variants. Every false
+positive inspected sits on or beside a homopolymer run, while neither false negative does, so
+these are basecaller slippage. The artifact mask has a homopolymer check (`0x100`) that would
+reject them, but it is excluded by default because on HiFi it costs 1281 true SNVs to remove 17
+false ones -- a measurement dominated by SNVs, since HiFi chr1 has 3440 of them against 133
+indels. The mask applies one bit set to both variant types and so cannot express "homopolymer
+check on indels only", which is the fix this needs.
 
 #### Thresholds
 
