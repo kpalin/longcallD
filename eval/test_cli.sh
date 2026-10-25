@@ -70,6 +70,13 @@ chk "paired HiFi presets -a 0.05"   "Paired thresholds: -a 0.05"                
 chk "paired ONT presets -a 0.15"    "Paired thresholds: -a 0.15 (ONT default)"   "$(thr --ont)"
 chk "explicit -a beats the ONT preset" "Paired thresholds: -a 0.07"              "$(thr "--ont -a 0.07")"
 
+# The same argument for the grid read floor: a floor that does not reach the
+# caller changes which calls survive and leaves no other trace.
+flt() { "$BIN" call $1 "$REF" "$BAM" -N normal.bam -t 1 -o /dev/null 2>&1 \
+          | grep -o 'Paired filters: .*' | tr -d '\r'; }
+chk "the grid read floor defaults to 2" "Paired filters: grid distrusted above 0.02 over 2 read(s)" "$(flt --hifi)"
+chk "the read floor is settable" "Paired filters: grid distrusted above 0.05 over 3 read(s)" "$(flt "--hifi --max-unphased-frac 0.05 --min-unphased-reads 3")"
+
 # A typo must not look like a successful run that happened to produce nothing.
 "$BIN" call --no-such-option "$REF" "$BAM" >/dev/null 2>&1
 chk "unknown option exits non-zero" 1 "$?"

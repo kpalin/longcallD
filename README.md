@@ -176,6 +176,7 @@ The VCF has two sample columns, `NORMAL` then `TUMOR`:
 | `INFO/TVAF` | alt fraction over the **pooled** tumor depth, on `UNPHASED` calls only |
 | `INFO/SPV` | Fisher exact p, that slot against the other three |
 | `FORMAT/HDP`, `FORMAT/HAD` | per-haplotype depth and alt depth |
+| `FORMAT/PS` | the phase block the grid decided the call on; absent on `UNPHASED` calls |
 
 `HAPVAF` is reported instead of the pooled VAF because the pooled figure for a clonal heterozygous
 somatic variant is `purity/2`, confounding purity, ploidy and cellular fraction. The
@@ -262,11 +263,19 @@ whole-genome at different coverage, so they are not interchangeable with these.
 
 Two things are worth reading off this table rather than inferred from the F1. Precision holds up
 on SNVs (0.85 against HiFi's 0.95) while recall does not (0.60 against 0.90), so the gap is
-missed variants, not spurious ones. And **47% of somatic calls fall back to the pooled
+missed variants, not spurious ones. And **47% of somatic calls fell back to the pooled
 `UNPHASED` test, against 37% on HiFi** (1474 of 3130, against 1492 of 3999) -- the four-slot
-haplotype test that the paired mode is built around is reaching only about half the ONT calls, so
-this number is substantially carried by the weaker evidence path. Phase-block fragmentation, not
-threshold tuning, is what bounds ONT accuracy today, and it is a large share on HiFi too.
+haplotype test that the paired mode is built around was reaching only about half the ONT calls,
+so these figures are substantially carried by the weaker evidence path.
+
+That share is **not** a measure of phase-block fragmentation, which is what it was first read as.
+Every input to the decision is in the VCF -- `HDP`/`HAD` carry the grid and `DP` minus their sum
+is the unassigned count -- so the diverted calls can be split by which gate rejected them without
+re-running anything. The trust gate on unassigned reads accounts for 88% of ONT diversions and
+90% of HiFi ones, and is the *sole* cause of 62% and 64%; the per-haplotype depth floors account
+for the rest. Both of the defects behind that have since been fixed (see *Phase sets and the
+grid* below), so the two percentages above describe the run that produced this table, not the
+current caller.
 
 Indels are not usable on ONT: 227 false positives against 133 truth variants. Every false
 positive inspected sits on or beside a homopolymer run, while neither false negative does, so
@@ -275,6 +284,46 @@ reject them, but it is excluded by default because on HiFi it costs 1281 true SN
 false ones -- a measurement dominated by SNVs, since HiFi chr1 has 3440 of them against 133
 indels. The mask applies one bit set to both variant types and so cannot express "homopolymer
 check on indels only", which is the fix this needs.
+
+#### Phase sets and the grid
+
+The four-slot test compares slot `(T,h)` against `(N,h)`, which means something only while `h`
+denotes the same parental chromosome on both sides. Joint phasing gives that across the two
+samples, but **not across phase blocks**: haplotype 1 of one block and haplotype 1 of the next
+are unrelated labels, because the polarity of a block is arbitrary. A variant is therefore
+assigned the block that a majority of its phased reads belong to, and a read from any other
+block counts as unassigned -- which is what the grid's slot 0 already means.
+
+The symptom this fixes is a normal haplotype with no reads while the other holds fifteen, at
+ample depth. Of the somatic calls on full chr1 that looked like that, 55% (ONT) and 82% (HiFi)
+sat *outside* the span of the phase set they claimed, a median 2.5-3.5 kb past its edge, against
+3.5-18% of the calls the grid decided cleanly. On ONT chr1:1-10,000,000 the fix drops 9 calls,
+every one previously decided on the grid and none of them matching a truth variant: SNV false
+positives fall from 14 to 7 at unchanged recall.
+
+`--max-unphased-frac` (default 0.02) is the share of unassigned reads above which the grid is
+distrusted and the pooled test used instead, and `--min-unphased-reads` (default 2) is the count
+that share has to represent. The second exists because a fraction cannot express "nearly every
+read is phased" at long-read depth: one read of a 28.6x ONT normal is 3.5%, so on its own the
+0.02 distrusted the grid wherever a single read went unassigned. At a floor of 2 the grid decides
+64.1% of ONT calls against 56.7% at 1, with identical `som.py` numbers.
+
+The fraction was re-swept afterwards, since the fix widens what slot 0 counts:
+
+| `--max-unphased-frac` | SNV TP/FP | SNV F1 | indel FP | decided on the grid |
+|---|---|---|---|---|
+| 0.02 (default) | 59 / 7 | 0.6344 | 6 | 64.1% |
+| 0.10 | 59 / 7 | 0.6344 | 7 | 71.8% |
+| 0.25 | 58 / 7 | 0.6270 | 7 | 78.4% |
+| off | 56 / 7 | 0.6120 | 9 | 81.4% |
+
+Loosening it puts more calls on the stronger test for no SNV cost, which is worth having, but
+indel false positives rise monotonically and indel precision is the open problem on ONT -- so the
+default stays at 0.02 until that is settled. Turning the gate off is not an option either way: it
+costs 3 true SNVs and 3 indel false positives.
+
+Every somatic call decided on the grid reports the block it was decided on in `FORMAT/PS`. A call
+that reports no `PS` is one the pooled fallback decided, and carries `UNPHASED` to say so.
 
 #### Thresholds
 

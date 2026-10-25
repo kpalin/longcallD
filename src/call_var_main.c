@@ -101,6 +101,7 @@ const struct option call_var_opt [] = {
     { "min-hap-vaf", 1, NULL, 0},
     { "som-artifact-mask", 1, NULL, 0},
     { "max-unphased-frac", 1, NULL, 0},
+    { "min-unphased-reads", 1, NULL, 0},
     { "max-hap-alt-frac", 1, NULL, 0},
     { "min-som-vaf", 1, NULL, 0},
     { "min-som-indel-vaf", 1, NULL, 0},
@@ -220,6 +221,7 @@ call_var_opt_t *call_var_init_para(void) {
     // single-sample calling wants: there is no second sample to be outvoted by.
     opt->min_hap_vaf = 0;
     opt->max_unphased_frac = LONGCALLD_MAX_UNPHASED_FRAC;
+    opt->min_unphased_reads = LONGCALLD_MIN_UNPHASED_READS;
     opt->max_hap_alt_frac = LONGCALLD_MAX_HAP_ALT_FRAC;
     opt->min_som_vaf = LONGCALLD_MIN_SOM_VAF;
     opt->min_som_indel_vaf = LONGCALLD_MIN_SOM_INDEL_VAF;
@@ -547,6 +549,8 @@ void finalise_sample_layout(call_var_opt_t *opt) {
         _err_info("Paired thresholds: -a %.2f%s, --som-pval %g, --min-hap-vaf %.2f\n",
                   opt->min_af, (opt->is_ont && !opt->min_af_set) ? " (ONT default)" : "",
                   opt->som_pval, opt->min_hap_vaf);
+        _err_info("Paired filters: grid distrusted above %.2f over %d read(s)\n",
+                  opt->max_unphased_frac, opt->min_unphased_reads);
     }
 }
 
@@ -1274,6 +1278,10 @@ static void call_var_usage(void) {//main usage
     fprintf(stderr, "                          is not trusted and the pooled test is used instead [%.2f]. Guards\n", (double)LONGCALLD_MAX_UNPHASED_FRAC);
     fprintf(stderr, "                          against germline runs of homozygosity, where both haplotypes have\n");
     fprintf(stderr, "                          depth but there is nothing to phase on\n");
+    fprintf(stderr, "       --min-unphased-reads INT\n");
+    fprintf(stderr, "                          reads with no haplotype that --max-unphased-frac has to represent\n");
+    fprintf(stderr, "                          before the grid is distrusted [%d]. At 1, one unassigned read in a\n", LONGCALLD_MIN_UNPHASED_READS);
+    fprintf(stderr, "                          30x sample is 3%%%% and diverts the call on its own\n");
     fprintf(stderr, "       --max-hap-alt-frac FLOAT\n");
     fprintf(stderr, "                          alt reads tolerated in a slot that should be clean, as a fraction\n");
     fprintf(stderr, "                          of that slot's own depth [%.2f]; used alongside --max-hap-alt\n", (double)LONGCALLD_MAX_HAP_ALT_FRAC);
@@ -1438,6 +1446,7 @@ int call_var_main_mode(int argc, char *argv[], int paired_cli) {
                     else if (strcmp(call_var_opt[op_idx].name, "min-hap-vaf") == 0) { opt->min_hap_vaf = atof(optarg); opt->min_hap_vaf_set = 1; }
                     else if (strcmp(call_var_opt[op_idx].name, "som-artifact-mask") == 0) opt->som_artifact_mask = (int)strtol(optarg, NULL, 0);
                     else if (strcmp(call_var_opt[op_idx].name, "max-unphased-frac") == 0) opt->max_unphased_frac = atof(optarg);
+                    else if (strcmp(call_var_opt[op_idx].name, "min-unphased-reads") == 0) opt->min_unphased_reads = atoi(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "max-hap-alt-frac") == 0) opt->max_hap_alt_frac = atof(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "min-som-vaf") == 0) opt->min_som_vaf = atof(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "min-som-indel-vaf") == 0) opt->min_som_indel_vaf = atof(optarg);

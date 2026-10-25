@@ -307,7 +307,10 @@ int write_var_to_vcf(var_t *vars, const struct call_var_opt_t *opt, bam_chunk_t 
             // Two sample columns, NORMAL then TUMOR. Built in a kstring so the
             // doubled per-sample block cannot overrun the record buffer: the
             // old hand-rolled growth check only accounted for REF+ALT.
-            int want_ps = (var.PS != 0);
+            // Absent, not zero: a somatic variant drives no phasing of its own
+            // and carries assign_hap.c's -1 sentinel until the block it was
+            // decided on is filled in. Testing != 0 printed that sentinel.
+            int want_ps = (var.PS > 0);
             kstring_t sks = KS_INITIALIZE;
             kputs("GT:DP:AD:VAF:GQ", &sks);
             if (want_ps) kputs(":PS", &sks);
@@ -331,7 +334,7 @@ int write_var_to_vcf(var_t *vars, const struct call_var_opt_t *opt, bam_chunk_t 
             }
             // add SVREADS to FORMAT if outputting supporting read names for SVs
             len += snprintf(buffer + len, buf_m - len, "GT:DP:AD:VAF:GQ");
-            if (is_hom == 0 && var.PS != 0) len += snprintf(buffer + len, buf_m - len, ":PS");
+            if (is_hom == 0 && var.PS > 0) len += snprintf(buffer + len, buf_m - len, ":PS");
             if (opt->output_var_rnames || (var.is_sv && (opt->output_sv_rnames)) || (var.is_somatic && opt->output_somatic_var_rnames)) {
                 len += snprintf(buffer + len, buf_m - len, ":ALTREADS");
             }
@@ -354,7 +357,7 @@ int write_var_to_vcf(var_t *vars, const struct call_var_opt_t *opt, bam_chunk_t 
             // GQ
             len += snprintf(buffer + len, buf_m - len, ":%d", var.GQ);
             // PS
-            if (is_hom == 0 && var.PS != 0) 
+            if (is_hom == 0 && var.PS > 0)
                 len += snprintf(buffer + len, buf_m - len, ":%" PRId64 "", var.PS);
             // ALTREADS: output_var_rnames for all variants, output_sv_rnames for SVs, output_somatic_var_rnames for somatic SVs
             // if (var.is_sv && (opt->output_sv_rnames || (opt->output_somatic_var_rnames && var.is_somatic))) {

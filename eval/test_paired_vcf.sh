@@ -112,6 +112,18 @@ read -r n_ps n_flip <<<"$(bcftools query -f '[%GT\t%PS\t]\n' "$T/paired.vcf" 2>/
 chk "no phase-set disagreement between samples" 0 "$n_ps"
 chk "no orientation flip at shared heterozygous sites" 0 "$n_flip"
 
+# PS is a position, so it is positive or it is absent. assign_hap.c uses -1 as
+# its "no phase set" sentinel and the writer only treated 0 as absent, which put
+# PS=-1 on 50,070 records of an ONT chr1 run.
+chk "no record reports a non-positive phase set" 0 \
+    "$(bcftools query -f '[%PS\t]\n' "$T/paired.vcf" 2>/dev/null | tr '\t' '\n' \
+       | awk 'NF && $1!="." && $1+0<=0' | wc -l | tr -d ' ')"
+# A call decided on the four-slot grid was decided on some block's haplotypes,
+# so it has to say which; only the pooled fallback may omit it.
+chk "every grid-decided somatic call names its phase set" 0 \
+    "$(bcftools view -f PASS -i 'INFO/SOMATIC=1' "$T/paired.vcf" 2>/dev/null \
+       | awk -F'\t' '!/^#/ && $8 !~ /UNPHASED/ && $9 !~ /PS/' | wc -l | tr -d ' ')"
+
 echo
 if [[ $fail -eq 0 ]]; then echo "  paired VCF: all $pass assertions passed"; exit 0
 else echo "  paired VCF: $fail of $((pass+fail)) assertions FAILED"; exit 1; fi

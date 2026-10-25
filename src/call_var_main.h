@@ -66,6 +66,33 @@
 // they need no single-sample default and cannot affect single-sample output.
 // Tuned together on SEQC2 HCC1395 chr1; see the comments at each use.
 #define LONGCALLD_MAX_UNPHASED_FRAC 0.02      // above this, the haplotype grid is not trusted
+// ... but only once this many reads are actually unassigned. A fraction alone
+// cannot express "nearly every read is phased" at long-read depth: one read out
+// of 28.6x of ONT normal is 3.5%, so at 0.02 a single unassigned read in either
+// sample diverted the call to the pooled test. That is not what the gate was
+// built to catch -- it was measured against sites carrying 9.2% unassigned
+// tumour reads against 0.0% at true positives -- and it is why the grid reached
+// only 53% of ONT somatic calls and 63% of HiFi ones. Measured on full chr1,
+// the trust gate accounts for 88% (ONT) and 90% (HiFi) of all diversions and is
+// the sole cause of 62% and 64% of them; of those diversions 35% (ONT) and 14%
+// (HiFi) turn on a single read.
+// The fraction itself was re-swept once the grid stopped mixing phase sets,
+// because slot 0 then means something wider: out-of-block reads land there too.
+// ONT chr1:1-10,000,000, everything else at its default:
+//
+//   frac    SNV TP/FP   SNV F1   indel FP   calls decided on the grid
+//   0.02      59 /  7   0.6344          6   64.1%
+//   0.10      59 /  7   0.6344          7   71.8%
+//   0.25      58 /  7   0.6270          7   78.4%
+//   off       56 /  7   0.6120          9   81.4%
+//
+// 0.10 would put another 7.7 points of calls on the four-slot test for no SNV
+// cost, which is the stronger evidence and worth having. It is not taken yet:
+// indel false positives rise monotonically as the gate loosens, and indel
+// precision is the open problem on ONT. Revisit once that is fixed. Turning the
+// gate off is not an option either way -- it costs 3 true SNVs and 3 indel
+// false positives, so it is doing real work at 0.02.
+#define LONGCALLD_MIN_UNPHASED_READS 2        // reads with no haplotype before the fraction is consulted
 #define LONGCALLD_MAX_HAP_ALT_FRAC 0.20       // alt tolerated in a slot that must be clean
 #define LONGCALLD_MIN_SOM_VAF 0.05            // tumour VAF floor, substitutions
 #define LONGCALLD_MIN_SOM_INDEL_VAF 0.15      // tumour VAF floor, indels
@@ -257,6 +284,7 @@ typedef struct call_var_opt_t {
     uint8_t min_af_set, som_pval_set, min_hap_vaf_set; // user passed -a / --som-pval / --min-hap-vaf: do not override in paired mode
     double min_hap_vaf;               // within-slot alt fraction needed to assert an ALT the pooled vote missed
     double max_unphased_frac;         // share of unphased reads above which the haplotype grid is not trusted
+    int min_unphased_reads;           // ... and the count that share has to represent
     double max_hap_alt_frac;          // alt tolerated in a slot that must be clean, as a fraction of its depth
     double min_som_vaf;               // tumour VAF floor for a somatic substitution
     double min_som_indel_vaf;         // tumour VAF floor for a somatic indel

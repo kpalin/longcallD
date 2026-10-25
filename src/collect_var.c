@@ -474,28 +474,63 @@ void collect_all_var_slot_counts(bam_chunk_t *chunk) {
     int n_samples = chunk->n_samples > 0 ? chunk->n_samples : 1;
     for (int i = 0; i < chunk->n_cand_vars; ++i) chunk->var_slots[i].n_samples = n_samples;
 
-    for (int k = 0; k < chunk->n_reads; ++k) {
-        int read_i = chunk->ordered_read_ids[k];
-        if (chunk->is_skipped[read_i]) continue;
-        read_var_profile_t *p1 = chunk->read_var_profile + read_i;
-        if (p1->start_var_idx < 0 || p1->end_var_idx < 0) continue;
+    // Pass 1: which phase block owns each variant. Haplotype 1 of one block and
+    // haplotype 1 of the next are unrelated labels -- the polarity of a block is
+    // arbitrary -- so a grid built from reads of several blocks is comparing
+    // nothing. Taking the block from whichever read happened to arrive first,
+    // as this did, is how that happened: a variant just past the end of a block
+    // is reached by the reads that extend out of it, inherits their PS, and then
+    // tallies every other read against it. Measured on full chr1, 55% (ONT) and
+    // 82% (HiFi) of the somatic calls whose normal haplotype came out starved
+    // sit OUTSIDE the span of the phase set they claimed, a median 2.5-3.5 kb
+    // past its edge, against 3.5-18% of the calls the grid decided cleanly.
+    //
+    // A streaming majority vote: one candidate and one counter per variant, no
+    // per-variant map. It returns the true majority block whenever one exists,
+    // and a plurality otherwise, which is self-correcting -- a wrongly chosen
+    // block leaves most reads in slot 0 below, and max_unphased_frac then sends
+    // the call to the pooled test, which is the honest answer for a variant no
+    // single block covers.
+    hts_pos_t *ps_cand = (hts_pos_t*)_err_calloc(chunk->n_cand_vars, sizeof(hts_pos_t));
+    int *ps_votes = (int*)_err_calloc(chunk->n_cand_vars, sizeof(int));
+    for (int pass = 0; pass < 2; ++pass) {
+        for (int k = 0; k < chunk->n_reads; ++k) {
+            int read_i = chunk->ordered_read_ids[k];
+            if (chunk->is_skipped[read_i]) continue;
+            read_var_profile_t *p1 = chunk->read_var_profile + read_i;
+            if (p1->start_var_idx < 0 || p1->end_var_idx < 0) continue;
 
-        int smp = chunk->read_sample_idx != NULL ? chunk->read_sample_idx[read_i] : 0;
-        if (smp < 0 || smp >= n_samples) continue;
-        int hap = chunk->haps[read_i];
-        if (hap < 0 || hap >= LONGCALLD_N_HAP_SLOTS) hap = 0;
-        if (chunk->phase_sets[read_i] <= 0) hap = 0; // a haplotype with no phase block anchors nothing
-        hts_pos_t ps = hap != 0 ? chunk->phase_sets[read_i] : 0;
+            int smp = chunk->read_sample_idx != NULL ? chunk->read_sample_idx[read_i] : 0;
+            if (smp < 0 || smp >= n_samples) continue;
+            int hap = chunk->haps[read_i];
+            if (hap < 0 || hap >= LONGCALLD_N_HAP_SLOTS) hap = 0;
+            if (chunk->phase_sets[read_i] <= 0) hap = 0; // a haplotype with no phase block anchors nothing
+            hts_pos_t ps = hap != 0 ? chunk->phase_sets[read_i] : 0;
+            if (pass == 0 && ps <= 0) continue; // an unphased read has no vote
 
-        for (int var_i = p1->start_var_idx; var_i <= p1->end_var_idx; ++var_i) {
-            if (var_i < 0 || var_i >= chunk->n_cand_vars) continue;
-            if (ps > 0 && chunk->var_slots[var_i].ps == 0) chunk->var_slots[var_i].ps = ps;
-            int alle = p1->alleles[var_i - p1->start_var_idx];
-            if (alle == 1)      chunk->var_slots[var_i].alt[smp][hap]++;
-            else if (alle == 0) chunk->var_slots[var_i].ref[smp][hap]++;
-            else                chunk->var_slots[var_i].oth[smp][hap]++; // -1 third allele, -2 low-qual alt
+            for (int var_i = p1->start_var_idx; var_i <= p1->end_var_idx; ++var_i) {
+                if (var_i < 0 || var_i >= chunk->n_cand_vars) continue;
+                if (pass == 0) {
+                    if (ps_votes[var_i] == 0) { ps_cand[var_i] = ps; ps_votes[var_i] = 1; }
+                    else if (ps_cand[var_i] == ps) ps_votes[var_i]++;
+                    else ps_votes[var_i]--;
+                    continue;
+                }
+                // Out of the variant's block: real evidence about the sample,
+                // but silent about which chromosome copy, which is what slot 0
+                // means.
+                int h = (hap != 0 && ps == chunk->var_slots[var_i].ps) ? hap : 0;
+                int alle = p1->alleles[var_i - p1->start_var_idx];
+                if (alle == 1)      chunk->var_slots[var_i].alt[smp][h]++;
+                else if (alle == 0) chunk->var_slots[var_i].ref[smp][h]++;
+                else                chunk->var_slots[var_i].oth[smp][h]++; // -1 third allele, -2 low-qual alt
+            }
         }
+        if (pass == 0)
+            for (int i = 0; i < chunk->n_cand_vars; ++i)
+                chunk->var_slots[i].ps = ps_votes[i] > 0 ? ps_cand[i] : 0;
     }
+    free(ps_cand); free(ps_votes);
 }
 
 // Decide what a variant is, by comparing tumour and normal slot by slot.
@@ -704,13 +739,23 @@ static void classify_paired_var1(const call_var_opt_t *opt, var1_t *v) {
     // signal for this, and it is already in the grid as slot 0: 9.2% of tumour
     // reads at those sites against 0.0% at true positives. Above the threshold
     // the pooled fallback takes over, which is the honest answer -- the reads
-    // genuinely do not separate here. It diverts 19% of sites and the result is
-    // flat anywhere from 0% to 3%, so the exact value is not load-bearing.
+    // genuinely do not separate here.
+    //
+    // The count floor is what makes the fraction mean what it says. At long-read
+    // depth a fraction of 0.02 is finer than one read -- one read of a 28.6x ONT
+    // normal is 3.5% -- so on its own it distrusted the grid wherever a single
+    // read went unassigned, which is most of the chromosome. Measured on full
+    // chr1 that was 88% (ONT) / 90% (HiFi) of every diversion and the sole cause
+    // of 62% / 64% of them, and 35% / 14% of those turned on one read. The
+    // signal this gate exists to find is 9.2% against 0.0%, which two reads
+    // still express at any depth it is asked to work at.
     int grid_is_trusted = 1;
     if (opt->max_unphased_frac > 0) {
-        double un_n = n_dp > 0 ? (double)slot_dp(sc, N, 0) / n_dp : 1.0;
-        double un_t = t_dp > 0 ? (double)slot_dp(sc, T, 0) / t_dp : 1.0;
-        if (un_n > opt->max_unphased_frac || un_t > opt->max_unphased_frac) grid_is_trusted = 0;
+        int c_n = slot_dp(sc, N, 0), c_t = slot_dp(sc, T, 0);
+        double un_n = n_dp > 0 ? (double)c_n / n_dp : 1.0;
+        double un_t = t_dp > 0 ? (double)c_t / t_dp : 1.0;
+        if ((c_n >= opt->min_unphased_reads && un_n > opt->max_unphased_frac) ||
+            (c_t >= opt->min_unphased_reads && un_t > opt->max_unphased_frac)) grid_is_trusted = 0;
     }
     int haps_usable = (h != 0 && normal_both && grid_is_trusted &&
                        slot_dp(sc, T, h) >= opt->min_tumor_hap_dp);
@@ -2000,7 +2045,7 @@ int make_variants(const call_var_opt_t *opt, bam_chunk_t *chunk, var_t **_var) {
                 // A somatic variant is never a phasing anchor, so it carries no
                 // phase_set of its own -- but it was decided on a real phase
                 // block's haplotypes, and must say which.
-                if (var->vars[i].PS == 0 && !var->vars[i].is_unphased_call)
+                if (var->vars[i].PS <= 0 && !var->vars[i].is_unphased_call)
                     var->vars[i].PS = chunk->var_slots[cand_i].ps;
                 // Which slot carries the allele is one question; whether the
                 // reads carrying it are error is another, and paired mode used
