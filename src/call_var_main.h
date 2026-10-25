@@ -109,8 +109,9 @@
 #define LONGCALLD_ART_DENSE_DIFF  0x020 // alt reads carry dense mismatches
 #define LONGCALLD_ART_LONG_CLIP   0x040 // a long soft clip nearby
 #define LONGCALLD_ART_LOW_COMP    0x080 // error inside a low-complexity region
-#define LONGCALLD_ART_HOMOPOLYMER 0x100 // homopolymer error
-#define LONGCALLD_ART_ALL         0x1ff
+#define LONGCALLD_ART_HOMOPOLYMER 0x100 // homopolymer error (substitutions only -- see below)
+#define LONGCALLD_ART_REPEAT_INDEL 0x200 // indel whose event base sits in a homopolymer or short tandem repeat
+#define LONGCALLD_ART_ALL         0x3ff
 // Enforced by default: the six checks that cost essentially no true positives
 // on PacBio HiFi. Measured over 7260 paired somatic calls on chr1 (SEQC2
 // HCC1395, som.py inside the HC BED; the instrumented run lost chr1:137.5-150Mb,
@@ -139,6 +140,72 @@
 #define LONGCALLD_ART_DEFAULT (LONGCALLD_ART_STRAND | LONGCALLD_ART_ALT_QUAL | \
                                LONGCALLD_ART_WIN_QUAL | LONGCALLD_ART_INDEL_ERR | \
                                LONGCALLD_ART_DENSE_DIFF | LONGCALLD_ART_LONG_CLIP)
+// Indels get their own set. The table above is dominated by substitutions --
+// 3440 of the 3573 truth variants on chr1 -- so every count in it is a
+// statement about SNVs, and it was read as one about every variant type.
+//
+// HOMOPOLYMER is NOT in the indel set, despite being the obvious candidate:
+// it cannot fire on an indel at all. assign_hap.c computes
+// is_not_homopolymer_error only under `var->var_type == BAM_CDIFF` and hardcodes
+// it to 1 otherwise, so for an insertion or a deletion the check always reports
+// "clean". Measured on ONT full chr1, the bit was set on 0 of 285 somatic indel
+// calls. Enforcing it here would have been a no-op that looked like a filter.
+// Fixing that branch so the check runs on indels is worth doing, but it changes
+// what the check measures and needs its own run; this set is built from what
+// can be measured today.
+//
+// REPEAT_INDEL is the check that does the work, and it reads the reference
+// rather than the reads: polymerase slippage in a homopolymer or short tandem
+// repeat manufactures real reads carrying a real indel that is not a somatic
+// mutation. A tumour VAF floor cannot catch it -- the false somatic indels sit
+// at a median tumour VAF of 0.400 against 0.578 for the true ones, so the two
+// populations are not separated by allele fraction at all, because slippage is
+// systematic across reads rather than subclonal.
+//
+// Thresholds below. Measured over 285 somatic indel calls on ONT full chr1,
+// scored against SEQC2 truth inside the HC BED (40 TP / 245 FP, 133 truth
+// indels), as what survives each candidate rejection rule:
+//
+//   rule                                  TP    FP   prec   recall      F1
+//   nothing                               40   245  0.140    0.301  0.1914
+//   homopolymer >= 5                       33   120  0.216    0.248  0.2308
+//   homopolymer >= 9                       40   130  0.235    0.301  0.2640
+//   homopolymer >= 9 or >= 4 copies        39   105  0.271    0.293  0.2816  <- taken
+//   homopolymer >= 9 or >= 3 copies        37   102  0.266    0.278  0.2721
+//   the in_repeat flag as it stands        31    92  0.252    0.233  0.2422
+//
+// Nearly all of it is free: a homopolymer run of 9 removes 115 of the 245 false
+// positives and costs NOTHING -- no true somatic indel on chr1 sits in a run
+// that long. Shorter runs are where the true indels live, which is why the
+// existing flag's 5 is the wrong place to cut and loses 7 true calls to gain
+// 10 fewer false ones. The tandem term costs the 40th true call and removes 25
+// more false ones.
+//
+// Against what actually ships, since this bit joins the six base checks rather
+// than replacing them, and they catch different false positives:
+//
+//   indel mask                      TP    FP   prec   recall      F1
+//   0      unfiltered               40   245  0.140    0.301  0.1914
+//   0x07d  base default alone       38   196  0.162    0.286  0.2071
+//   0x200  repeat bit alone         39   105  0.271    0.293  0.2816
+//   0x27d  the default below        37    57  0.394    0.278  0.3260
+//
+// 139 fewer false indels than the base default for one more true one.
+//
+// Tying the event length to the repeat period -- slippage in a period-p repeat
+// should produce a multiple of p -- was tried and is inert here: at 4 copies
+// every rejected call already satisfies |len| <= 2p, so the restriction changes
+// nothing and the simpler rule is the one kept.
+//
+// Turning this bit off restores the old behaviour exactly: min_som_rep_indel_vaf
+// still applies the 0.30 floor via the looser in_repeat flag, which stays at
+// its own thresholds. The two are the same evidence at two strengths -- reject
+// where slippage alone explains the call, demand a high allele fraction where
+// it merely could.
+#define LONGCALLD_SLIP_HP_LEN     9  // homopolymer run at the event base that rejects a somatic indel
+#define LONGCALLD_SLIP_MAX_PERIOD 6  // longest tandem-repeat period considered
+#define LONGCALLD_SLIP_MIN_COPIES 4  // copies of that period that reject a somatic indel
+#define LONGCALLD_ART_DEFAULT_INDEL (LONGCALLD_ART_DEFAULT | LONGCALLD_ART_REPEAT_INDEL)
 #define LONGCALLD_DEF_PLOID 2 // diploid
 #define LONGCALLD_REF_ALLELE 0
 #define LONGCALLD_ALT_ALLELE1 1
@@ -243,7 +310,8 @@ typedef struct {
     // Paired tumour/normal evidence and verdict. Unset in single-sample mode.
     var_slot_counts_t slots;  // the per-(sample, haplotype) grid this was decided on
     uint8_t paired_class;     // LONGCALLD_PAIRED_*
-    uint8_t in_repeat;        // indel sits in a homopolymer or short tandem repeat
+    uint8_t in_repeat;        // indel sits in a homopolymer or short tandem repeat (VAF floor)
+    uint8_t in_slip_repeat;   // ...in one long enough that slippage explains it outright (rejection)
     uint8_t som_hap;          // the tumour haplotype carrying a somatic alt; 0 if unphased
     uint8_t is_unphased_call; // decided on pooled per-sample counts, not on the slot grid
     float hap_vaf;            // alt fraction within that haplotype; estimates purity x cancer-cell fraction
@@ -289,7 +357,8 @@ typedef struct call_var_opt_t {
     double min_som_vaf;               // tumour VAF floor for a somatic substitution
     double min_som_indel_vaf;         // tumour VAF floor for a somatic indel
     double min_som_rep_indel_vaf;     // tumour VAF floor for a somatic indel in a homopolymer or short tandem repeat
-    int som_artifact_mask;            // LONGCALLD_ART_* bits enforced on paired somatic calls
+    int som_artifact_mask;            // LONGCALLD_ART_* bits enforced on paired somatic substitutions
+    int som_artifact_mask_indel;      // the same, for insertions and deletions
     int min_normal_phase_dp; // paired mode: min normal depth for a variant to drive phasing
     // Paired tumour/normal classification thresholds.
     int min_normal_dp, min_tumor_dp;         // per-sample depth floor before we say anything

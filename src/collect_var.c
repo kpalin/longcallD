@@ -568,8 +568,12 @@ static int slot_has_alt(const var_slot_counts_t *sc, int s, int h, const call_va
 // [beg, end] are the inclusive bounds of ref_seq in reference coordinates;
 // everything is clamped to them, so a repeat running off the end of the chunk's
 // window is simply measured as far as the window goes.
+// min_period is 1 for the VAF-floor flag, where the period-1 scan is a second,
+// looser homopolymer test (min_copies identical bases, not min_hp_len), and 2
+// for the rejection flag, where the homopolymer term has its own threshold and
+// the period scan must not quietly undercut it.
 static int ref_pos_in_repeat(const char *ref_seq, hts_pos_t beg, hts_pos_t end, hts_pos_t pos,
-                             int min_hp_len, int max_period, int min_copies) {
+                             int min_hp_len, int min_period, int max_period, int min_copies) {
     if (ref_seq == NULL || pos < beg || pos > end) return 0;
     const char *s = ref_seq - beg; // s[x] is the base at reference position x
     // homopolymer
@@ -578,7 +582,7 @@ static int ref_pos_in_repeat(const char *ref_seq, hts_pos_t beg, hts_pos_t end, 
     while (z < end && s[z+1] == s[pos]) ++z;
     if (z - a + 1 >= min_hp_len) return 1;
     // tandem repeat: shortest period with at least min_copies copies over pos
-    for (int p = 1; p <= max_period; ++p) {
+    for (int p = min_period; p <= max_period; ++p) {
         if (pos + p - 1 > end) break;
         int copies = 1;
         for (hts_pos_t j = pos + p; j + p - 1 <= end; j += p) {
@@ -596,6 +600,15 @@ static int ref_pos_in_repeat(const char *ref_seq, hts_pos_t beg, hts_pos_t end, 
         if (copies >= min_copies) return 1;
     }
     return 0;
+}
+
+// Which artifact checks this variant has to clear. Substitutions and indels do
+// not fail in the same way, and one mask for both meant the set was chosen on
+// whichever type dominated the benchmark -- 3440 SNVs against 133 indels on
+// chr1, so entirely by the SNVs.
+static int som_artifact_mask_for(const call_var_opt_t *opt, const var1_t *v) {
+    return (v->type == BAM_CINS || v->type == BAM_CDEL) ? opt->som_artifact_mask_indel
+                                                        : opt->som_artifact_mask;
 }
 
 // Artifact evidence for every candidate that could come out somatic.
@@ -618,7 +631,8 @@ static int ref_pos_in_repeat(const char *ref_seq, hts_pos_t beg, hts_pos_t end, 
 // samples together, so the same physical reads are selected either way.
 static void collect_paired_somatic_artifact_masks(const call_var_opt_t *opt, bam_chunk_t *chunk) {
     if (chunk->n_cand_vars <= 0 || chunk->read_var_cr == NULL) return;
-    if (opt->som_artifact_mask == 0 && getenv("LONGCALLD_ARTCHK") == NULL) return; // nothing will consume them
+    if (opt->som_artifact_mask == 0 && opt->som_artifact_mask_indel == 0 &&
+        getenv("LONGCALLD_ARTCHK") == NULL) return; // nothing will consume them
     // Not a redundant recompute: the slots built in
     // assign_hap_based_on_germline_het_vars_kmeans() predate haplotype
     // assignment, and picking which haplotype carries the alt needs the
@@ -1999,10 +2013,16 @@ int make_variants(const call_var_opt_t *opt, bam_chunk_t *chunk, var_t **_var) {
         var->vars[i].is_sv = 0;
         // An indel's event starts one base after the anchor the record is
         // written at, which is the base the repeat test has to look at.
-        var->vars[i].in_repeat = 0;
-        if (var->vars[i].type != BAM_CDIFF)
+        var->vars[i].in_repeat = 0; var->vars[i].in_slip_repeat = 0;
+        if (var->vars[i].type != BAM_CDIFF) {
             var->vars[i].in_repeat = (uint8_t)ref_pos_in_repeat(ref_seq, ref_beg, chunk->ref_end,
-                                                                var->vars[i].pos + 1, 5, 6, 3);
+                                                                var->vars[i].pos + 1, 5, 1, 6, 3);
+            var->vars[i].in_slip_repeat = (uint8_t)ref_pos_in_repeat(ref_seq, ref_beg, chunk->ref_end,
+                                                                     var->vars[i].pos + 1,
+                                                                     LONGCALLD_SLIP_HP_LEN, 2,
+                                                                     LONGCALLD_SLIP_MAX_PERIOD,
+                                                                     LONGCALLD_SLIP_MIN_COPIES);
+        }
         var->vars[i].is_clean = (chunk->var_i_to_cate[cand_i] & LONGCALLD_CAND_GERMLINE_CLEAN_VAR_CATE) != 0;
         for (int hap=1; hap <= 2; ++hap) {
             int hap_alle = hap == 1 ? hap1_alle : hap2_alle;
@@ -2053,10 +2073,17 @@ int make_variants(const call_var_opt_t *opt, bam_chunk_t *chunk, var_t **_var) {
                 if (var->vars[i].paired_class == LONGCALLD_PAIRED_SOMATIC && cand_i < chunk->n_som_art) {
                     int art = var->vars[i].is_unphased_call ? chunk->som_art_mask_pooled[cand_i]
                                                             : chunk->som_art_mask_hap[cand_i];
+                    // Read off the reference rather than the reads, so it is
+                    // not gathered with the rest in step 1. in_slip_repeat is
+                    // only ever set on an indel, which is what keeps this bit
+                    // from touching substitutions.
+                    if (var->vars[i].in_slip_repeat) art |= LONGCALLD_ART_REPEAT_INDEL;
+                    int art_mask = som_artifact_mask_for(opt, var->vars + i);
                     if (getenv("LONGCALLD_ARTCHK") != NULL)
-                        fprintf(stderr, "ARTCHK\t%" PRId64 "\t%d\t%d\t%d\t%.4f\n", var->vars[i].pos, art,
-                                var->vars[i].type == BAM_CDIFF, var->vars[i].is_unphased_call, var->vars[i].hap_vaf);
-                    if (art & opt->som_artifact_mask) {
+                        fprintf(stderr, "ARTCHK\t%" PRId64 "\t%d\t%d\t%d\t%.4f\t%d\n", var->vars[i].pos, art,
+                                var->vars[i].type == BAM_CDIFF, var->vars[i].is_unphased_call, var->vars[i].hap_vaf,
+                                art_mask);
+                    if (art & art_mask) {
                         var->vars[i].paired_class = LONGCALLD_PAIRED_AMBIG;
                         var->vars[i].som_hap = 0; var->vars[i].hap_vaf = 0; var->vars[i].paired_pval = 1.0;
                     }

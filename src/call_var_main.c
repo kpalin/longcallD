@@ -100,6 +100,7 @@ const struct option call_var_opt [] = {
     { "som-pval", 1, NULL, 0},
     { "min-hap-vaf", 1, NULL, 0},
     { "som-artifact-mask", 1, NULL, 0},
+    { "som-artifact-mask-indel", 1, NULL, 0},
     { "max-unphased-frac", 1, NULL, 0},
     { "min-unphased-reads", 1, NULL, 0},
     { "max-hap-alt-frac", 1, NULL, 0},
@@ -227,6 +228,7 @@ call_var_opt_t *call_var_init_para(void) {
     opt->min_som_indel_vaf = LONGCALLD_MIN_SOM_INDEL_VAF;
     opt->min_som_rep_indel_vaf = LONGCALLD_MIN_SOM_REP_INDEL_VAF;
     opt->som_artifact_mask = LONGCALLD_ART_DEFAULT;
+    opt->som_artifact_mask_indel = LONGCALLD_ART_DEFAULT_INDEL;
     opt->min_normal_phase_af = LONGCALLD_MIN_CAND_AF;
     opt->max_normal_phase_af = LONGCALLD_MAX_CAND_AF;
     opt->max_noisy_reg_cov = LONGCALLD_MAX_NOISY_REG_COV;
@@ -549,7 +551,8 @@ void finalise_sample_layout(call_var_opt_t *opt) {
         _err_info("Paired thresholds: -a %.2f%s, --som-pval %g, --min-hap-vaf %.2f\n",
                   opt->min_af, (opt->is_ont && !opt->min_af_set) ? " (ONT default)" : "",
                   opt->som_pval, opt->min_hap_vaf);
-        _err_info("Paired filters: grid distrusted above %.2f over %d read(s)\n",
+        _err_info("Paired filters: artifact mask 0x%x (snv) 0x%x (indel), grid distrusted above %.2f over %d read(s)\n",
+                  opt->som_artifact_mask, opt->som_artifact_mask_indel,
                   opt->max_unphased_frac, opt->min_unphased_reads);
     }
 }
@@ -1272,7 +1275,15 @@ static void call_var_usage(void) {//main usage
     fprintf(stderr, "                          low-complexity region, 0x100 homopolymer error, 0x001 single\n");
     fprintf(stderr, "                          strand (ONT only). 0 disables all of them. The three left out\n");
     fprintf(stderr, "                          of the default (0x002, 0x080, 0x100) were measured to reject\n");
-    fprintf(stderr, "                          far more true somatic calls than artifacts on HiFi\n");
+    fprintf(stderr, "                          far more true somatic calls than artifacts on HiFi. Applies to\n");
+    fprintf(stderr, "                          substitutions only; see --som-artifact-mask-indel\n");
+    fprintf(stderr, "       --som-artifact-mask-indel INT\n");
+    fprintf(stderr, "                          the same, for insertions and deletions [0x%x]. Adds 0x200: the\n", LONGCALLD_ART_DEFAULT_INDEL);
+    fprintf(stderr, "                          event base sits in a homopolymer of %d+ bases or %d+ copies of\n", LONGCALLD_SLIP_HP_LEN, LONGCALLD_SLIP_MIN_COPIES);
+    fprintf(stderr, "                          a period up to %d, where slippage makes reads carrying a real\n", LONGCALLD_SLIP_MAX_PERIOD);
+    fprintf(stderr, "                          indel that is not a somatic mutation. Measured on ONT chr1 it\n");
+    fprintf(stderr, "                          removed 140 of 245 false somatic indels for 1 of 40 true ones.\n");
+    fprintf(stderr, "                          0x100 is NOT enforced here: that check never runs on an indel\n");
     fprintf(stderr, "       --max-unphased-frac FLOAT\n");
     fprintf(stderr, "                          share of reads with no haplotype above which the four-slot grid\n");
     fprintf(stderr, "                          is not trusted and the pooled test is used instead [%.2f]. Guards\n", (double)LONGCALLD_MAX_UNPHASED_FRAC);
@@ -1445,6 +1456,7 @@ int call_var_main_mode(int argc, char *argv[], int paired_cli) {
                     else if (strcmp(call_var_opt[op_idx].name, "som-pval") == 0) { opt->som_pval = atof(optarg); opt->som_pval_set = 1; }
                     else if (strcmp(call_var_opt[op_idx].name, "min-hap-vaf") == 0) { opt->min_hap_vaf = atof(optarg); opt->min_hap_vaf_set = 1; }
                     else if (strcmp(call_var_opt[op_idx].name, "som-artifact-mask") == 0) opt->som_artifact_mask = (int)strtol(optarg, NULL, 0);
+                    else if (strcmp(call_var_opt[op_idx].name, "som-artifact-mask-indel") == 0) opt->som_artifact_mask_indel = (int)strtol(optarg, NULL, 0);
                     else if (strcmp(call_var_opt[op_idx].name, "max-unphased-frac") == 0) opt->max_unphased_frac = atof(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "min-unphased-reads") == 0) opt->min_unphased_reads = atoi(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "max-hap-alt-frac") == 0) opt->max_hap_alt_frac = atof(optarg);

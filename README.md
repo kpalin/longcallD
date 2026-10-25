@@ -277,13 +277,40 @@ for the rest. Both of the defects behind that have since been fixed (see *Phase 
 grid* below), so the two percentages above describe the run that produced this table, not the
 current caller.
 
-Indels are not usable on ONT: 227 false positives against 133 truth variants. Every false
-positive inspected sits on or beside a homopolymer run, while neither false negative does, so
-these are basecaller slippage. The artifact mask has a homopolymer check (`0x100`) that would
-reject them, but it is excluded by default because on HiFi it costs 1281 true SNVs to remove 17
-false ones -- a measurement dominated by SNVs, since HiFi chr1 has 3440 of them against 133
-indels. The mask applies one bit set to both variant types and so cannot express "homopolymer
-check on indels only", which is the fix this needs.
+Indels are not usable on ONT: 227 false positives against 133 truth variants. They are
+basecaller slippage -- measured on a later, unfiltered run of the same pair, the false somatic
+indels sit in a homopolymer run of median length 12 and are a median 1 bp long, where the true
+ones sit at median run length 1 and are a median 13 bp long.
+
+The obvious fix does not work, in two different ways, and both are worth recording because both
+looked right:
+
+* The artifact mask's homopolymer check (`0x100`) **cannot fire on an indel at all.** It is
+  computed only for substitutions -- `src/assign_hap.c` guards it with
+  `var->var_type == BAM_CDIFF` and reports "clean" otherwise -- so it was set on 0 of 285
+  somatic indel calls on chr1. Enforcing it for indels is a no-op that looks like a filter.
+* A tumour allele-fraction floor cannot separate them either. The false indels sit at a median
+  tumour VAF of 0.400 against 0.578 for the true ones, so `--min-som-rep-indel-vaf` (0.30) was
+  never going to reach them: slippage is systematic across reads rather than subclonal.
+
+What does work reads the **reference** rather than the reads. `--som-artifact-mask-indel` is a
+separate bit set for insertions and deletions, and it adds `0x200`: reject a somatic indel whose
+event base sits in a homopolymer of 9+ bases, or in 4+ copies of a period up to 6. Measured over
+the 285 somatic indel calls (40 TP / 245 FP against the truth set inside the HC BED):
+
+| indel mask | TP | FP | precision | recall | F1 |
+|---|---|---|---|---|---|
+| `0` unfiltered | 40 | 245 | 0.140 | 0.301 | 0.1914 |
+| `0x07d` the substitution default alone | 38 | 196 | 0.162 | 0.286 | 0.2071 |
+| `0x200` the repeat check alone | 39 | 105 | 0.271 | 0.293 | 0.2816 |
+| `0x27d` the indel default | 37 | 57 | **0.394** | 0.278 | **0.3260** |
+
+Most of that is free: a homopolymer run of 9 removes 115 of the 245 false positives and costs
+**no** true calls, because no true somatic indel on chr1 sits in a run that long. Shorter runs
+are where the true indels live, which is why cutting at 5 -- what the pre-existing repeat flag
+does, for the VAF floor -- loses 7 true calls to gain 10 fewer false ones. These counts come
+from a run post-dating the table above, so they are not a correction to its 45/227/88 row; that
+row predates both this and the phase-set fix below.
 
 #### Phase sets and the grid
 
@@ -320,7 +347,9 @@ The fraction was re-swept afterwards, since the fix widens what slot 0 counts:
 Loosening it puts more calls on the stronger test for no SNV cost, which is worth having, but
 indel false positives rise monotonically and indel precision is the open problem on ONT -- so the
 default stays at 0.02 until that is settled. Turning the gate off is not an option either way: it
-costs 3 true SNVs and 3 indel false positives.
+costs 3 true SNVs and 3 indel false positives. (`--som-artifact-mask-indel` has since taken most
+of those false indels out, so the trade-off this sweep measured no longer holds as stated; the
+sweep needs redoing before the default moves.)
 
 Every somatic call decided on the grid reports the block it was decided on in `FORMAT/PS`. A call
 that reports no `PS` is one the pooled fallback decided, and carries `UNPHASED` to say so.
@@ -358,6 +387,12 @@ check alone rejects 1281 true somatic SNVs to remove 17 false ones, collapsing S
 `-a`; the ratio is what matters and it is not close). Running with `LONGCALLD_ARTCHK=1` prints every call's full mask, which re-measures the
 whole table in one pass -- worth doing before trusting these defaults on another technology, since
 the strand check (`0x001`) never fires on HiFi but is live on ONT.
+
+`--som-artifact-mask-indel` (default `0x27d`) is the same mask for insertions and deletions, which
+fail in different ways: every count in the table above is really a statement about substitutions,
+since HiFi chr1 carries 3440 truth SNVs against 133 indels. It adds `0x200`, the repeat-context
+check described under *Results* -- `0x100` is deliberately **not** in it, because that check is
+computed only for substitutions and so can never fire on an indel.
 
 Useful thresholds: `--min-normal-dp`/`--min-tumor-dp` (depth floor before classifying at all),
 `--min-normal-hap-dp`/`--min-tumor-hap-dp` (per-haplotype floor for the four-slot test),

@@ -97,6 +97,58 @@ slots "$T/tumor_clean.bam" "$T/normal_inj.bam" > "$T/normonly.txt"
 chk "normal-only: flagged as normal-only" "$NORMAL_ONLY" "$(class_at "$T/normonly.txt" $SITE)"
 chk "normal-only: not called somatic" 0 "$(awk -F'\t' -v p=$SITE '$2==p && $13==1' "$T/normonly.txt" | wc -l | tr -d ' ')"
 
+# ------------------------------------------------- slippage repeats --------
+# Polymerase slippage in a homopolymer or short tandem repeat makes real reads
+# carrying a real indel that is not a somatic mutation, and it is the dominant
+# source of false somatic indels on ONT. LONGCALLD_ART_REPEAT_INDEL (0x200)
+# rejects those; the check reads the reference, not the reads, so it can be
+# exercised with an injected deletion.
+#
+# Two controls, differing only in where the deletion lands: chr11:1,268,705 is
+# the first base of a 9-base T homopolymer, exactly at the rejection threshold,
+# and chr11:1,269,500 sits in clean sequence. Both are injected onto one
+# haplotype at full fraction, so both are unambiguously somatic on the reads --
+# the only thing that can separate them is the repeat context.
+#
+# This also guards the threshold itself: a 9-base run is the shortest that must
+# be rejected, so raising LONGCALLD_SLIP_HP_LEN breaks the first assertion.
+HPHET=1269349; HPHET_ALT=T; HPSITE=1268705; CLEANSITE=1269500
+
+del_build() { # $1 = read-name list, $2 = site, $3 = output bam
+  { samtools view --no-PG -H "$HIFI"; samtools view "$HIFI" | grep -Fwf "$1"; } \
+    | python3 -I "$ROOT/eval/inject_somatic.py" "$HPHET" "$HPHET_ALT" "$2" "del:1" 1.0 2>/dev/null \
+    | samtools sort -o "$3" - 2>/dev/null
+  samtools index "$3"
+}
+del_build "$T/n1" "$HPSITE"    "$T/tumor_hp.bam"
+del_build "$T/n1" "$CLEANSITE" "$T/tumor_cleanindel.bam"
+
+# The record is anchored one base before the event, which is where the repeat
+# test looks.
+hp_anchor=$((HPSITE-1)); clean_anchor=$((CLEANSITE-1))
+vcf_at() { awk -F'\t' -v p="$2" '!/^#/ && $2==p {print $7}' "$1"; }
+
+"$BIN" call --hifi --som-pval "$PVAL" "$REF" "$T/tumor_hp.bam" -N "$T/normal_clean.bam" \
+    -t 1 -o "$T/hp_on.vcf" >/dev/null 2>&1
+"$BIN" call --hifi --som-pval "$PVAL" --som-artifact-mask-indel 0 "$REF" "$T/tumor_hp.bam" \
+    -N "$T/normal_clean.bam" -t 1 -o "$T/hp_off.vcf" >/dev/null 2>&1
+"$BIN" call --hifi --som-pval "$PVAL" "$REF" "$T/tumor_cleanindel.bam" -N "$T/normal_clean.bam" \
+    -t 1 -o "$T/ci_on.vcf" >/dev/null 2>&1
+
+chk "slippage: indel in a 9-base homopolymer is not called somatic" "Ambiguous" \
+    "$(vcf_at "$T/hp_on.vcf" $hp_anchor)"
+# ...and it is that bit doing it, not some other filter or a failure to call.
+chk "slippage: the same indel is called with the bit off" "PASS" \
+    "$(vcf_at "$T/hp_off.vcf" $hp_anchor)"
+chk "slippage: an indel in clean sequence is still called" "PASS" \
+    "$(vcf_at "$T/ci_on.vcf" $clean_anchor)"
+# The bit is set from a flag that is only ever written for an indel; a
+# substitution carrying it would mean the flag had leaked across variant types.
+chk "slippage: no substitution carries the repeat bit" 0 \
+    "$(LONGCALLD_ARTCHK=1 "$BIN" call --hifi --som-pval "$PVAL" "$REF" "$T/tumor_hp.bam" \
+         -N "$T/normal_clean.bam" -t 1 -o /dev/null 2>&1 \
+       | awk -F'\t' '/^ARTCHK/ && $4=="1" && and($3,512)' | wc -l | tr -d ' ')"
+
 echo
 if [[ $fail -eq 0 ]]; then echo "  somatic classification: all $pass assertions passed"; exit 0
 else echo "  somatic classification: $fail of $((pass+fail)) assertions FAILED"; exit 1; fi
