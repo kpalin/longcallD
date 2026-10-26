@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <assert.h>
 #include "main.h"
 #include "bam_utils.h"
 #include "utils.h"
@@ -142,6 +143,20 @@ static void append_paired_filter(kstring_t *ks, const var1_t *v) {
     //   bcftools view -f PASS -i 'SOMATIC=1 && UNPHASED=1'
 }
 
+// INFO/UNPHASED says a VERDICT was reached on pooled per-sample counts because
+// the haplotype grid was not usable, so it belongs on the records that carry a
+// verdict. A germline or ambiguous record has no verdict for it to qualify, and
+// that is where almost all of it landed: 129732 of the 131189 occurrences on the
+// HiFi HCC1395 chr1 pair, 98.9%. Those tags also put the flag at odds with the
+// genotypes beside it, because the GT separator is decided per sample from that
+// sample's own slot depths while the flag is decided once for the site.
+static int paired_call_is_unphased(const var1_t *v) {
+    if (!v->is_unphased_call) return 0;
+    return v->paired_class == LONGCALLD_PAIRED_SOMATIC ||
+           v->paired_class == LONGCALLD_PAIRED_NORMAL_ONLY ||
+           v->paired_class == LONGCALLD_PAIRED_LOH;
+}
+
 // One sample's FORMAT fields, from the slot grid.
 //
 // Genotype is read off the evidence rather than inherited from the pooled
@@ -154,14 +169,19 @@ static void append_paired_sample(kstring_t *ks, const struct call_var_opt_t *opt
     int dp = smp_dp(sc, smp), alt = smp_alt(sc, smp);
     int d1 = slot_dp(sc, smp, 1), d2 = slot_dp(sc, smp, 2);
     int min_hap_dp = (smp == LONGCALLD_SAMPLE_NORMAL) ? opt->min_normal_hap_dp : opt->min_tumor_hap_dp;
-    int phased = (d1 >= min_hap_dp && d2 >= min_hap_dp);
+    // A phased genotype has to say which phase block it is phased in: "|" is a
+    // claim about haplotype 1 and haplotype 2 of some block, and without a PS
+    // to name that block the claim cannot be read. So want_ps gates the
+    // separator, which is also what keeps INFO/UNPHASED and the separator
+    // answering the same question -- see paired_call_is_unphased().
+    int phased = (want_ps && d1 >= min_hap_dp && d2 >= min_hap_dp);
 
     if (dp == 0) {
         kputs("./.", ks);
     } else if (phased) {
-        kputw(sc->alt[smp][1] > opt->max_hap_alt ? 1 : 0, ks);
+        kputw(paired_slot_is_alt(opt, sc, smp, 1) ? 1 : 0, ks);
         kputc('|', ks);
-        kputw(sc->alt[smp][2] > opt->max_hap_alt ? 1 : 0, ks);
+        kputw(paired_slot_is_alt(opt, sc, smp, 2) ? 1 : 0, ks);
     } else {
         double af = (double)alt / dp;
         if (af > opt->max_af)      kputs("1/1", ks);
@@ -271,7 +291,7 @@ int write_var_to_vcf(var_t *vars, const struct call_var_opt_t *opt, bam_chunk_t 
             if (var.paired_class == LONGCALLD_PAIRED_NORMAL_ONLY || var.paired_class == LONGCALLD_PAIRED_LOH)
                 len += snprintf(buffer + len, buf_m - len, "NORMALONLY;");
             if (var.paired_class == LONGCALLD_PAIRED_LOH) len += snprintf(buffer + len, buf_m - len, "LOH;");
-            if (var.is_unphased_call) len += snprintf(buffer + len, buf_m - len, "UNPHASED;");
+            if (paired_call_is_unphased(&var)) len += snprintf(buffer + len, buf_m - len, "UNPHASED;");
         } else if (var.is_somatic) len += snprintf(buffer + len, buf_m - len, "SOMATIC;");
         if (var.te_seq_i >= 0) len += snprintf(buffer + len, buf_m - len, "MEI;");
         len += snprintf(buffer + len, buf_m - len, "END=%" PRId64 "", var.pos + var.ref_len - 1);
@@ -310,7 +330,13 @@ int write_var_to_vcf(var_t *vars, const struct call_var_opt_t *opt, bam_chunk_t 
             // Absent, not zero: a somatic variant drives no phasing of its own
             // and carries assign_hap.c's -1 sentinel until the block it was
             // decided on is filled in. Testing != 0 printed that sentinel.
-            int want_ps = (var.PS > 0);
+            // A call the grid did not decide reports no phase block, as
+            // FORMAT/PS is documented to do. The somatic backfill below already
+            // honoured that, but a variant that inherited a phase set from the
+            // germline chain kept it regardless, which is how 1069 of the 1425
+            // pooled-decided somatic calls on the HiFi HCC1395 chr1 pair named a
+            // block they were not decided on.
+            int want_ps = (var.PS > 0 && !paired_call_is_unphased(&var));
             kstring_t sks = KS_INITIALIZE;
             kputs("GT:DP:AD:VAF:GQ", &sks);
             if (want_ps) kputs(":PS", &sks);
@@ -319,6 +345,13 @@ int write_var_to_vcf(var_t *vars, const struct call_var_opt_t *opt, bam_chunk_t 
             append_paired_sample(&sks, opt, &var, LONGCALLD_SAMPLE_NORMAL, want_ps);
             kputc('\t', &sks);
             append_paired_sample(&sks, opt, &var, LONGCALLD_SAMPLE_TUMOR, want_ps);
+            // The two ways this record can describe its own phasing must not
+            // contradict each other: if INFO/UNPHASED says no haplotype grid
+            // decided the call, no sample may then print a phased genotype, and
+            // the record may not name a phase block. Decided independently,
+            // they disagreed on 120157 of the 131189 UNPHASED records of the
+            // HiFi HCC1395 chr1 pair.
+            assert(!paired_call_is_unphased(&var) || (want_ps == 0 && strchr(sks.s, '|') == NULL));
             if (len + (int)sks.l + 2 >= buf_m) {
                 buf_m = len + (int)sks.l + 1024;
                 buffer = (char*)_err_realloc(buffer, buf_m);
@@ -328,7 +361,10 @@ int write_var_to_vcf(var_t *vars, const struct call_var_opt_t *opt, bam_chunk_t 
         } else {
             int gt1 = var.GT[0], gt2 = var.GT[1];
             int is_hom = gt1 == gt2; int gt_seperator = '|';
-            if (var.PS == 0) {
+            // <= 0, not == 0: assign_hap.c's somatic path uses -1 for "no phase
+            // set" where the germline path uses 0, and a record with PS = -1
+            // printed "|" while the ":PS" field it refers to was suppressed.
+            if (var.PS <= 0) {
                 gt_seperator = '/';
                 if (gt1 > gt2) { int tmp = gt1; gt1 = gt2; gt2 = tmp;  }
             }

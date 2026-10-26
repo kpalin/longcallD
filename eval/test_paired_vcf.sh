@@ -123,6 +123,36 @@ chk "no record reports a non-positive phase set" 0 \
 chk "every grid-decided somatic call names its phase set" 0 \
     "$(bcftools view -f PASS -i 'INFO/SOMATIC=1' "$T/paired.vcf" 2>/dev/null \
        | awk -F'\t' '!/^#/ && $8 !~ /UNPHASED/ && $9 !~ /PS/' | wc -l | tr -d ' ')"
+# The converse, and the reason INFO/UNPHASED and the genotype separator must be
+# the same decision rather than two: a record that says no haplotype grid
+# decided it cannot then print a phased genotype, nor name a phase block it was
+# not decided on. They were computed independently -- the flag once per site
+# from the slot grid, the separator per sample from that sample's slot depths --
+# and disagreed on 120157 of the 131189 UNPHASED records of a HiFi HCC1395 chr1
+# pair, 1069 of which also reported a PS.
+chk "no UNPHASED record prints a phased genotype" 0 \
+    "$(awk -F'\t' '!/^#/ && $8 ~ /UNPHASED/ && ($10 ~ /\|/ || $11 ~ /\|/)' "$T/paired.vcf" | wc -l | tr -d ' ')"
+chk "no UNPHASED record names a phase block" 0 \
+    "$(awk -F'\t' '!/^#/ && $8 ~ /UNPHASED/ && $9 ~ /PS/' "$T/paired.vcf" | wc -l | tr -d ' ')"
+# A phase set is named after the variant whose two haplotypes it is expressed
+# relative to, so the PS value has to be the position of a heterozygous variant
+# -- that is the only thing that tells a reader what haplotype 1 and 2 mean for
+# the rest of the block. 2015 of 3473 phase sets on a HiFi HCC1395 chr1 pair
+# were named after something else: PS 74449818 after an AC>A homopolymer
+# deletion with 3 alt reads in 39 normal, shared by 12 records of which not one
+# was heterozygous in either sample. assign_hap.c's check_phase_set_anchors()
+# asserts the stronger form of this on the phasing itself; here it is checked on
+# what came out, where the anchor may legitimately be missing because the writer
+# dropped it for depth or because the block was inherited across a chunk
+# boundary -- hence "no PS names a position that is in the VCF and not a het".
+chk "no phase set is named after a non-het record" 0 \
+    "$(awk -F'\t' '!/^#/ {
+         if ($9 ~ /PS/) { n=split($9,f,":"); for (i=1;i<=n;i++) if (f[i]=="PS") k=i
+                          split($10,g,":"); if (g[k]+0 > 0) ps[g[k]+0]=1 }
+         split($10,a,":"); split($11,b,":")
+         het = (a[1] ~ /^0[|\/]1$/ || a[1] ~ /^1[|\/]0$/ || b[1] ~ /^0[|\/]1$/ || b[1] ~ /^1[|\/]0$/)
+         if (het) ok[$2]=1; else nonhet[$2]=1
+       } END { for (q in ps) if (!(q in ok) && (q in nonhet)) bad++; print bad+0 }' "$T/paired.vcf")"
 
 echo
 if [[ $fail -eq 0 ]]; then echo "  paired VCF: all $pass assertions passed"; exit 0

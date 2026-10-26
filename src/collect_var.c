@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <assert.h>
 #include "collect_var.h"
 #include "call_var_main.h"
 #include "utils.h"
@@ -562,6 +563,60 @@ static int slot_has_alt(const var_slot_counts_t *sc, int s, int h, const call_va
     int a = sc->alt[s][h], d = slot_dp(sc, s, h);
     if (a < opt->min_alt_dp || d <= 0) return 0;
     return (double)a / d >= opt->min_af;
+}
+
+// Does this sample's haplotype slot assert an ALT allele? The same question
+// make_variants() asks of the combined grid, asked the same way: a slot must
+// hold min_alt_dp alt reads at min_hap_vaf of its own depth.
+//
+// The VCF writer used to test "> max_hap_alt" instead. That is the threshold
+// for a slot that is supposed to be CLEAN -- the somatic test's "no alt here at
+// all" -- and it defaults to 0, so one mis-assigned read among twenty promoted
+// a slot to ALT. On the HiFi HCC1395 chr1 pair that printed 1|1 in the normal
+// at 6670 sites whose pooled genotype is plainly heterozygous, AD 18,7 with
+// HDP 6,19 and HAD 6,1 among them.
+//
+// Shared with vcf_utils.c rather than copied: reseat_phase_sets_on_het_anchors()
+// below has to predict exactly what the writer will print, and two copies of
+// this rule would eventually disagree.
+int paired_slot_is_alt(const call_var_opt_t *opt, const var_slot_counts_t *sc, int smp, int h) {
+    int a = sc->alt[smp][h], d = slot_dp(sc, smp, h);
+    if (a < opt->min_alt_dp || d <= 0) return 0;
+    double min_vaf = opt->min_hap_vaf > 0 ? opt->min_hap_vaf : opt->min_af;
+    return (double)a / d >= min_vaf;
+}
+
+// Will the writer print this variant as a phased heterozygous genotype in the
+// NORMAL column? That is the condition for naming a phase set after it.
+//
+// The normal specifically, for two reasons. It is the sample the shared phasing
+// is anchored on, so it is the one whose haplotypes the PS is a statement
+// about. And it is what makes the label safe from the UNPHASED strip: a variant
+// heterozygous in the normal has normal VAF around 0.5, so if the grid is ever
+// distrusted at that site the pooled fallback classifies it GERMLINE and
+// returns before reaching any verdict that would drop FORMAT/PS. A somatic or
+// normal-only verdict from that branch needs the normal to carry almost no alt,
+// which a normal heterozygote by definition does not.
+static int var_prints_phased_het_in_normal(const call_var_opt_t *opt, const var_slot_counts_t *sc) {
+    const int N = LONGCALLD_SAMPLE_NORMAL;
+    int dp = smp_dp(sc, N);
+    if (dp <= 0) return 0;
+    // The pooled normal genotype has to be heterozygous as well, and not only
+    // the per-haplotype one. This runs before the chunk stitch -- it has to,
+    // because flip_variant_hap() hands a block's name to the next chunk and a
+    // name chosen after that would split the block across two of them -- so the
+    // slot grid it reads is rebuilt once more before the writer sees it, and a
+    // marginal site can move. A variant whose pooled normal fraction sits in
+    // the heterozygous window cannot move far enough to matter: if the grid is
+    // ever distrusted at that site, classify_paired_var1()'s pooled fallback
+    // sees n_vaf >= min_af and returns GERMLINE, which does not strip
+    // FORMAT/PS. Without this, three ONT phase sets were named after variants
+    // that the recomputed grid later classified NORMAL_ONLY, and a
+    // NORMAL_ONLY verdict does strip it.
+    double af = (double)smp_alt(sc, N) / dp;
+    if (af < opt->min_af || af > opt->max_af) return 0;
+    if (slot_dp(sc, N, 1) < opt->min_normal_hap_dp || slot_dp(sc, N, 2) < opt->min_normal_hap_dp) return 0;
+    return paired_slot_is_alt(opt, sc, N, 1) != paired_slot_is_alt(opt, sc, N, 2);
 }
 
 // Does a homopolymer run or a short tandem repeat cover this reference
@@ -1941,6 +1996,128 @@ int cal_var_QUAL1(int ref_depth, int alt_depth, double logp, double log1p, int m
 // 1) filter out low-quality variants, e.g., P(var|hap,phasing)
 // 2) merge variants with the overlapping pos & ref_len (e.g., ACGT -> A, ACGTCGT) XXX
 // 3) extend phase blocks if possible, e.g., if ≥ 1 read supports the longer phase block
+static int cmp_ps(const void *a, const void *b) {
+    hts_pos_t x = *(const hts_pos_t*)a, y = *(const hts_pos_t*)b;
+    return x < y ? -1 : (x > y ? 1 : 0);
+}
+
+// Re-seat each phase set's name on a variant the writer will print as a phased
+// heterozygous record, and drop the name from a block that has none.
+//
+// The name is a label. Which variant a block is named after changes no
+// genotype, no block boundary, no read haplotype and no somatic verdict -- the
+// phasing belongs to the reads. But the label has to be usable: PS points a
+// reader at the variant whose two haplotypes every record in the block is
+// expressed relative to, so that position has to hold such a variant.
+//
+// In paired mode it can fail to, because the two halves answer different
+// questions. The name is minted on hap_to_cons_alle, a plurality vote with no
+// margin; the printed genotype is recomputed per sample from the slot grid. At
+// chr1:258045 on the HiFi HCC1395 pair one copy holds 10 ref against 9 alt, so
+// the vote reads heterozygous while the grid reads alt on both copies, and the
+// record the block was named after printed 1|1. Three of 342 phase sets on
+// chr1:1-75Mb were in that state.
+//
+// Fixing it by refusing to anchor on such a site instead -- a margin
+// requirement on the vote -- costs far more than the label is worth: at 75%
+// agreement it broke 21% of records out of their blocks on chr1:1-25Mb, partly
+// because the non-anchor pass adds unphased reads to BOTH haplotype profiles
+// and so dilutes the very fraction being tested. The reads there are genuinely
+// phased; only the name was wrong.
+//
+// A block with no qualifying variant keeps no name: every record in it is
+// homozygous, which is the chr1:74449818 case, and a phase set spanning a run
+// of homozygous records tells a reader nothing it can act on.
+//
+// Reads are remapped alongside the variants so FORMAT/PS in the VCF and PS in
+// the output BAM stay the same number.
+//
+// A phase set that predates this chunk's first variant was inherited across the
+// boundary by flip_variant_hap() and is named after a variant in the previous
+// chunk. Renaming it here would split one block across two names, so it is left
+// exactly as it is.
+static void reseat_phase_sets_on_het_anchors(const call_var_opt_t *opt, bam_chunk_t *chunk) {
+    int n = chunk->n_cand_vars;
+    if (n <= 0) return;
+    // The predicate reads the slot grid, so bring it up to date against this
+    // chunk's final read haplotypes. make_variants() rebuilds it again after
+    // the stitch; both are cheap beside the alignment work.
+    collect_all_var_slot_counts(chunk);
+    if (chunk->var_slots == NULL) return;
+    cand_var_t *v = chunk->cand_vars;
+    // Every phase set here was minted in this chunk -- nothing has been
+    // inherited across a boundary yet -- so all of them are ours to rename.
+    hts_pos_t first = 0;
+
+    hts_pos_t *from = (hts_pos_t*)_err_malloc(n * sizeof(hts_pos_t));
+    int n_map = 0;
+    for (int i = 0; i < n; ++i)
+        if (v[i].phase_set >= first && v[i].phase_set > 0) from[n_map++] = v[i].phase_set;
+    if (n_map == 0) { free(from); return; }
+    qsort(from, n_map, sizeof(hts_pos_t), cmp_ps);
+    int u = 0;
+    for (int i = 0; i < n_map; ++i) if (i == 0 || from[i] != from[i-1]) from[u++] = from[i];
+    n_map = u;
+
+    hts_pos_t *to = (hts_pos_t*)_err_calloc(n_map, sizeof(hts_pos_t));
+    // First qualifying variant in each block, in position order, wins the name.
+    for (int i = 0; i < n; ++i) {
+        if (v[i].phase_set <= 0 || v[i].phase_set < first) continue;
+        if (!var_prints_phased_het_in_normal(opt, chunk->var_slots + i)) continue;
+        hts_pos_t *hit = (hts_pos_t*)bsearch(&v[i].phase_set, from, n_map, sizeof(hts_pos_t), cmp_ps);
+        if (hit == NULL) continue;
+        int j = (int)(hit - from);
+        if (to[j] == 0) to[j] = v[i].var_type == BAM_CDIFF ? v[i].pos : v[i].pos - 1;
+    }
+    for (int i = 0; i < n; ++i) {
+        if (v[i].phase_set <= 0 || v[i].phase_set < first) continue;
+        hts_pos_t *hit = (hts_pos_t*)bsearch(&v[i].phase_set, from, n_map, sizeof(hts_pos_t), cmp_ps);
+        if (hit != NULL) v[i].phase_set = to[hit - from];
+    }
+    if (chunk->phase_sets != NULL) {
+        for (int r = 0; r < chunk->n_reads; ++r) {
+            if (chunk->phase_sets[r] <= 0 || chunk->phase_sets[r] < first) continue;
+            hts_pos_t *hit = (hts_pos_t*)bsearch(chunk->phase_sets + r, from, n_map, sizeof(hts_pos_t), cmp_ps);
+            if (hit != NULL) chunk->phase_sets[r] = to[hit - from] > 0 ? to[hit - from] : -1;
+        }
+    }
+    free(from); free(to);
+}
+
+// Every phase set the VCF is about to report names a position that holds a
+// record the writer prints as a phased heterozygote. reseat_... above makes this
+// true by construction; asserting it keeps the two from drifting if either the
+// writer's genotype rule or the minting path changes.
+static void check_phase_set_het_anchors(const call_var_opt_t *opt, const bam_chunk_t *chunk) {
+    if (chunk->n_samples <= 1 || chunk->var_slots == NULL) return;
+    int n = chunk->n_cand_vars;
+    if (n <= 0) return;
+    const cand_var_t *v = chunk->cand_vars;
+    hts_pos_t first = v[0].var_type == BAM_CDIFF ? v[0].pos : v[0].pos - 1;
+    // Sorted set of positions that do qualify, so the check is n log n rather
+    // than a scan per phase set: a chunk can hold tens of thousands of
+    // variants and this runs on every one of them.
+    hts_pos_t *ok = (hts_pos_t*)_err_malloc(n * sizeof(hts_pos_t));
+    int n_ok = 0;
+    for (int i = 0; i < n; ++i) {
+        if (!var_prints_phased_het_in_normal(opt, chunk->var_slots + i)) continue;
+        ok[n_ok++] = v[i].var_type == BAM_CDIFF ? v[i].pos : v[i].pos - 1;
+    }
+    qsort(ok, n_ok, sizeof(hts_pos_t), cmp_ps);
+    int n_bad = 0;
+    for (int i = 0; i < n; ++i) {
+        hts_pos_t ps = v[i].phase_set;
+        if (ps <= 0 || ps < first) continue;
+        if (bsearch(&ps, ok, n_ok, sizeof(hts_pos_t), cmp_ps) != NULL) continue;
+        if (n_bad < 10)
+            _err_error("phase set %" PRIi64 " is not named after a record the writer prints as a phased het (carried by %s:%" PRIi64 ")\n",
+                       ps, chunk->tname, v[i].pos);
+        n_bad++;
+    }
+    free(ok);
+    assert(n_bad == 0);
+}
+
 int make_variants(const call_var_opt_t *opt, bam_chunk_t *chunk, var_t **_var) {
     // Per-(sample, haplotype) tallies for this chunk's variants. Built here
     // because read haplotypes are only final after flip_variant_hap() has run
@@ -1948,6 +2125,22 @@ int make_variants(const call_var_opt_t *opt, bam_chunk_t *chunk, var_t **_var) {
     collect_all_var_slot_counts(chunk);
     int n_cand_vars = chunk->n_cand_vars;
     if (n_cand_vars <= 0) return 0;
+    // Phasing is final here -- stitching included -- so this is where the phase
+    // sets about to be written out can be checked against the variants they are
+    // named after.
+    // One invariant, stated where it can be read: every phase set the VCF
+    // reports names a position holding a record the writer prints as a phased
+    // heterozygote. The labels were re-seated at the end of step 1, before the
+    // stitch could propagate them, so this is the check on the result.
+    //
+    // An earlier revision asserted the same thing against hap_to_cons_alle
+    // instead -- "the anchor is het by the plurality vote". The two definitions
+    // disagree in both directions, so holding both at once is impossible: the
+    // vote reads het where the grid reads hom at chr1:258045, and hom where the
+    // grid reads het at chr1:258625. Keeping two was how the writer and the
+    // phasing came to contradict each other in the first place, so there is one
+    // now, and it is the one a reader of the VCF can check.
+    check_phase_set_het_anchors(opt, chunk);
     char *ref_seq = chunk->ref_seq; hts_pos_t ref_beg = chunk->ref_beg;
     hts_pos_t active_reg_beg = chunk->reg_beg, active_reg_end = chunk->reg_end;
     cand_var_t *cand_vars = chunk->cand_vars; read_var_profile_t *p = chunk->read_var_profile;
@@ -3575,6 +3768,13 @@ void collect_var_main(const call_var_pl_t *pl, bam_chunk_t *chunk) {
     //    mode. It has to happen here: the read-level evidence is freed by
     //    bam_chunk_mid_free() before step 2 reaches make_variants().
     if (chunk->n_samples > 1) collect_paired_somatic_artifact_masks(opt, chunk);
+    // 7. Re-seat the phase-set labels onto variants the VCF will print as
+    //    phased heterozygotes. Before the stitch on purpose: flip_variant_hap()
+    //    hands a block's name to the next chunk, so renaming after it leaves
+    //    one block carrying its new name here and its old name there -- which
+    //    on chr1:1-25Mb turned 153 blocks into 173 and left the old name
+    //    pointing at a record that is no longer an anchor.
+    if (chunk->n_samples > 1) reseat_phase_sets_on_het_anchors(opt, chunk);
 }
 
 // stitch ii-1 and ii
