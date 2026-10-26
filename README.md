@@ -51,6 +51,7 @@ man ./longcallD.1
   - [Variant calling with PacBio HiFi/Nanopore long reads](#variant-calling-with-pacbio-hifinanopore-long-reads)
   - [Multiple input BAM/CRAM files of the same sample](#multiple-input-bamcram-files-of-the-same-sample)
   - [Paired tumor/normal somatic calling](#paired-tumornormal-somatic-calling)
+  - [QUAL, GQ and PL](#qual-gq-and-pl)
   - [Low-allele-fraction mosaic variant calling](#low-allele-fraction-mosaic-variant-calling)
   - [Region-specific variant calling](#region-specific-variant-calling)
   - [Output phased (\& refined) long-read BAM/CRAM](#output-phased--refined-long-read-bamcram)
@@ -177,6 +178,9 @@ The VCF has two sample columns, `NORMAL` then `TUMOR`:
 | `INFO/UNPHASED` | the verdict was reached on pooled counts; no usable haplotype grid at this site |
 | `FORMAT/HDP`, `FORMAT/HAD` | per-haplotype depth and alt depth |
 | `FORMAT/PS` | the phase block the grid decided the call on; absent on `UNPHASED` calls |
+| `QUAL` | on a `SOMATIC` record, -10 log10 P(not somatic); otherwise -10 log10 P(no variant). See [QUAL, GQ and PL](#qual-gq-and-pl) |
+| `FORMAT/GQ`, `FORMAT/PL` | each sample's own genotype quality and likelihoods |
+| `FORMAT/UPR`, `FORMAT/UPF` | unphased reads in that sample, of all reads and of alt reads: count and share |
 
 `HAPVAF` is reported instead of the pooled VAF because the pooled figure for a clonal heterozygous
 somatic variant is `purity/2`, confounding purity, ploidy and cellular fraction. The
@@ -204,11 +208,17 @@ stray mis-assigned read in an otherwise reference slot does not make the sample 
 Across the two columns, `HDP` and `HAD` are the grid the verdict was decided on, so a disputed call
 can be checked from the VCF alone:
 ```
-chr11 1258300 . T A 60 PASS CLEAN;SOMATIC;SOMHAP=1;HAPVAF=1.0000;SPV=4.91e-07
-  GT:DP:AD:VAF:GQ:PS:HDP:HAD
-  NORMAL  0|0:14:14,0:0.000:60:1246687:6,8:0,0
-  TUMOR   1|0:16:9,7:0.438:60:1246687:7,9:7,0
+chr11 1258300 . T A 10 PASS CLEAN;SOMATIC;SOMHAP=1;HAPVAF=1.0000;SPV=4.91e-07;QLIK=25.0;SOR=0.199;MQRS=0.00;BQRS=0.47
+  GT:DP:AD:VAF:GQ:PL:PS:HDP:HAD:UPR:UPF
+  NORMAL  0|0:14:14,0:0.000:19:0,19,247:1250996:6,8:0,0:0,0:0.000,0.000
+  TUMOR   1|0:16:9,7:0.438:99:125,0,156:1250996:7,9:7,0:0,0:0.000,0.000
 ```
+QUAL is the somatic claim, not the evidence that a variant exists. `QLIK=25` is the read
+likelihood's view: seven clean alt reads on one tumor haplotype leave little doubt about the
+variant, but a 14x normal with no alt read still leaves about 0.3% for a germline heterozygote
+missed by sampling, once the germline prior (1000x the somatic one) is applied. `QUAL 10` is the
+fitted model's view: on HCC1395, somatic SNVs with this few alt reads were false about one time
+in ten, whatever their likelihood.
 Variants seen **only in the normal** are flagged rather than dropped, so `bcftools view -f PASS`
 excludes them while they stay available for inspection.
 
@@ -544,6 +554,124 @@ reads -- which used to discard 60% of somatic and 91% of normal-only verdicts af
 already been decided. Raise it for fewer, more clonal somatic calls; lower it for more recall at
 a precision cost.
 Run `longcallD paired` with no arguments for the full list.
+
+### QUAL, GQ and PL
+
+`QUAL` is -10 log10 of the probability that the record's claim is false. For a `SOMATIC`
+record the claim is "somatic", so a germline heterozygote the normal under-sampled counts as
+false; for every other record the claim is "a variant is here". Two error sources are modelled
+separately, because depth affects them in opposite ways (`src/var_qual.c`):
+
+- **Sampling error** is a likelihood over reads, `INFO/QLIK`. Each read carries its own error
+  rate from its base quality (capped at Q40 HiFi / Q35 ONT, an absolute cap), its mapping quality,
+  and for an indel the homopolymer or tandem-repeat tract the indel sits in. Reads are
+  accumulated per sample and haplotype slot, so the hypotheses use the phasing:
+  - A germline het must fill one haplotype.
+  - A somatic call must sit on one tumor haplotype at some cancer-cell fraction, with the other
+    haplotype and the normal clean.
+  - A germline alternative in the tumor gets the same haplotype model, so only the normal can
+    separate somatic from germline.
+- **Systematic error** is anything that does not dilute with depth. A per-technology logistic
+  model takes `QLIK` (saturated at 60, so depth alone cannot outvote an artifact) together with:
+  - strand odds (`INFO/SOR`);
+  - ref-vs-alt mapping- and base-quality rank sums (`INFO/MQRS`, `INFO/BQRS`) and mean MAPQ
+    difference;
+  - repeat unit and tract (`INFO/RU`, `INFO/RPL`);
+  - the number and share of unphased reads and of unphased alt reads (`FORMAT/UPR`, `FORMAT/UPF`);
+  - alt reads on the minority haplotype, and alt reads whose own phasing conflicts;
+  - depth against the chunk median, alt count and VAF.
+
+  Its weights are fitted against truth sets by `eval/qual_eval.py` and built in. A feature is
+  kept only if removing it costs at least one standard error of held-out log-loss. A weight that
+  would make QUAL fall as `QLIK` rises is refused.
+
+`FORMAT/PL` is per sample, so the two columns of a pair carry their own `GQ`. It is the
+genotype likelihood tempered by a fitted factor (0.41 HiFi, 0.29 ONT): reads that share a
+mapping or a mis-phased block are not independent, and untempered PLs were overconfident by
+about that much against GIAB genotypes. A tumor's, or a mosaic call's, `0/1` is the best alt
+fraction up to 1/2 rather than exactly 1/2. `GQ` is the best other genotype's PL minus the
+printed one's, capped at 99.
+
+To refit on other data: call with `LONGCALLD_QUALCHK=1`, normalise with `bcftools norm -m -any`,
+then
+```
+eval/qual_eval.py label calls.vcf.gz truth.vcf.gz --bed hc.bed --mode somatic --out rows.tsv
+eval/qual_eval.py fit --train rows.tsv --tech ont --classes som_snv --out w.txt   # odd/even-window holdout
+eval/qual_eval.py report rows.tsv --half even --weights w.txt --tech ont          # ranking and calibration
+```
+Pass `w.txt` to `--qual-weights`, or rebuild the defaults with
+`eval/qual_eval.py inc eval/qual_weights/*.txt > src/var_qual_weights.inc`. `eval/qual_weights/`
+holds the fits shipped here.
+
+`--min-qual N` sets the `LowQual` filter on records below `N`; it is off by default, so `PASS`
+is unchanged. `--qual-weights FILE` replaces the built-in weights (`none` clears them, leaving
+`QUAL = QLIK`). With `LONGCALLD_QUALCHK=1` every record carries `INFO/QF` with the raw features,
+which is what the fitting reads.
+
+Measured ranking, as AUPRC of true over false records, against the previous QUAL (a fixed
+0.001-error binomial capped at 60). Each set is held out from its own fit:
+
+| set | truth | records (false) | old QUAL | QLIK | QUAL |
+|---|---|---|---|---|---|
+| HiFi germline, HG001 chr20 (fit on HG002) | GIAB v4.2.1 | 79877 (371) | 0.9954 | 0.9994 | 0.9996 |
+| ONT germline, HG002 chr20:10-16Mb, even 1 Mb windows | GIAB v4.2.1 | 4566 (140) | 0.9693 | 0.9987 | 0.9989 |
+| HiFi somatic SNV, HCC1395 chr1, even 25 Mb windows | SEQC2 v1.2.1 | 1763 (88) | 0.9501 | 0.9898 | 0.9957 |
+| ONT somatic SNV, HCC1395 chr1, even 25 Mb windows | SEQC2 v1.2.1 | 1426 (137) | 0.9039 | 0.9733 | 0.9953 |
+| ONT somatic indel, HCC1395 chr1 (not fitted) | SEQC2 v1.2.1 | 110 (68) | 0.3818 | 0.6810 | = QLIK |
+
+Held-out calibration of the fitted QUAL, false rate observed / predicted:
+
+| QUAL | HiFi germline (HG001) | HiFi somatic SNV | ONT somatic SNV |
+|---|---|---|---|
+| 5-10 | 0.140 / 0.192 | 0.221 / 0.207 | 0.286 / 0.191 |
+| 10-15 | 0.025 / 0.062 | 0.076 / 0.070 | 0.043 / 0.062 |
+| 15-20 | 0.013 / 0.020 | 0.016 / 0.018 | 0.032 / 0.020 |
+| 20-25 | 0.0051 / 0.0065 | 0 / 0.0066 (735 records) | 0.014 / 0.0061 |
+| 25-30 | 0.0038 / 0.0018 | 0.006 / 0.0022 | 0.0025 / 0.0022 |
+| 30-40 | 0.0004 / 0.0004 | 0 / 0.0008 (67) | 0 / 0.0006 (230) |
+
+The somatic weights were fitted on the odd windows of each chr1, so the HCC1395 rows are
+held-out windows of the same sample, not a separate sample. `GQ` tempering was fitted on HG002
+and held out on HG001, where it lowers genotype log-loss from 0.0324 to 0.0194 (ONT: 0.0999 to
+0.0475 on its fitting slice). Scoring adds no measurable run time (HG001 chr20: 45.5 s before,
+45.8 s after; a 10 Mb paired window: 18.1 s and 18.0 s) and about 2% peak memory.
+
+The fitted ONT somatic SNV model keeps the artifact signatures one would expect of nanopore
+reads: alt support on one strand, a substitution beside a homopolymer, low alt base quality,
+and alt reads whose own phasing conflicts. The HiFi one keeps lower alt mapping quality, the
+unphased share of reads, and alt reads on both haplotypes. `eval/qual_eval.py fit` prints which
+features each refit keeps.
+
+What it does not do:
+- **Cells with too little truth to fit keep `QUAL = QLIK`.** These are ONT germline SNVs (14
+  false records in the 6 Mb slice) and somatic indels on both technologies: 16 false HiFi
+  records on chr1, and 18 true ONT ones in the training half. Their QLIK ranks far better than
+  the old QUAL did, but its scale is overconfident.
+- **Germline records of a tumor/normal pair use the single-sample germline weights.** No paired
+  germline truth was available to check them against.
+- **Germline HiFi SNVs use no `QLIK` term.** Nearly all of them saturate it, and the fit put a
+  positive weight on it, which the monotonicity rule refuses. Their QUAL rests on alt count, VAF,
+  base-quality ranks, homopolymer context and excess depth.
+- **Single-sample mosaic calls (`-s`) keep `QUAL = QLIK`.** The somatic weights were fitted on
+  tumor/normal pairs, and a mosaic call has no normal behind its features.
+- **The somatic scale assumes a tumor's mutation density.** On GIAB chr20 mixtures (HG001
+  normal; HG001 tumor background with HG002 reads spiked in), where every HG002-private variant
+  counts as somatic,
+  variants are ~100x denser than in HCC1395. There the fitted QUAL is under-confident: at QUAL
+  5-10 it observes 0.23% false against 19% predicted. It still ranks above the old QUAL (AUPRC
+  0.9972 / 0.9966 / 0.9962 against 0.9965 / 0.9964 / 0.9958 at 20 / 40 / 60% spike-in), though
+  below raw `QLIK` there (0.9981 / 0.9972 / 0.9968).
+- **`--min-qual` is off by default, though a low cut helps somatic calls.** On the held-out even
+  windows of HCC1395 chr1, scoring somatic SNVs by allele match inside the SEQC2 HC BED:
+
+  | | `PASS` TP / FP / F1 | `--min-qual 4` TP / FP / F1 |
+  |---|---|---|
+  | HiFi | 1675 / 88 / 0.9262 | 1659 / 49 / 0.9315 |
+  | ONT | 1289 / 137 / 0.7860 | 1269 / 32 / 0.8044 |
+
+  F1 is flat from 3 to 5 on HiFi and from 2 to 6 on ONT, and falls above that. The filter
+  applies to every record, germline ones included. Raw `QLIK` gives no such gain: its best HiFi
+  cut is no cut at all.
 
 ### Low-allele-fraction mosaic variant calling
 With `-s`, longcallD will detect both germline and low-allele-fraction somatic/mosaic variants.

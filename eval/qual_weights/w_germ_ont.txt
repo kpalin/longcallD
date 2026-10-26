@@ -1,0 +1,5 @@
+ont germ_indel bias -1.22644
+ont germ_indel bq_rs -0.614348
+ont germ_indel hp_indel 0.13072
+ont germ_indel dp_low 0.721579
+ont germ_indel lik -0.331148

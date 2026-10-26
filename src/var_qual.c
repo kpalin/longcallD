@@ -594,7 +594,10 @@ void score_var_quality(const call_var_opt_t *opt, var_qual_acc_t *acc, int med_d
     int tech = opt->is_ont ? 1 : 0, cls = q->vq_class;
     const var_qual_weights_t *wt = opt->vq_weights;
     double qual = qlik;
-    if (wt != NULL && wt->set[tech][cls]) {
+    // The somatic weights were fitted on tumour/normal pairs; a single-sample
+    // mosaic call has no normal behind its features, so it keeps QLIK.
+    int fitted_here = !(is_som && !paired);
+    if (wt != NULL && wt->set[tech][cls] && fitted_here) {
         double z = 0;
         for (int f = 0; f < VQF_N; ++f) z += wt->w[tech][cls][f] * q->feat[f];
         // -10 log10 sigmoid(z), without underflow for very negative z.

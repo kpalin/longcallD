@@ -1,0 +1,7 @@
+hifi som_snv bias 2.82047
+hifi som_snv mq_diff 1.49254
+hifi som_snv unph_frac 0.451042
+hifi som_snv log_unph -0.0715087
+hifi som_snv alt_minor_hap 0.562754
+hifi som_snv log_alt -2.14519
+hifi som_snv lik -0.175789
