@@ -1380,6 +1380,8 @@ static void call_var_usage(void) {//main usage
     // fprintf(stderr, "    --beta           INT  beta value of beta-binomial distribution [%d]\n", LONGCALLD_SOMATIC_BETA_BETA);
     fprintf(stderr, "    --som-alt        INT  min. alt. read coverage for somatic variant [%d]\n", LONGCALLD_MIN_SOMATIC_ALT_DP);
     fprintf(stderr, "    --som-mei-alt    INT  min. alt. read coverage for somatic MEI variant [%d]\n", LONGCALLD_MIN_SOMATIC_TE_ALT_DP);
+    fprintf(stderr, "                          with -N it applies when the normal has no alt read, and the\n");
+    fprintf(stderr, "                          indel VAF floor and per-base artifact checks are skipped\n");
     fprintf(stderr, "    --max-somvar INT,INT  max. number of mosaic/somatic variants allowed in a window (m,w) [%d,%d]\n", LONGCALLD_SOMATIC_WIN_MAX_VARS, LONGCALLD_SOMATIC_WIN);
     // fprintf(stderr, "  Variant calling in noisy regions:\n");
     // fprintf(stderr, "    -x --max-xgap    INT  max. number of allowed substitutions/gap-bases in a sliding window(-w/--win-size) [%d]\n", LONGCALLD_NOISY_REG_MAX_XGAPS);

@@ -16,6 +16,7 @@ int assign_somatic_hap_based_on_phased_reads(const struct call_var_opt_t *opt, s
 void free_somatic_var_aux_info(struct cand_somatic_var_aux_info_t *aux_info);
 int paired_somatic_artifact_mask(const struct call_var_opt_t *opt, struct bam_chunk_t *chunk,
                                  int var_i, int alt_hap, int64_t ps);
+int te_signature_is_met(int tsd_len, int polya_len, int te_seq_i);
 
 #ifdef __cplusplus
 }

@@ -745,11 +745,32 @@ static double som_vaf_floor(const call_var_opt_t *opt, const var1_t *v) {
     return v->in_repeat ? opt->min_som_rep_indel_vaf : opt->min_som_indel_vaf;
 }
 
+// May this variant be called somatic on --som-mei-alt tumour reads, the way -s
+// mode calls one? Single-sample mode has always let an insertion carrying a
+// retrotransposition signature stand on one read (var_is_cand_somatic(),
+// phased_sv_is_somatic()); paired mode applied the generic count and allele-
+// fraction gates instead, so on a synthetic benchmark every somatic Alu, L1
+// and SVA insertion with 1-4 tumour reads came out Ambiguous with a clean
+// normal.
+//
+// The normal must hold no alt read at all, not merely too few to assert the
+// allele: with the tumour allowed a single read, the same single read in the
+// normal has to count against it. polya_len is only filled in when a TSD was
+// found, which is also the only case collect_te_info() measures it in.
+static int paired_var_is_te_exempt(const call_var_opt_t *opt, const var1_t *v) {
+    if (v->type != BAM_CINS || v->tsd_len <= 0) return 0;
+    if (!te_signature_is_met(v->tsd_len, v->polya_len, v->te_seq_i)) return 0;
+    return smp_alt(&v->slots, LONGCALLD_SAMPLE_NORMAL) <= opt->max_hap_alt;
+}
+
 static void classify_paired_var1(const call_var_opt_t *opt, var1_t *v);
 
 static void classify_paired_var(const call_var_opt_t *opt, var1_t *v) {
     classify_paired_var1(opt, v);
     if (v->paired_class != LONGCALLD_PAIRED_SOMATIC) return;
+    // The floor is there for polymerase slippage, which does not make a
+    // TSD-flanked, polyA-tailed insertion.
+    if (paired_var_is_te_exempt(opt, v)) return;
     // The classifier decides WHICH slot carries the allele; this decides whether
     // there is enough of it to call a mutation at all. Keeping the two separate
     // means the slot logic stays readable and the sensitivity floor stays in one
@@ -771,6 +792,8 @@ static void classify_paired_var1(const call_var_opt_t *opt, var1_t *v) {
 
     int n_dp = smp_dp(sc, N), t_dp = smp_dp(sc, T);
     int n_alt = smp_alt(sc, N), t_alt = smp_alt(sc, T);
+    int te_exempt = paired_var_is_te_exempt(opt, v);
+    int min_som_alt = te_exempt ? opt->min_somatic_te_dp : opt->min_somatic_alt_dp;
 
     // An under-powered normal is the commonest way to manufacture a false
     // somatic call, so refuse to decide rather than guess.
@@ -842,6 +865,9 @@ static void classify_paired_var1(const call_var_opt_t *opt, var1_t *v) {
         int n_h = sc->alt[N][h], n_o = sc->alt[N][o];
         int normal_has_it = slot_has_alt(sc, N, h, opt) || slot_has_alt(sc, N, o, opt);
         int tumor_has_it  = slot_has_alt(sc, T, h, opt) || slot_has_alt(sc, T, o, opt);
+        // slot_has_alt() asks for min_alt_dp reads at min_af, which a one-read
+        // mobile element insertion cannot meet; normal_has_it is already 0.
+        if (te_exempt) tumor_has_it |= (t_h >= min_som_alt || t_o >= min_som_alt);
 
         // In both samples: inherited. This is the common case, and it is also
         // why haplotype exclusivity alone cannot establish somatic status -- a
@@ -858,7 +884,7 @@ static void classify_paired_var1(const call_var_opt_t *opt, var1_t *v) {
             // chr1 that alone accounted for 63 missed somatic SNVs whose other
             // tumour slot held one or two stray alt reads.
             int other_tumor_ok = tumor_both ? (t_o <= clean_slot_limit(opt, sc, T, o)) : 1;
-            if (t_h >= opt->min_somatic_alt_dp && other_tumor_ok) {
+            if (t_h >= min_som_alt && other_tumor_ok) {
                 int a = t_h, b = slot_dp(sc, T, h) - a;
                 // One slot against the others that actually have reads: under
                 // LOH that is the normal's two, otherwise all three.
@@ -912,7 +938,7 @@ static void classify_paired_var1(const call_var_opt_t *opt, var1_t *v) {
     v->is_unphased_call = 1;
     double n_vaf = n_dp > 0 ? (double)n_alt / n_dp : 0;
     if (n_vaf >= opt->min_af) { v->paired_class = LONGCALLD_PAIRED_GERMLINE; return; }
-    if (n_alt <= opt->max_hap_alt && t_alt >= opt->min_somatic_alt_dp) {
+    if (n_alt <= opt->max_hap_alt && t_alt >= min_som_alt) {
         double p = fisher_exact_test(t_alt, t_dp - t_alt, n_alt, n_dp - n_alt, opt);
         if (p <= opt->som_pval) {
             v->paired_class = LONGCALLD_PAIRED_SOMATIC;
@@ -2306,6 +2332,13 @@ int make_variants(const call_var_opt_t *opt, bam_chunk_t *chunk, var_t **_var) {
                     // from touching substitutions.
                     if (var->vars[i].in_slip_repeat) art |= LONGCALLD_ART_REPEAT_INDEL;
                     int art_mask = som_artifact_mask_for(opt, var->vars + i);
+                    // A mobile element insertion gets the two checks -s mode puts
+                    // an SV through (phased_sv_is_somatic()). The per-base ones
+                    // are written for a single substituted or slipped base: one
+                    // sequencing indel inside 300 bp of inserted Alu trips
+                    // INDEL_ERR, and with one or two reads STRAND is a coin toss.
+                    if (paired_var_is_te_exempt(opt, var->vars + i))
+                        art_mask &= LONGCALLD_ART_DENSE_DIFF | LONGCALLD_ART_LONG_CLIP;
                     if (getenv("LONGCALLD_ARTCHK") != NULL)
                         fprintf(stderr, "ARTCHK\t%" PRId64 "\t%d\t%d\t%d\t%.4f\t%d\n", var->vars[i].pos, art,
                                 var->vars[i].type == BAM_CDIFF, var->vars[i].is_unphased_call, var->vars[i].hap_vaf,

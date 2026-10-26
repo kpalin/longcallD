@@ -1484,7 +1484,14 @@ int var_is_germline(const call_var_opt_t *opt, bam_chunk_t *chunk, int var_i, ca
 }
 
 int sv_is_te(cand_var_t *var) {
-    int tsd_len = var->tsd_len, polya_len = var->polya_len, te_seq_i = var->te_seq_i;
+    return te_signature_is_met(var->tsd_len, var->polya_len, var->te_seq_i);
+}
+
+// The retrotransposition signature that lets a somatic SV stand on
+// min_somatic_te_dp reads instead of min_somatic_alt_dp. Shared by -s mode
+// (sv_is_te() above) and paired mode (classify_paired_var1()), so the two
+// cannot drift apart on what counts as a mobile element.
+int te_signature_is_met(int tsd_len, int polya_len, int te_seq_i) {
     int min_tsd_len = 5, min_polya_len = 20;
     int n_criteria = 0;
     if (tsd_len >= min_tsd_len) n_criteria++;
