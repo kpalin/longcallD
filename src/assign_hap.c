@@ -343,11 +343,25 @@ void update_read_phase_set(bam_chunk_t *chunk, int *var_is_valid, read_var_profi
     }
 }
 
+// May this variant give a phase set its name?
+//
+// is_het[] below only asks whether the two haplotypes' consensus alleles
+// differ, and update_var_hap_to_cons_alle() picks that consensus by plurality
+// with no margin at all. So a haplotype whose reads are split 10 ref to 9 alt
+// names "ref" on a one-read majority, the variant reads heterozygous, and it
+// anchors a block. chr1:258045 on the HiFi HCC1395 pair is exactly that: the
+// alt sits at 47% of one copy and 100% of the other, and the record it anchored
+// printed 1|1 because both slots do assert the allele.
+//
+// A phase set is a claim that the phasing of everything downstream of it is
+// expressed relative to THIS variant's two haplotypes. A site whose own copies
+// do not separate cleanly cannot support that claim, so it genotypes off the
+// phasing like any other non-anchor variant but does not get to name it.
 // record n_agree/n_conflit for each read as well
 // XXX assign each read a HaplotypeScore based on the consensus allele of candidate variants
 // could be used for somatic variant calling
 // reads->haps & haps_to_cons_alle are UpToDate
-int iter_update_var_hap_cons_phase_set(bam_chunk_t *chunk, int *var_idx, read_var_profile_t *p, cand_var_t *cand_vars, int n_cand_vars, int *var_i_to_cate) {
+int iter_update_var_hap_cons_phase_set(bam_chunk_t *chunk, int *var_idx, read_var_profile_t *p, cand_var_t *cand_vars, int n_cand_vars, int *var_i_to_cate, int may_mint_ps) {
     int *het_var_idx = (int*)_err_malloc(n_cand_vars * sizeof(int));
     int n_het_vars = 0;
     int *is_het = (int*)_err_calloc(n_cand_vars, sizeof(int));
@@ -356,7 +370,7 @@ int iter_update_var_hap_cons_phase_set(bam_chunk_t *chunk, int *var_idx, read_va
         cand_var_t *var = cand_vars+var_i;
         // XXX only use clean het vars, do not use homopolymer indels
         // if (var_i_to_cate[var_i] == LONGCALLD_NOISY_CAND_HOM_VAR || var_i_to_cate[var_i] == LONGCALLD_NOISY_CAND_HET_VAR) continue;
-        if (var->hap_to_cons_alle[1] != -1 && var->hap_to_cons_alle[2] != -1 
+        if (var->hap_to_cons_alle[1] != -1 && var->hap_to_cons_alle[2] != -1
             && var->hap_to_cons_alle[1] != var->hap_to_cons_alle[2] && var->is_homopolymer_indel == 0) {
             is_het[_var_i] = 1;
             het_var_idx[n_het_vars++] = _var_i;
@@ -389,21 +403,30 @@ int iter_update_var_hap_cons_phase_set(bam_chunk_t *chunk, int *var_idx, read_va
     // new phase set if n_agree < THRESHOLD & n_conflict < THRESHOLD
     // flip hap_to_cons_alle if n_agree < n_conflict
     int changed = 0;
-    int flip = 0; hts_pos_t phase_set = -1;
+    // 0, not -1: collect_var.c inits cand_var_t.phase_set to 0 for "unset", and
+    // the writer tests PS > 0 / PS == 0. A variant that sits before the first
+    // het of the list belongs to no block and must carry that same sentinel.
+    int flip = 0; hts_pos_t phase_set = 0;
     for (int _var_i = 0; _var_i < n_cand_vars; ++_var_i) {
         int var_i = var_idx[_var_i];
         cand_var_t *var = cand_vars+var_i;
-        if (_var_i == 0) {
-            if (var->var_type == BAM_CDIFF) phase_set = var->pos;
-            else phase_set = var->pos - 1;
-            var->phase_set = phase_set;
-            continue;
-        }
         if (LONGCALLD_VERBOSE >= 2) fprintf(stderr, "%" PRIi64 " %d %d\n", var->pos, n_agree[_var_i], n_conflict[_var_i]);
         if (is_het[_var_i] == 1) {
             if (n_agree[_var_i] < 2 && n_conflict[_var_i] < 2) { // new phase set
-                if (var->var_type == BAM_CDIFF) phase_set = var->pos;
-                else phase_set = var->pos - 1;
+                // Only a het variant may open a phase block, and only in the
+                // anchor pass. The PS value is a promise about the variant at
+                // that position: it says the phasing of everything downstream
+                // is expressed relative to that variant's two haplotypes, so a
+                // position that is not a phased het cannot keep it.
+                //
+                // This used to be unconditional for _var_i == 0, which handed
+                // the whole block's identity to whatever happened to sort first
+                // -- a hom variant, or a homopolymer indel that is_het[]
+                // deliberately excludes. On the HiFi HCC1395 chr1 pair that
+                // minted PS 74449818 from an AC>A deletion with 3 alt reads in
+                // 39 normal, and stamped it on 12 records of which not one was
+                // a phased het in either sample.
+                if (may_mint_ps) phase_set = var->var_type == BAM_CDIFF ? var->pos : var->pos - 1;
                 // flip ^= 0;
             } else if (n_conflict[_var_i] > n_agree[_var_i]) {
                 flip ^= 1;
@@ -420,10 +443,40 @@ int iter_update_var_hap_cons_phase_set(bam_chunk_t *chunk, int *var_idx, read_va
                 }
             }
         }
-        var->phase_set = phase_set;
+        if (may_mint_ps) var->phase_set = phase_set;
     }
     free(ovlp_b); free(n_agree); free(n_conflict); free(het_var_idx); free(is_het);
     return changed;
+}
+
+// Give the variants that were not allowed to anchor the phasing the phase set
+// of the block they sit inside.
+//
+// They must not open a block of their own -- that is what may_mint_ps = 0 is
+// for -- but they are still read off the anchors' haplotypes, so the record has
+// to name the block whose haplotype 1 and 2 its HDP/HAD columns refer to.
+//
+// "Inside" is deliberately strict: the nearest anchor on each side must belong
+// to the same block. Past the last anchor of a block there is no phasing left
+// to inherit, and extending one there is how a homozygous stretch with no
+// germline het in it acquired a phase set at all.
+static void inherit_phase_set_from_anchors(cand_var_t *cand_vars, const int *all_cate_idx,
+                                           int n_all_cate, const int *var_is_valid) {
+    if (n_all_cate <= 0) return;
+    hts_pos_t *next_ps = (hts_pos_t*)_err_malloc(n_all_cate * sizeof(hts_pos_t));
+    hts_pos_t ps = 0;
+    for (int k = n_all_cate-1; k >= 0; --k) {
+        next_ps[k] = ps;
+        int var_i = all_cate_idx[k];
+        if (var_is_valid[var_i] && cand_vars[var_i].phase_set > 0) ps = cand_vars[var_i].phase_set;
+    }
+    ps = 0;
+    for (int k = 0; k < n_all_cate; ++k) {
+        int var_i = all_cate_idx[k];
+        if (var_is_valid[var_i] && cand_vars[var_i].phase_set > 0) { ps = cand_vars[var_i].phase_set; continue; }
+        cand_vars[var_i].phase_set = (ps > 0 && next_ps[k] == ps) ? ps : 0;
+    }
+    free(next_ps);
 }
 
 // update read's haps & var's hap_to_cons_alle
@@ -587,7 +640,7 @@ int assign_hap_based_on_germline_het_vars_kmeans(const call_var_opt_t *opt, bam_
         if (LONGCALLD_VERBOSE >= 2) fprintf(stderr, "iter: %d\n", i_iter);
         // XXX var-wise loop update PS
         // update var->hap_to_cons_alle & var->phase_set
-        int changed_hap1 = iter_update_var_hap_cons_phase_set(chunk, valid_var_idx, p, cand_vars, n_valid_vars, var_i_to_cate);
+        int changed_hap1 = iter_update_var_hap_cons_phase_set(chunk, valid_var_idx, p, cand_vars, n_valid_vars, var_i_to_cate, 1);
         // update
         int changed_hap2 = iter_update_var_hap_to_cons_alle(opt, chunk, valid_var_idx, n_valid_vars, p, cand_vars, var_i_to_cate, target_var_cate);
         if (changed_hap1 == 0 && changed_hap2 == 0) break;
@@ -618,7 +671,9 @@ int assign_hap_based_on_germline_het_vars_kmeans(const call_var_opt_t *opt, bam_
         for (int i = 0; i < n_all_cate; ++i)
             if (!var_is_valid[all_cate_idx[i]]) rest_idx[n_rest++] = all_cate_idx[i];
         if (n_rest > 0) {
-            iter_update_var_hap_cons_phase_set(chunk, rest_idx, p, cand_vars, n_rest, var_i_to_cate);
+            // may_mint_ps = 0: these are not anchors, so they orient themselves
+            // against the final phasing but do not get to name a phase block.
+            iter_update_var_hap_cons_phase_set(chunk, rest_idx, p, cand_vars, n_rest, var_i_to_cate, 0);
             iter_update_var_hap_to_cons_alle(opt, chunk, rest_idx, n_rest, p, cand_vars, var_i_to_cate, target_var_cate);
             if (LONGCALLD_VERBOSE >= 2)
                 fprintf(stderr, "[%s] %s:%" PRIi64 "-%" PRIi64 ": genotyped %d non-anchor variant(s) against the final phasing\n",
@@ -626,6 +681,7 @@ int assign_hap_based_on_germline_het_vars_kmeans(const call_var_opt_t *opt, bam_
         }
         free(rest_idx);
     }
+    inherit_phase_set_from_anchors(cand_vars, all_cate_idx, n_all_cate, var_is_valid);
     // update PS for read & var after all iterations
     update_read_phase_set(chunk, var_is_valid, p, cand_vars);
     free(valid_var_idx); free(var_is_valid); free(all_cate_idx);
