@@ -47,10 +47,17 @@ extern const double LONGCALLD_QGRID[LONGCALLD_QGRID_N];
 // a re-alignment, not from a base in the read.
 #define LONGCALLD_QUAL_UNKNOWN 0xFF
 
+// Per-read error rates are binned to whole phred units: reads in one bin
+// contribute identically, so the likelihoods are summed over occupied bins at
+// scoring time rather than evaluated per read -- 22 log10 calls per read and
+// variant were 14% of the run time.
+#define LONGCALLD_QE_N 91 // phred 0..90
+
 // Per-candidate accumulators, chunk-scoped. Built in make_variants() once read
 // haplotypes are final, i.e. after stitching.
 typedef struct var_qual_acc_t {
-    float ll[2][3][LONGCALLD_QGRID_N];    // [sample][slot][f]: sum over reads of log10 P(read | alt fraction f)
+    uint16_t ne[2][3][2][LONGCALLD_QE_N]; // [sample][slot][ref/alt][error phred]: reads
+    float ll[2][3][LONGCALLD_QGRID_N];    // [sample][slot][f]: sum over reads of log10 P(read | alt fraction f); filled by score_var_quality()
     int n_strand[2][2][2];                // [sample][ref/alt][fwd/rev]
     int n_unph[2][2];                     // [sample][ref/alt]: reads in slot 0 -- unassigned, or outside the site's block
     int n_alt_conflict[2];                // [sample]: alt reads whose own phasing has >= 2 conflicting SNPs
@@ -122,7 +129,7 @@ var_qual_acc_t *collect_var_qual_acc(const struct call_var_opt_t *opt, struct ba
 void ref_repeat_context(const char *ref_seq, hts_pos_t beg, hts_pos_t end, hts_pos_t pos, int is_snv,
                         uint8_t *period, uint8_t *tract_len, char *unit);
 // Fill v->vq and set v->QUAL and v->GQ. med_dp is the chunk's median output depth.
-void score_var_quality(const struct call_var_opt_t *opt, const var_qual_acc_t *acc, int med_dp,
+void score_var_quality(const struct call_var_opt_t *opt, var_qual_acc_t *acc, int med_dp,
                        struct var1_t *v);
 // GQ of a printed genotype carrying `dosage` alt alleles, from that sample's PL.
 int var_qual_gq(const int16_t pl[3], int dosage);

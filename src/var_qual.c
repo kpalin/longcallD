@@ -3,6 +3,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <math.h>
+#include <pthread.h>
 #include "main.h"
 #include "utils.h"
 #include "bam_utils.h"
@@ -204,6 +205,19 @@ var_qual_acc_t *collect_var_qual_acc(const call_var_opt_t *opt, bam_chunk_t *chu
     }
     int n_samples = chunk->n_samples > 0 ? chunk->n_samples : 1;
     double bq_cap = opt->vq_bq_cap;
+    // Substitution error phred for every (base quality, mapping quality) pair,
+    // so the per-cell work is a lookup; indels depend on their context too.
+    static const int NQ = LONGCALLD_QHIST_N, NM = 61;
+    uint8_t snv_qe[LONGCALLD_QHIST_N][61];
+    double e_bq_tab[LONGCALLD_QHIST_N], e_mq_tab[61];
+    for (int q = 0; q < NQ; ++q) e_bq_tab[q] = pow(10.0, -(q < bq_cap ? q : bq_cap) / 10.0);
+    for (int m = 0; m < NM; ++m) e_mq_tab[m] = pow(10.0, -m / 10.0);
+    for (int q = 0; q < NQ; ++q)
+        for (int m = 0; m < NM; ++m) {
+            double e = (1.0 - e_mq_tab[m]) * e_bq_tab[q] / 3.0 + e_mq_tab[m] * 0.5;
+            int qe = (int)(-10.0 * log10(e) + 0.5);
+            snv_qe[q][m] = (uint8_t)(qe < 0 ? 0 : (qe >= LONGCALLD_QE_N ? LONGCALLD_QE_N - 1 : qe));
+        }
     for (int k = 0; k < chunk->n_reads; ++k) {
         int read_i = chunk->ordered_read_ids[k];
         if (chunk->is_skipped[read_i]) continue;
@@ -219,7 +233,7 @@ var_qual_acc_t *collect_var_qual_acc(const call_var_opt_t *opt, bam_chunk_t *chu
         hts_pos_t ps = hap != 0 ? chunk->phase_sets[read_i] : 0;
         int mq = chunk->read_mapq != NULL ? chunk->read_mapq[read_i] : 60;
         if (mq > 60) mq = 60;
-        double e_mq = pow(10.0, -mq / 10.0);
+        double e_mq = e_mq_tab[mq < 0 ? 0 : mq];
         int is_rev = chunk->read_is_rev != NULL ? chunk->read_is_rev[read_i] : 0;
         int conflict = chunk->n_clean_conflict_snps != NULL && chunk->n_clean_conflict_snps[read_i] >= 2;
         for (int var_i = p1->start_var_idx; var_i <= p1->end_var_idx; ++var_i) {
@@ -232,19 +246,18 @@ var_qual_acc_t *collect_var_qual_acc(const call_var_opt_t *opt, bam_chunk_t *chu
             int q = p1->qual != NULL ? p1->qual[j] : LONGCALLD_QUAL_UNKNOWN;
             int known = q != LONGCALLD_QUAL_UNKNOWN;
             if (!known) q = opt->vq_default_bq;
-            double e_bq = pow(10.0, -(q < bq_cap ? q : bq_cap) / 10.0);
-            double e_seq = (chunk->cand_vars[var_i].var_type == BAM_CDIFF)
-                         ? e_bq / 3.0  // the one specific other base
-                         : e_ctx[var_i] + (1.0 - e_ctx[var_i]) * e_bq / 3.0;
-            // A mismapped read shows the alt or the ref as a coin flip.
-            double e = (1.0 - e_mq) * e_seq + e_mq * 0.5;
-            double p_alt = (a == 1) ? 1.0 - e : e;  // P(this observation | true alt)
-            double p_ref = (a == 1) ? e : 1.0 - e;  // P(this observation | true ref)
-            float *ll = acc[var_i].ll[smp][h];
-            for (int g = 0; g < LONGCALLD_QGRID_N; ++g) {
-                double f = LONGCALLD_QGRID[g];
-                ll[g] += (float)log10(f * p_alt + (1.0 - f) * p_ref);
+            int qb = q < NQ ? q : NQ - 1, qe;
+            if (chunk->cand_vars[var_i].var_type == BAM_CDIFF) {
+                qe = snv_qe[qb][mq < 0 ? 0 : mq]; // e_bq/3: the one specific other base
+            } else {
+                double e_seq = e_ctx[var_i] + (1.0 - e_ctx[var_i]) * e_bq_tab[qb] / 3.0;
+                // A mismapped read shows the alt or the ref as a coin flip.
+                double e = (1.0 - e_mq) * e_seq + e_mq * 0.5;
+                qe = (int)(-10.0 * log10(e) + 0.5);
+                if (qe < 0) qe = 0;
+                if (qe >= LONGCALLD_QE_N) qe = LONGCALLD_QE_N - 1;
             }
+            if (acc[var_i].ne[smp][h][a][qe] < UINT16_MAX) acc[var_i].ne[smp][h][a][qe]++;
             acc[var_i].n_strand[smp][a][is_rev ? 1 : 0]++;
             if (h == 0) acc[var_i].n_unph[smp][a]++;
             if (a == 1 && conflict) acc[var_i].n_alt_conflict[smp]++;
@@ -287,6 +300,36 @@ static int hist_median(const int *h) {
     if (n == 0) return -1;
     for (int b = 0; b < LONGCALLD_QHIST_N; ++b) { c += h[b]; if (2 * c >= n) return b; }
     return LONGCALLD_QHIST_N - 1;
+}
+
+// log10 P(read | f) for a read of error phred qe showing ref ([0]) or alt ([1]).
+static double qe_ll_tab[LONGCALLD_QE_N][LONGCALLD_QGRID_N][2];
+static pthread_once_t qe_ll_once = PTHREAD_ONCE_INIT;
+static void init_qe_ll_tab(void) {
+    for (int qe = 0; qe < LONGCALLD_QE_N; ++qe) {
+        double e = pow(10.0, -qe / 10.0);
+        if (e > 0.5) e = 0.5;
+        for (int g = 0; g < LONGCALLD_QGRID_N; ++g) {
+            double f = LONGCALLD_QGRID[g];
+            qe_ll_tab[qe][g][0] = log10(f * e + (1.0 - f) * (1.0 - e));
+            qe_ll_tab[qe][g][1] = log10(f * (1.0 - e) + (1.0 - f) * e);
+        }
+    }
+}
+
+static void fill_ll(var_qual_acc_t *acc) {
+    pthread_once(&qe_ll_once, init_qe_ll_tab);
+    for (int s = 0; s < 2; ++s)
+        for (int h = 0; h < 3; ++h) {
+            double ll[LONGCALLD_QGRID_N] = {0};
+            for (int a = 0; a < 2; ++a)
+                for (int qe = 0; qe < LONGCALLD_QE_N; ++qe) {
+                    int n = acc->ne[s][h][a][qe];
+                    if (n == 0) continue;
+                    for (int g = 0; g < LONGCALLD_QGRID_N; ++g) ll[g] += n * qe_ll_tab[qe][g][a];
+                }
+            for (int g = 0; g < LONGCALLD_QGRID_N; ++g) acc->ll[s][h][g] = (float)ll[g];
+        }
 }
 
 static inline double slot_ll(const var_qual_acc_t *acc, int s, int h, int g) { return acc->ll[s][h][g]; }
@@ -490,8 +533,9 @@ static void artifact_features(const var_qual_acc_t *acc, const var1_t *v, int n_
     if (dp > 0) x[VQF_VAF] = (float)n_alt / dp;
 }
 
-void score_var_quality(const call_var_opt_t *opt, const var_qual_acc_t *acc, int med_dp, var1_t *v) {
+void score_var_quality(const call_var_opt_t *opt, var_qual_acc_t *acc, int med_dp, var1_t *v) {
     var_qual_t *q = &v->vq;
+    fill_ll(acc);
     int n_samples = v->slots.n_samples > 0 ? v->slots.n_samples : 1;
     if (n_samples > 2) n_samples = 2;
     int paired = n_samples > 1;
