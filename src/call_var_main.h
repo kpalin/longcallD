@@ -12,6 +12,7 @@
 #include "htslib/sam.h"
 #include "htslib/thread_pool.h"
 #include "bam_utils.h"
+#include "var_qual.h"
 
 #define CALL_VAR_PL_THREAD_N 2 // num of threads for pipeline
 #define CALL_VAR_THREAD_N 8    // num of threads for variant calling
@@ -98,6 +99,15 @@
 #define LONGCALLD_MIN_SOM_INDEL_VAF 0.15      // tumour VAF floor, indels
 #define LONGCALLD_MIN_SOM_REP_INDEL_VAF 0.30  // tumour VAF floor, indels in a repeat
 #define LONGCALLD_MIN_SOM_ALT_QUAL 20         // absolute base-quality floor for a somatic alt allele
+// Quality model (var_qual.c).
+#define LONGCALLD_VQ_BQ_CAP_HIFI 40      // base qualities above this are not trusted further
+#define LONGCALLD_VQ_BQ_CAP_ONT  35
+#define LONGCALLD_VQ_DEFAULT_BQ_HIFI 30  // a cell with no base: noisy-region alleles from re-alignment
+#define LONGCALLD_VQ_DEFAULT_BQ_ONT  15
+#define LONGCALLD_VQ_THETA_SNV   1e-3    // germline het rate, substitutions
+#define LONGCALLD_VQ_THETA_INDEL 1.25e-4 // ...indels outside repeats; x10 inside one
+#define LONGCALLD_VQ_SOM_PRIOR   1e-6    // somatic mutation per site
+#define LONGCALLD_VQ_PHASE_WEIGHT 0.5    // weight of the phased reading of a het
 
 // Artifact checks a paired somatic call is put through. Each bit is one check;
 // --som-artifact-mask selects which are enforced, and LONGCALLD_ARTCHK=1
@@ -294,7 +304,7 @@ extern "C" {
 //        "Normalized": the PL of the most likely genotype is set to 0, and the rest are scaled relative to this.
 //   * GQ (int) = PL_sec - PL_lowest (int)
 //   * GT = argmin(PL)
-typedef struct {
+typedef struct var1_t {
     uint8_t type; // BAM_CINS/BAM_CDEL/BAM_CDIFF
     hts_pos_t pos, PS; // phase set
     uint8_t *ref_bases; int ref_len;
@@ -305,7 +315,8 @@ typedef struct {
     int n_alt_allele; // currently, only one alt allele
     uint8_t **alt_bases; int *alt_len;
     int DP, AD[2]; uint8_t GT[2]; // DP/AD/GT
-    int QUAL, GQ, PL[6]; // phred-scaled, QUAL/FILTER/GQ/PL
+    int QUAL, GQ; // phred-scaled; see var_qual.h. GQ is the first sample's; paired GQ is per sample, from vq.pl
+    var_qual_t vq; // likelihoods, PL, artifact features and repeat context behind QUAL/GQ
     int *alt_read_i;
 
     // Paired tumour/normal evidence and verdict. Unset in single-sample mode.
@@ -413,6 +424,13 @@ typedef struct call_var_opt_t {
     uint8_t out_aln_passthrough; // also emit reads on excluded contigs and unmapped reads
     htsFile *out_vcf; bcf_hdr_t *vcf_hdr; char *out_vcf_fn; char out_vcf_type; // u/b/v/z
     double p_error, log_p, log_1p, log_2; int max_gq; int max_qual;
+    // Quality model (var_qual.c). bq_cap is absolute per technology: a chunk-
+    // relative cap would mean a different model on every technology.
+    int vq_bq_cap, vq_default_bq;   // base-quality cap; BQ assumed where a cell has none
+    double vq_theta_snv, vq_theta_indel, vq_som_prior; // germline het priors; somatic prior per site
+    double vq_phase_weight;         // weight of the phased reading of a het
+    int min_qual;                   // FILTER LowQual below this; 0 = off
+    char *qual_weights_fn; var_qual_weights_t *vq_weights;
     int8_t no_vcf_header, out_amb_base, out_somatic, out_methylation;
 } call_var_opt_t;
 

@@ -104,6 +104,7 @@ typedef struct bam_chunk_t {
     int n_reads, m_reads; int *ordered_read_ids; // size: m_reads, for multiple input bams, merge sort reads by pos, end, NM, name
     uint64_t *read_sigs; // size: m_reads, identity of the record loaded at each read_i; see bam_record_sig()
     uint8_t *read_sample_idx; // size: m_reads, which input sample each read came from
+    uint8_t *read_mapq, *read_is_rev; // size: m_reads; outlive the BAM records, for the quality model
     int *bam_read_off; // size: n_bam, the read_i at which each input file's reads start.
                        // The loader fills chunk->reads in BAM-major order, so the writer
                        // needs this to recover read_i while emitting in coordinate order.

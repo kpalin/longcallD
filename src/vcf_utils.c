@@ -52,7 +52,11 @@ void write_vcf_header(bam_hdr_t *hdr, struct call_var_opt_t *opt) {
 
     // FILTER fields
     bcf_hdr_append(vcf_hdr, "##FILTER=<ID=PASS,Description=\"All filters passed\">");
-    bcf_hdr_append(vcf_hdr, "##FILTER=<ID=LowQual,Description=\"Low quality variant\">");
+    {
+        char lq[256];
+        snprintf(lq, sizeof(lq), "##FILTER=<ID=LowQual,Description=\"QUAL below --min-qual %d\">", opt->min_qual);
+        bcf_hdr_append(vcf_hdr, lq);
+    }
     bcf_hdr_append(vcf_hdr, "##FILTER=<ID=RefCall,Description=\"Reference call\">");
     bcf_hdr_append(vcf_hdr, "##FILTER=<ID=NoCall,Description=\"Site has depth=0 resulting in no call\">");
     if (opt->n_samples > 1) {
@@ -86,14 +90,26 @@ void write_vcf_header(bam_hdr_t *hdr, struct call_var_opt_t *opt) {
         bcf_hdr_append(vcf_hdr, "##INFO=<ID=SPV,Number=1,Type=Float,Description=\"Fisher exact p, the somatic slot against the other three\">");
     }
     // bcf_hdr_append(vcf_hdr, "##INFO=<ID=REPCLSFAM,Number=1,Type=String,Description=\"Repeat class/family\">");
+    // QUAL has no header line of its own, so what it means is stated here.
+    bcf_hdr_append(vcf_hdr, "##longcallD_QUAL=\"-10 log10 P(false), capped at 999. For a SOMATIC record, P(not somatic: absent, or germline); otherwise P(no variant). P(false) = 1 - (1 - P_lik)(1 - P_art): P_lik from per-read base quality, mapping quality and indel repeat context (INFO/QLIK); P_art from a per-technology logistic artifact model over strand bias, ref/alt mapping- and base-quality ranks, repeat context, phasing and depth\"");
+    bcf_hdr_append(vcf_hdr, "##INFO=<ID=QLIK,Number=1,Type=Float,Description=\"QUAL from the read likelihoods alone, before the artifact model\">");
+    bcf_hdr_append(vcf_hdr, "##INFO=<ID=SOR,Number=1,Type=Float,Description=\"Strand odds ratio (GATK definition) over the alt-carrying sample\">");
+    bcf_hdr_append(vcf_hdr, "##INFO=<ID=MQRS,Number=1,Type=Float,Description=\"Rank-sum z of alt against ref read mapping quality; negative: alt lower\">");
+    bcf_hdr_append(vcf_hdr, "##INFO=<ID=BQRS,Number=1,Type=Float,Description=\"Rank-sum z of alt against ref base quality; negative: alt lower\">");
+    bcf_hdr_append(vcf_hdr, "##INFO=<ID=RU,Number=1,Type=String,Description=\"Repeat unit of the homopolymer or tandem repeat at the variant\">");
+    bcf_hdr_append(vcf_hdr, "##INFO=<ID=RPL,Number=1,Type=Integer,Description=\"Length in reference bases of that repeat tract\">");
+    if (getenv("LONGCALLD_QUALCHK") != NULL)
+        bcf_hdr_append(vcf_hdr, "##INFO=<ID=QF,Number=.,Type=Float,Description=\"Debug: quality class, P_art, then the artifact features in var_qual.h order\">");
 
     // FORMAT fields
     bcf_hdr_append(vcf_hdr, "##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">");
-    bcf_hdr_append(vcf_hdr, "##FORMAT=<ID=GQ,Number=1,Type=Integer,Description=\"Genotype quality\">");
+    bcf_hdr_append(vcf_hdr, "##FORMAT=<ID=GQ,Number=1,Type=Integer,Description=\"Genotype quality: this sample's PL of the best other genotype minus that of the one printed, capped at 99; 0 when the printed genotype is not the most likely\">");
     bcf_hdr_append(vcf_hdr, "##FORMAT=<ID=DP,Number=1,Type=Integer,Description=\"Total read depth\">");
     bcf_hdr_append(vcf_hdr, "##FORMAT=<ID=AD,Number=R,Type=Integer,Description=\"Read depth for each allele\">");
     bcf_hdr_append(vcf_hdr, "##FORMAT=<ID=VAF,Number=A,Type=Float,Description=\"Variant allele frequency\">");
-    bcf_hdr_append(vcf_hdr, "##FORMAT=<ID=PL,Number=G,Type=Integer,Description=\"Phred-scaled genotype likelihoods rounded to the closest integer\">");
+    bcf_hdr_append(vcf_hdr, "##FORMAT=<ID=PL,Number=G,Type=Integer,Description=\"Phred-scaled genotype likelihoods rounded to the closest integer, from per-read base and mapping quality; a tumour's (or a mosaic call's) 0/1 is the best alt fraction up to 1/2, not exactly 1/2\">");
+    bcf_hdr_append(vcf_hdr, "##FORMAT=<ID=UPR,Number=2,Type=Integer,Description=\"Unphased reads: of all reads, and of alt reads, those with no haplotype in the site's phase block\">");
+    bcf_hdr_append(vcf_hdr, "##FORMAT=<ID=UPF,Number=2,Type=Float,Description=\"Unphased proportion: UPR over this sample's DP, and over its alt reads\">");
     bcf_hdr_append(vcf_hdr, "##FORMAT=<ID=PS,Number=1,Type=Integer,Description=\"Phase set\">");
     // per-sample variant supporting read IDs
     bcf_hdr_append(vcf_hdr, "##FORMAT=<ID=ALTREADS,Number=.,Type=String,Description=\"IDs of reads supporting the variant\">");
@@ -125,7 +141,7 @@ void write_vcf_header(bam_hdr_t *hdr, struct call_var_opt_t *opt) {
 
 // FILTER column for a paired call. More than one can apply, so they are
 // semicolon-joined the way the VCF spec intends.
-static void append_paired_filter(kstring_t *ks, const var1_t *v) {
+static void append_paired_filter(kstring_t *ks, const struct call_var_opt_t *opt, const var1_t *v) {
     int n = 0;
     switch (v->paired_class) {
         case LONGCALLD_PAIRED_NORMAL_ONLY:
@@ -134,6 +150,7 @@ static void append_paired_filter(kstring_t *ks, const var1_t *v) {
         case LONGCALLD_PAIRED_AMBIG: kputs("Ambiguous", ks); n++; break;
         default: break; // SOMATIC and GERMLINE pass
     }
+    if (opt->min_qual > 0 && v->QUAL < opt->min_qual) { if (n++) kputc(';', ks); kputs("LowQual", ks); }
     if (n == 0) kputs("PASS", ks);
     // Note: a call made without a usable haplotype grid is reported through
     // INFO/UNPHASED, not here. As a FILTER it made every such call non-PASS,
@@ -157,6 +174,27 @@ static int paired_call_is_unphased(const var1_t *v) {
            v->paired_class == LONGCALLD_PAIRED_LOH;
 }
 
+// FORMAT UPR and UPF: how much of one sample's evidence the phasing could not
+// place on a haplotype of the site's block. Read from the quality model's own
+// tallies, which use the slot grid's rule, so UPR[0] == DP - HDP[0] - HDP[1].
+static void append_unphased_fields(kstring_t *ks, const var1_t *v, int smp) {
+    int dp = v->vq.n_dp[smp], u = v->vq.n_unph[smp], ua = v->vq.n_unph_alt[smp];
+    int alt = smp_alt(&v->slots, smp);
+    ksprintf(ks, ":%d,%d:%.3f,%.3f", u, ua, dp > 0 ? (double)u / dp : 0.0, alt > 0 ? (double)ua / alt : 0.0);
+}
+
+// INFO fields behind QUAL.
+static void append_qual_info(kstring_t *ks, const var1_t *v) {
+    const var_qual_t *q = &v->vq;
+    if (!q->is_set) return;
+    ksprintf(ks, ";QLIK=%.1f;SOR=%.3f;MQRS=%.2f;BQRS=%.2f", q->qlik, q->sor, q->mq_rs, q->bq_rs);
+    if (q->rep_period > 0 && q->rep_unit[0] != '\0') ksprintf(ks, ";RU=%s;RPL=%d", q->rep_unit, q->rep_len);
+    if (getenv("LONGCALLD_QUALCHK") != NULL) {
+        ksprintf(ks, ";QF=%d,%.4g", q->vq_class, q->p_art);
+        for (int f = 0; f < VQF_N; ++f) ksprintf(ks, ",%.4g", q->feat[f]);
+    }
+}
+
 // One sample's FORMAT fields, from the slot grid.
 //
 // Genotype is read off the evidence rather than inherited from the pooled
@@ -176,21 +214,27 @@ static void append_paired_sample(kstring_t *ks, const struct call_var_opt_t *opt
     // answering the same question -- see paired_call_is_unphased().
     int phased = (want_ps && d1 >= min_hap_dp && d2 >= min_hap_dp);
 
+    int dosage = -1; // alt alleles in the printed genotype; -1 for "./."
     if (dp == 0) {
         kputs("./.", ks);
     } else if (phased) {
-        kputw(paired_slot_is_alt(opt, sc, smp, 1) ? 1 : 0, ks);
-        kputc('|', ks);
-        kputw(paired_slot_is_alt(opt, sc, smp, 2) ? 1 : 0, ks);
+        int g1 = paired_slot_is_alt(opt, sc, smp, 1) ? 1 : 0, g2 = paired_slot_is_alt(opt, sc, smp, 2) ? 1 : 0;
+        kputw(g1, ks); kputc('|', ks); kputw(g2, ks);
+        dosage = g1 + g2;
     } else {
         double af = (double)alt / dp;
-        if (af > opt->max_af)      kputs("1/1", ks);
-        else if (af >= opt->min_af) kputs("0/1", ks);
-        else                        kputs("0/0", ks);
+        if (af > opt->max_af)      { kputs("1/1", ks); dosage = 2; }
+        else if (af >= opt->min_af) { kputs("0/1", ks); dosage = 1; }
+        else                        { kputs("0/0", ks); dosage = 0; }
     }
-    ksprintf(ks, ":%d:%d,%d:%.3f:%d", dp, dp - alt, alt, dp > 0 ? (double)alt / dp : 0.0, v->GQ);
+    // GQ is this sample's own: the genotype printed here is decided per sample,
+    // so the confidence in it has to be too.
+    const int16_t *pl = v->vq.pl[smp];
+    ksprintf(ks, ":%d:%d,%d:%.3f:%d:%d,%d,%d", dp, dp - alt, alt, dp > 0 ? (double)alt / dp : 0.0,
+             dosage >= 0 ? var_qual_gq(pl, dosage) : 0, pl[0], pl[1], pl[2]);
     if (want_ps) ksprintf(ks, ":%" PRId64, v->PS);
     ksprintf(ks, ":%d,%d:%d,%d", d1, d2, sc->alt[smp][1], sc->alt[smp][2]);
+    append_unphased_fields(ks, v, smp);
 }
 
 int write_var_to_vcf(var_t *vars, const struct call_var_opt_t *opt, bam_chunk_t *chunk) {
@@ -279,11 +323,12 @@ int write_var_to_vcf(var_t *vars, const struct call_var_opt_t *opt, bam_chunk_t 
         // Write QUAL, FILTER, INFO
         if (opt->n_samples > 1) {
             kstring_t fks = KS_INITIALIZE;
-            append_paired_filter(&fks, &var);
+            append_paired_filter(&fks, opt, &var);
             len += snprintf(buffer + len, buf_m - len, "\t%d\t%s\t", var.QUAL, fks.s ? fks.s : "PASS");
             ks_free(&fks);
         } else {
-            len += snprintf(buffer + len, buf_m - len, "\t%d\tPASS\t", var.QUAL);
+            len += snprintf(buffer + len, buf_m - len, "\t%d\t%s\t", var.QUAL,
+                            (opt->min_qual > 0 && var.QUAL < opt->min_qual) ? "LowQual" : "PASS");
         }
         if (var.is_clean) len += snprintf(buffer + len, buf_m - len, "CLEAN;");
         if (opt->n_samples > 1) {
@@ -320,6 +365,15 @@ int write_var_to_vcf(var_t *vars, const struct call_var_opt_t *opt, bam_chunk_t 
             }
             if (var.te_seq_i >= 0) len += snprintf(buffer + len, buf_m - len, ";REPNAME=%c%s", "+-"[var.te_is_rev], opt->te_seq_names[var.te_seq_i]);
         }
+        {
+            kstring_t qks = KS_INITIALIZE;
+            append_qual_info(&qks, &var);
+            if (qks.l > 0) {
+                if (len + (int)qks.l + 2 >= buf_m) { buf_m = len + (int)qks.l + 1024; buffer = (char*)_err_realloc(buffer, buf_m); }
+                len += snprintf(buffer + len, buf_m - len, "%s", qks.s);
+            }
+            ks_free(&qks);
+        }
         len += snprintf(buffer + len, buf_m - len, "\t");
 
         // Write FORMAT and Genotype Data
@@ -338,9 +392,9 @@ int write_var_to_vcf(var_t *vars, const struct call_var_opt_t *opt, bam_chunk_t 
             // block they were not decided on.
             int want_ps = (var.PS > 0 && !paired_call_is_unphased(&var));
             kstring_t sks = KS_INITIALIZE;
-            kputs("GT:DP:AD:VAF:GQ", &sks);
+            kputs("GT:DP:AD:VAF:GQ:PL", &sks);
             if (want_ps) kputs(":PS", &sks);
-            kputs(":HDP:HAD", &sks);
+            kputs(":HDP:HAD:UPR:UPF", &sks);
             kputc('\t', &sks);
             append_paired_sample(&sks, opt, &var, LONGCALLD_SAMPLE_NORMAL, want_ps);
             kputc('\t', &sks);
@@ -369,8 +423,9 @@ int write_var_to_vcf(var_t *vars, const struct call_var_opt_t *opt, bam_chunk_t 
                 if (gt1 > gt2) { int tmp = gt1; gt1 = gt2; gt2 = tmp;  }
             }
             // add SVREADS to FORMAT if outputting supporting read names for SVs
-            len += snprintf(buffer + len, buf_m - len, "GT:DP:AD:VAF:GQ");
+            len += snprintf(buffer + len, buf_m - len, "GT:DP:AD:VAF:GQ:PL");
             if (is_hom == 0 && var.PS > 0) len += snprintf(buffer + len, buf_m - len, ":PS");
+            len += snprintf(buffer + len, buf_m - len, ":UPR:UPF");
             if (opt->output_var_rnames || (var.is_sv && (opt->output_sv_rnames)) || (var.is_somatic && opt->output_somatic_var_rnames)) {
                 len += snprintf(buffer + len, buf_m - len, ":ALTREADS");
             }
@@ -390,11 +445,17 @@ int write_var_to_vcf(var_t *vars, const struct call_var_opt_t *opt, bam_chunk_t 
                 float vaf = (float)var.AD[j+1] / var.DP;
                 len += snprintf(buffer + len, buf_m - len, "%.3f", vaf);
             }
-            // GQ
-            len += snprintf(buffer + len, buf_m - len, ":%d", var.GQ);
+            // GQ:PL
+            len += snprintf(buffer + len, buf_m - len, ":%d:%d,%d,%d", var.GQ, var.vq.pl[0][0], var.vq.pl[0][1], var.vq.pl[0][2]);
             // PS
             if (is_hom == 0 && var.PS > 0)
                 len += snprintf(buffer + len, buf_m - len, ":%" PRId64 "", var.PS);
+            {
+                kstring_t uks = KS_INITIALIZE;
+                append_unphased_fields(&uks, &var, 0);
+                len += snprintf(buffer + len, buf_m - len, "%s", uks.s);
+                ks_free(&uks);
+            }
             // ALTREADS: output_var_rnames for all variants, output_sv_rnames for SVs, output_somatic_var_rnames for somatic SVs
             // if (var.is_sv && (opt->output_sv_rnames || (opt->output_somatic_var_rnames && var.is_somatic))) {
             if (opt->output_var_rnames || (var.is_sv && (opt->output_sv_rnames)) || (var.is_somatic && opt->output_somatic_var_rnames)) {

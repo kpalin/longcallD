@@ -11,6 +11,7 @@
 #include "seq.h"
 #include "assign_hap.h"
 #include "vcf_utils.h"
+#include "var_qual.h"
 
 extern int LONGCALLD_VERBOSE;
 
@@ -1965,31 +1966,6 @@ read_var_profile_t *collect_read_var_profile(const call_var_opt_t *opt, bam_chun
     return p;
 }
 
-// sample-wise genotype quality
-int cal_sample_GQ(int ref_depth, int alt_depth, double logp, double log1p, double log2, int max_gq) {
-    int PL[3];
-    PL[0] = (int)(-10 * (ref_depth * log1p + alt_depth * logp));
-    PL[1] = (int)(10 * (ref_depth + alt_depth) * log2);
-    PL[2] = (int)(-10 * (ref_depth * logp + alt_depth * log1p));
-    int min_pl = INT_MAX, sec_min_pl = INT_MAX;
-    for (int i = 0; i < 3; ++i) {
-        if (PL[i] < min_pl) {
-            sec_min_pl = min_pl;
-            min_pl = PL[i];
-        } else if (PL[i] < sec_min_pl) {
-            sec_min_pl = PL[i];
-        }
-    }
-    // fprintf(stderr, "%d %d %d %d %d %d %d %d\n", ref_depth, alt_depth, PL[0], PL[1], PL[2], min_pl, sec_min_pl, max_gq);
-    int GQ = sec_min_pl - min_pl;
-    return MIN_OF_TWO(max_gq, GQ);
-}
-// var-site-wise QUAL
-int cal_var_QUAL1(int ref_depth, int alt_depth, double logp, double log1p, int max_qual) {
-    // fprintf(stderr, "QUAL: %d %d %d\n", ref_depth, alt_depth, (int)(-10 * (ref_depth * log1p + alt_depth * logp)));
-    return MIN_OF_TWO(max_qual, (int)(-10 * (ref_depth * log1p + alt_depth * logp)));
-}
-
 // func: cand_var_t -> var_t
 // cand_vars: candidate variants, up to 1 alt_allele
 // collect variants based on hap_to_cons_alle
@@ -2152,6 +2128,21 @@ int make_variants(const call_var_opt_t *opt, bam_chunk_t *chunk, var_t **_var) {
     int i = 0, is_hom, hom_alt_is_set, hom_alle, hap1_alle, hap2_alle;
     int target_var_cate = LONGCALLD_CLEAN_HET_SNP | LONGCALLD_CLEAN_HET_INDEL | LONGCALLD_CLEAN_HOM_VAR | LONGCALLD_NOISY_CAND_HET_VAR | LONGCALLD_NOISY_CAND_HOM_VAR;
     if (opt->out_somatic == 1) target_var_cate |= LONGCALLD_CAND_SOMATIC_VAR;
+    // Quality evidence for the candidates that can become records, on the
+    // final haplotypes. The chunk's median depth over those is the reference
+    // the depth features are measured against.
+    int *want = (int*)_err_calloc(n_cand_vars, sizeof(int));
+    int *want_dp = (int*)_err_malloc(n_cand_vars * sizeof(int)), n_want_dp = 0;
+    for (int c = 0; c < n_cand_vars; ++c) {
+        if ((chunk->var_i_to_cate[c] & target_var_cate) == 0) continue;
+        want[c] = 1;
+        if (cand_vars[c].pos >= active_reg_beg && cand_vars[c].pos <= active_reg_end)
+            want_dp[n_want_dp++] = cand_vars[c].total_cov;
+    }
+    int med_dp = n_want_dp > 0 ? median_int(want_dp, n_want_dp) : 0;
+    free(want_dp);
+    var_qual_acc_t *qacc = collect_var_qual_acc(opt, chunk, want);
+    free(want);
     for (int cand_i = 0; cand_i < n_cand_vars; ++cand_i) {
         if ((chunk->var_i_to_cate[cand_i] & target_var_cate) == 0) continue;
         if (cand_vars[cand_i].var_type == BAM_CDEL || cand_vars[cand_i].var_type == BAM_CINS) {
@@ -2364,10 +2355,17 @@ int make_variants(const call_var_opt_t *opt, bam_chunk_t *chunk, var_t **_var) {
                 var->vars[i].AD[1] = alt_read_i_idx;
             }
         } else var->vars[i].alt_read_i = NULL;
-        var->vars[i].QUAL = cal_var_QUAL1(var->vars[i].AD[0], var->vars[i].AD[1], opt->log_p, opt->log_1p, opt->max_qual);
-        var->vars[i].GQ = cal_sample_GQ(var->vars[i].AD[0], var->vars[i].AD[1], opt->log_p, opt->log_1p, opt->log_2, opt->max_gq);
+        // QUAL, GQ and PL, after classification: what QUAL measures depends
+        // on the verdict (see var_qual.c).
+        memset(&var->vars[i].vq, 0, sizeof(var_qual_t));
+        ref_repeat_context(ref_seq, ref_beg, chunk->ref_end, cand_vars[cand_i].pos,
+                           cand_vars[cand_i].var_type == BAM_CDIFF, &var->vars[i].vq.rep_period,
+                           &var->vars[i].vq.rep_len, var->vars[i].vq.rep_unit);
+        if (qacc != NULL) score_var_quality(opt, qacc + cand_i, med_dp, var->vars + i);
+        else { var->vars[i].QUAL = 0; var->vars[i].GQ = 0; }
         i++;
     }
+    free(qacc);
     var->n = i;
     return(var->m);
 }
@@ -3775,6 +3773,10 @@ void collect_var_main(const call_var_pl_t *pl, bam_chunk_t *chunk) {
     //    on chr1:1-25Mb turned 153 blocks into 173 and left the old name
     //    pointing at a record that is no longer an anchor.
     if (chunk->n_samples > 1) reseat_phase_sets_on_het_anchors(opt, chunk);
+    // 8. Base quality of every profile cell, ref and alt, for the quality
+    //    model in step 2. Last, because every profile merge above rebuilds the
+    //    profile; and here, because the read bases are freed with the digars.
+    if (chunk->n_cand_vars > 0) fill_read_var_profile_qual(opt, chunk);
 }
 
 // stitch ii-1 and ii

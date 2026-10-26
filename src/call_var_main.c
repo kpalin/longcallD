@@ -100,6 +100,8 @@ const struct option call_var_opt [] = {
     { "som-pval", 1, NULL, 0},
     { "min-hap-vaf", 1, NULL, 0},
     { "som-alt-qual", 1, NULL, 0},
+    { "min-qual", 1, NULL, 0},
+    { "qual-weights", 1, NULL, 0},
     { "som-artifact-mask", 1, NULL, 0},
     { "som-artifact-mask-indel", 1, NULL, 0},
     { "max-unphased-frac", 1, NULL, 0},
@@ -311,7 +313,11 @@ call_var_opt_t *call_var_init_para(void) {
     opt->te_seq_fn = NULL; opt->n_te_seqs = 0; opt->te_kmer_len = 15; opt->te_for_h = NULL; opt->te_rev_h = NULL;
 
     opt->p_error = 0.001; opt->log_p = -3.0; opt->log_1p = log10(1-opt->p_error); opt->log_2 = 0.301023;
-    opt->max_gq = 60; opt->max_qual = 60;
+    opt->max_gq = 99; opt->max_qual = 999;
+    opt->vq_bq_cap = 0; opt->vq_default_bq = 0; // per technology, resolved after option parsing
+    opt->vq_theta_snv = LONGCALLD_VQ_THETA_SNV; opt->vq_theta_indel = LONGCALLD_VQ_THETA_INDEL;
+    opt->vq_som_prior = LONGCALLD_VQ_SOM_PRIOR; opt->vq_phase_weight = LONGCALLD_VQ_PHASE_WEIGHT;
+    opt->min_qual = 0; opt->qual_weights_fn = NULL; opt->vq_weights = NULL;
     opt->out_vcf = NULL; opt->vcf_hdr = NULL; opt->out_vcf_fn = NULL; opt->out_vcf_type = 'v'; opt->no_vcf_header = 0; opt->out_amb_base = 0;
     opt->out_aln_fp = NULL; opt->out_aln_is_cram = 0; opt->refine_bam = 0;
     opt->out_naln_fp = NULL; opt->out_naln_is_cram = 0;
@@ -355,6 +361,7 @@ void call_var_free_para(call_var_opt_t *opt) {
         free(opt->exc_tnames);
     }
     if (opt->out_vcf_fn != NULL) free(opt->out_vcf_fn);
+    free(opt->qual_weights_fn); free(opt->vq_weights);
     if (opt->te_seq_fn != NULL) {
         free(opt->te_seq_fn);
         for (int i = 0; i < opt->n_te_seqs; ++i) {
@@ -1324,6 +1331,12 @@ static void call_var_usage(void) {//main usage
     fprintf(stderr, "    -n --sample-name STR  sample name in VCF output. RG/SM tag or BAM file name will be used if not provided []\n");
     fprintf(stderr, "    -o --out-vcf    FILE  output phased VCF file [stdout]\n");
     fprintf(stderr, "    -O --out-type    STR  v/z: un/compressed VCF [v]\n");
+    fprintf(stderr, "    --min-qual       INT  set FILTER LowQual on records whose QUAL is below this; 0 is off [0]\n");
+    fprintf(stderr, "                          QUAL is -10 log10 P(the record's claim is false): for a somatic\n");
+    fprintf(stderr, "                          record, that it is not somatic; otherwise that there is no variant\n");
+    fprintf(stderr, "    --qual-weights  FILE  artifact-model weights replacing the built-in ones, as lines of\n");
+    fprintf(stderr, "                          \"hifi|ont germ_snv|germ_indel|som_snv|som_indel feature weight\"\n");
+    fprintf(stderr, "                          (eval/qual_fit.py writes them)\n");
     fprintf(stderr, "    -l --min-sv-len  INT  min. length to be considered as SV [%d]\n", LONGCALLD_MIN_SV_LEN);
     fprintf(stderr, "                          SV-related information will be added to INFO field, e.g., SVLEN/SVTYPE/TSD\n");
     fprintf(stderr, "    -H --no-vcf-header    suppress the header in VCF output\n");
@@ -1463,6 +1476,8 @@ int call_var_main_mode(int argc, char *argv[], int paired_cli) {
                     else if (strcmp(call_var_opt[op_idx].name, "som-pval") == 0) { opt->som_pval = atof(optarg); opt->som_pval_set = 1; }
                     else if (strcmp(call_var_opt[op_idx].name, "min-hap-vaf") == 0) { opt->min_hap_vaf = atof(optarg); opt->min_hap_vaf_set = 1; }
                     else if (strcmp(call_var_opt[op_idx].name, "som-alt-qual") == 0) opt->min_som_alt_qual = atoi(optarg);
+                    else if (strcmp(call_var_opt[op_idx].name, "min-qual") == 0) opt->min_qual = atoi(optarg);
+                    else if (strcmp(call_var_opt[op_idx].name, "qual-weights") == 0) { free(opt->qual_weights_fn); opt->qual_weights_fn = strdup(optarg); }
                     else if (strcmp(call_var_opt[op_idx].name, "som-artifact-mask") == 0) opt->som_artifact_mask = (int)strtol(optarg, NULL, 0);
                     else if (strcmp(call_var_opt[op_idx].name, "som-artifact-mask-indel") == 0) opt->som_artifact_mask_indel = (int)strtol(optarg, NULL, 0);
                     else if (strcmp(call_var_opt[op_idx].name, "max-unphased-frac") == 0) opt->max_unphased_frac = atof(optarg);
@@ -1541,6 +1556,14 @@ int call_var_main_mode(int argc, char *argv[], int paired_cli) {
         _err_error_exit("--out-normal-bam/-cram/-sam needs a matched normal; supply one with -N/--normal.\n");
     // check if hifi and ont are both set
     if (opt->is_pb_hifi && opt->is_ont) _err_error_exit("Cannot set both --hifi and --ont\n");
+    // Quality model: per-technology base-quality cap, then the artifact weights.
+    if (opt->vq_bq_cap <= 0) opt->vq_bq_cap = opt->is_ont ? LONGCALLD_VQ_BQ_CAP_ONT : LONGCALLD_VQ_BQ_CAP_HIFI;
+    if (opt->vq_default_bq <= 0) opt->vq_default_bq = opt->is_ont ? LONGCALLD_VQ_DEFAULT_BQ_ONT : LONGCALLD_VQ_DEFAULT_BQ_HIFI;
+    opt->vq_weights = (var_qual_weights_t*)_err_malloc(sizeof(var_qual_weights_t));
+    var_qual_weights_default(opt->vq_weights);
+    if (opt->qual_weights_fn != NULL && var_qual_weights_load(opt->vq_weights, opt->qual_weights_fn) < 0) {
+        call_var_free_para(opt); _err_error_exit("Could not load --qual-weights %s\n", opt->qual_weights_fn);
+    }
     if (opt->only_autosome && opt->only_autosome_XY) _err_error_exit("Cannot set both --autosome and --autosome-XY\n");
     // threads
     if (opt->n_threads <= 0) {

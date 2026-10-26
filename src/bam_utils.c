@@ -38,17 +38,20 @@ static read_var_profile_t *init_read_var_profile_inner(int n_reads, int *read_id
     if (caps == NULL) n_var_values = (size_t)n_reads * (size_t)n_total_vars;
     else for (int i = 0; i < n_reads; ++i) if (caps[i] > 0) n_var_values += (size_t)caps[i];
     size_t n_value_bytes = n_var_values * sizeof(int);
-    uint8_t *raw = (uint8_t*)_err_malloc(n_profile_bytes + n_value_bytes * 2);
+    // One byte of base quality per cell rides behind the two int arrays.
+    uint8_t *raw = (uint8_t*)_err_malloc(n_profile_bytes + n_value_bytes * 2 + n_var_values);
     read_var_profile_t *p = (read_var_profile_t*)raw;
-    int *alleles = NULL, *alt_qi = NULL;
+    int *alleles = NULL, *alt_qi = NULL; uint8_t *qual = NULL;
 
     if (p == NULL) return NULL;
 
     alleles = (int*)(raw + n_profile_bytes);
     alt_qi = alleles + n_var_values;
+    qual = (uint8_t*)(alt_qi + n_var_values);
     if (n_value_bytes > 0) {
         memset(alleles, 0xFF, n_value_bytes);
         memset(alt_qi, 0xFF, n_value_bytes);
+        memset(qual, 0xFF, n_var_values); // LONGCALLD_QUAL_UNKNOWN
     }
 
     size_t off = 0;
@@ -60,6 +63,7 @@ static read_var_profile_t *init_read_var_profile_inner(int n_reads, int *read_id
         p[i].cap = cap;
         p[i].alleles = alleles + off;
         p[i].alt_qi = alt_qi + off;
+        p[i].qual = qual + off;
         off += (size_t)cap;
     }
     return p;
@@ -1439,11 +1443,15 @@ int bam_chunk_init0(bam_chunk_t *chunk, const struct call_var_opt_t *opt, int n_
     chunk->is_skipped = (uint8_t*)_err_calloc(n_reads, sizeof(uint8_t));
     chunk->read_sigs = (uint64_t*)_err_calloc(n_reads, sizeof(uint64_t));
     chunk->read_sample_idx = (uint8_t*)_err_calloc(n_reads, sizeof(uint8_t));
+    chunk->read_mapq = (uint8_t*)_err_calloc(n_reads, sizeof(uint8_t));
+    chunk->read_is_rev = (uint8_t*)_err_calloc(n_reads, sizeof(uint8_t));
     chunk->n_samples = opt->n_samples;
     chunk->n_sample_reads = (int*)_err_calloc(opt->n_samples > 0 ? opt->n_samples : 1, sizeof(int));
     chunk->is_invalid = 0;
-    chunk->n_clean_agree_snps = (int*)_err_malloc(n_reads * sizeof(int));
-    chunk->n_clean_conflict_snps = (int*)_err_malloc(n_reads * sizeof(int));
+    // Zeroed: a chunk with no germline het never runs the phasing that fills
+    // these, and the quality model reads them for every read.
+    chunk->n_clean_agree_snps = (int*)_err_calloc(n_reads, sizeof(int));
+    chunk->n_clean_conflict_snps = (int*)_err_calloc(n_reads, sizeof(int));
     chunk->is_ont_palindrome = (uint8_t*)_err_calloc(n_reads, sizeof(uint8_t));
     chunk->is_skipped_for_somatic = (uint8_t*)_err_calloc(n_reads, sizeof(uint8_t));
     chunk->digars = (digar_t*)_err_calloc(n_reads, sizeof(digar_t));
@@ -1494,6 +1502,8 @@ int bam_chunk_realloc(bam_chunk_t *chunk, const struct call_var_opt_t *opt) {
     chunk->is_skipped = (uint8_t*)_err_realloc(chunk->is_skipped, m_reads * sizeof(uint8_t));
     chunk->read_sigs = (uint64_t*)_err_realloc(chunk->read_sigs, m_reads * sizeof(uint64_t));
     chunk->read_sample_idx = (uint8_t*)_err_realloc(chunk->read_sample_idx, m_reads * sizeof(uint8_t));
+    chunk->read_mapq = (uint8_t*)_err_realloc(chunk->read_mapq, m_reads * sizeof(uint8_t));
+    chunk->read_is_rev = (uint8_t*)_err_realloc(chunk->read_is_rev, m_reads * sizeof(uint8_t));
     chunk->n_clean_agree_snps = (int*)_err_realloc(chunk->n_clean_agree_snps, m_reads * sizeof(int));
     chunk->n_clean_conflict_snps = (int*)_err_realloc(chunk->n_clean_conflict_snps, m_reads * sizeof(int));
     chunk->is_ont_palindrome = (uint8_t*)_err_realloc(chunk->is_ont_palindrome, m_reads * sizeof(uint8_t));
@@ -1506,6 +1516,8 @@ int bam_chunk_realloc(bam_chunk_t *chunk, const struct call_var_opt_t *opt) {
         chunk->reads[i] = bam_init1();
         chunk->digars[i].n_digar = chunk->digars[i].m_digar = 0;
         chunk->is_skipped[i] = 0; chunk->read_sigs[i] = 0; chunk->read_sample_idx[i] = 0;
+        chunk->read_mapq[i] = 0; chunk->read_is_rev[i] = 0;
+        chunk->n_clean_agree_snps[i] = 0; chunk->n_clean_conflict_snps[i] = 0;
         chunk->phase_scores[i] = 0; chunk->haps[i] = 0; chunk->phase_sets[i] = -1;
         chunk->is_skipped_for_somatic[i] = 0;
     }
@@ -1602,6 +1614,7 @@ void bam_chunk_post_free(bam_chunk_t *chunk, const struct call_var_opt_t *opt) {
     free(chunk->is_skipped);
     free(chunk->read_sigs); // needed by write_read_to_bam in step 2, so not freed in mid_free
     free(chunk->read_sample_idx); free(chunk->n_sample_reads);
+    free(chunk->read_mapq); free(chunk->read_is_rev);
     free(chunk->n_clean_agree_snps); free(chunk->n_clean_conflict_snps);
     free(chunk->is_ont_palindrome); free(chunk->is_skipped_for_somatic);
     free(chunk->haps); free(chunk->phase_sets); free(chunk->phase_scores);
@@ -1833,6 +1846,10 @@ int collect_ref_seq_bam_main(const struct call_var_pl_t *pl, struct call_var_io_
                 chunk->read_sample_idx[chunk->n_reads] = (uint8_t)smp;
                 if (smp >= 0 && smp < chunk->n_samples) chunk->n_sample_reads[smp]++;
             }
+            // Kept past the record itself, which is freed once its digars are
+            // built: the quality model compares ref and alt reads on both.
+            chunk->read_mapq[chunk->n_reads] = chunk->reads[chunk->n_reads]->core.qual;
+            chunk->read_is_rev[chunk->n_reads] = bam_is_rev(chunk->reads[chunk->n_reads]) ? 1 : 0;
             chunk->n_reads++;
             if (chunk->n_reads == chunk->m_reads) bam_chunk_realloc(chunk, opt);
         }
