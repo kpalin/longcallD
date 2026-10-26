@@ -44,7 +44,16 @@ def main(query, feat, truth, out):
             tags[k] = r["tag"]
             tags_pos.setdefault((r["CHROM"], int(r["POS"])), []).append(r["tag"])
     n_scored = len(tags)
-    used, by_pos = set(), 0
+    used, used_pos, by_pos = set(), set(), 0
+    # Positions where some query record carries exactly the alleles som.py scored.
+    exact_pos = set()
+    with vopen(query) as fi:
+        for line in fi:
+            if line.startswith("#"):
+                continue
+            f = line.split("\t", 5)
+            if (f[0], int(f[1]), f[3], f[4]) in tags:
+                exact_pos.add((f[0], int(f[1])))
     tmp_q, tmp_fn = out + ".vcf", out + ".fn.vcf"
     tsv = open(out + ".tsv", "w")
     tsv.write("chrom\tpos\tref\talt\ttag\tqual\tqlik\tqual_old\tsomatic\tunphased\tfilter\n")
@@ -59,11 +68,16 @@ def main(query, feat, truth, out):
             k = (f[0], int(f[1]), f[3], f[4])
             tag = tags.get(k)
             if tag is None:
-                pt = tags_pos.get((f[0], int(f[1])))
-                if pt and len(set(pt)) == 1 and (f[0], int(f[1])) not in used:
-                    tag = pt[0]; by_pos += 1
+                # Position-only fallback, for alleles som.py re-represented: only
+                # where som.py scored nothing at this position under the record's
+                # own alleles, and only once -- an indel and a substitution can
+                # share a POS, and only one of them was scored.
+                pos = (f[0], int(f[1]))
+                pt = tags_pos.get(pos)
+                if pt and len(set(pt)) == 1 and pos not in exact_pos and pos not in used_pos:
+                    tag = pt[0]; by_pos += 1; used_pos.add(pos)
             if tag is not None:
-                used.add((f[0], int(f[1])))
+                used.add(k)
                 f[7] = f[7] + ";SOMPY=" + tag if f[7] != "." else "SOMPY=" + tag
                 info = f[7].split(";")
                 ql = next((x[5:] for x in info if x.startswith("QLIK=")), "")
