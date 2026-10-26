@@ -1559,6 +1559,7 @@ int call_var_main_mode(int argc, char *argv[], int paired_cli) {
     // Quality model: per-technology base-quality cap, then the artifact weights.
     if (opt->vq_bq_cap <= 0) opt->vq_bq_cap = opt->is_ont ? LONGCALLD_VQ_BQ_CAP_ONT : LONGCALLD_VQ_BQ_CAP_HIFI;
     if (opt->vq_default_bq <= 0) opt->vq_default_bq = opt->is_ont ? LONGCALLD_VQ_DEFAULT_BQ_ONT : LONGCALLD_VQ_DEFAULT_BQ_HIFI;
+    if (opt->vq_pl_scale <= 0) opt->vq_pl_scale = opt->is_ont ? LONGCALLD_VQ_PL_SCALE_ONT : LONGCALLD_VQ_PL_SCALE_HIFI;
     opt->vq_weights = (var_qual_weights_t*)_err_malloc(sizeof(var_qual_weights_t));
     var_qual_weights_default(opt->vq_weights);
     if (opt->qual_weights_fn != NULL && var_qual_weights_load(opt->vq_weights, opt->qual_weights_fn) < 0) {

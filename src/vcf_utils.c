@@ -91,7 +91,7 @@ void write_vcf_header(bam_hdr_t *hdr, struct call_var_opt_t *opt) {
     }
     // bcf_hdr_append(vcf_hdr, "##INFO=<ID=REPCLSFAM,Number=1,Type=String,Description=\"Repeat class/family\">");
     // QUAL has no header line of its own, so what it means is stated here.
-    bcf_hdr_append(vcf_hdr, "##longcallD_QUAL=\"-10 log10 P(false), capped at 999. For a SOMATIC record, P(not somatic: absent, or germline); otherwise P(no variant). P(false) = 1 - (1 - P_lik)(1 - P_art): P_lik from per-read base quality, mapping quality and indel repeat context (INFO/QLIK); P_art from a per-technology logistic artifact model over strand bias, ref/alt mapping- and base-quality ranks, repeat context, phasing and depth\"");
+    bcf_hdr_append(vcf_hdr, "##longcallD_QUAL=\"-10 log10 P(false), capped at 999. For a SOMATIC record, P(not somatic: absent, or germline); otherwise P(no variant). P(false) is a per-technology logistic model over the read likelihood (INFO/QLIK: per-read base quality, mapping quality and indel repeat context) and features read likelihoods cannot see: strand bias, ref/alt mapping- and base-quality ranks, repeat context, unphased and mis-phased reads, and depth. Where no model is set, QUAL is QLIK\"");
     bcf_hdr_append(vcf_hdr, "##INFO=<ID=QLIK,Number=1,Type=Float,Description=\"QUAL from the read likelihoods alone, before the artifact model\">");
     bcf_hdr_append(vcf_hdr, "##INFO=<ID=SOR,Number=1,Type=Float,Description=\"Strand odds ratio (GATK definition) over the alt-carrying sample\">");
     bcf_hdr_append(vcf_hdr, "##INFO=<ID=MQRS,Number=1,Type=Float,Description=\"Rank-sum z of alt against ref read mapping quality; negative: alt lower\">");
@@ -99,7 +99,7 @@ void write_vcf_header(bam_hdr_t *hdr, struct call_var_opt_t *opt) {
     bcf_hdr_append(vcf_hdr, "##INFO=<ID=RU,Number=1,Type=String,Description=\"Repeat unit of the homopolymer or tandem repeat at the variant\">");
     bcf_hdr_append(vcf_hdr, "##INFO=<ID=RPL,Number=1,Type=Integer,Description=\"Length in reference bases of that repeat tract\">");
     if (getenv("LONGCALLD_QUALCHK") != NULL)
-        bcf_hdr_append(vcf_hdr, "##INFO=<ID=QF,Number=.,Type=Float,Description=\"Debug: quality class, P_art, then the artifact features in var_qual.h order\">");
+        bcf_hdr_append(vcf_hdr, "##INFO=<ID=QF,Number=.,Type=Float,Description=\"Debug: quality class, model P(false) (0 where none is set), then the model features in var_qual.h order\">");
 
     // FORMAT fields
     bcf_hdr_append(vcf_hdr, "##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">");

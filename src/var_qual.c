@@ -33,7 +33,7 @@ const char *LONGCALLD_VQF_NAMES[VQF_N] = {
     "bias", "sor", "one_strand", "mq_rs", "mq_diff", "bq_rs", "bq_low",
     "hp_indel", "str_indel", "hp_snv", "unph_frac", "unph_alt_excess", "log_unph",
     "alt_minor_hap", "alt_conflict", "unphased_call", "dp_high", "dp_low",
-    "log_alt", "vaf"
+    "log_alt", "vaf", "lik", "lik_low"
 };
 const char *LONGCALLD_VQ_CLASS_NAMES[VQ_N_CLASS] = { "germ_snv", "germ_indel", "som_snv", "som_indel" };
 
@@ -364,12 +364,17 @@ static void sample_gl(const call_var_opt_t *opt, const var_qual_acc_t *acc, int 
     gl[1] = het;
 }
 
-static void gl_to_pl(const double gl[3], int16_t pl[3]) {
+// PL is tempered by `scale` (< 1): reads are not independent -- a shared
+// mapping or a mis-phased block moves many at once -- so the raw genotype
+// likelihoods are overconfident by a roughly constant factor, measured against
+// GIAB genotypes by `eval/qual_eval.py gqfit`. Tempering keeps the order of the
+// genotypes, so it never changes which one is most likely.
+static void gl_to_pl(const double gl[3], double scale, int16_t pl[3]) {
     double mx = gl[0];
     if (gl[1] > mx) mx = gl[1];
     if (gl[2] > mx) mx = gl[2];
     for (int g = 0; g < 3; ++g) {
-        double v = -10.0 * (gl[g] - mx);
+        double v = -10.0 * scale * (gl[g] - mx);
         pl[g] = (int16_t)(v > 9999 ? 9999 : (int)(v + 0.5));
     }
 }
@@ -555,7 +560,7 @@ void score_var_quality(const call_var_opt_t *opt, var_qual_acc_t *acc, int med_d
         // A tumour, or a mosaic call's sample, need not be diploid at the site.
         int any_frac = (paired && s == LONGCALLD_SAMPLE_TUMOR) || (!paired && v->is_somatic);
         sample_gl(opt, acc, s, v->slots.ps > 0, any_frac, gl);
-        gl_to_pl(gl, q->pl[s]);
+        gl_to_pl(gl, opt->vq_pl_scale, q->pl[s]);
         int dp = acc->n_strand[s][0][0] + acc->n_strand[s][0][1] + acc->n_strand[s][1][0] + acc->n_strand[s][1][1];
         q->n_dp[s] = (int16_t)(dp > INT16_MAX ? INT16_MAX : dp);
         int u = acc->n_unph[s][0] + acc->n_unph[s][1];
@@ -583,21 +588,20 @@ void score_var_quality(const call_var_opt_t *opt, var_qual_acc_t *acc, int med_d
         q->mq_rs = (float)rank_sum_z(mq[1], mq[0]);
         q->bq_rs = (float)rank_sum_z(bq[1], bq[0]);
     }
+    q->feat[VQF_LIK] = (float)((qlik < 60 ? qlik : 60) / 10.0);
+    q->feat[VQF_LIK_LOW] = (float)((qlik < 20 ? qlik : 20) / 10.0);
     q->p_art = 0;
-    int tech = opt->is_ont ? 1 : 0;
+    int tech = opt->is_ont ? 1 : 0, cls = q->vq_class;
     const var_qual_weights_t *wt = opt->vq_weights;
-    if (wt != NULL && wt->set[tech][q->vq_class]) {
+    double qual = qlik;
+    if (wt != NULL && wt->set[tech][cls]) {
         double z = 0;
-        for (int f = 0; f < VQF_N; ++f) z += wt->w[tech][q->vq_class][f] * q->feat[f];
-        q->p_art = (float)(1.0 / (1.0 + exp(-z)));
+        for (int f = 0; f < VQF_N; ++f) z += wt->w[tech][cls][f] * q->feat[f];
+        // -10 log10 sigmoid(z), without underflow for very negative z.
+        double ln_p = z < 0 ? z - log1p(exp(z)) : -log1p(exp(-z));
+        q->p_art = (float)exp(ln_p);
+        qual = -10.0 * ln_p / M_LN10;
     }
-    // P(false) = 1 - (1 - P_lik(false)) (1 - P_art), in the log domain so a
-    // QLIK in the hundreds keeps its precision.
-    double p_lf = pow(10.0, lfalse);
-    double log_true = log1p(-(p_lf < 1 ? p_lf : 1 - 1e-12)) + log1p(-(q->p_art < 1 ? q->p_art : 1 - 1e-12));
-    double p_false = -expm1(log_true);
-    double qual = p_false > 0 ? -10.0 * log10(p_false) : 9999.0;
-    if (qual > qlik) qual = qlik; // rounding only; the artifact term never raises it
     if (qual < 0) qual = 0;
     v->QUAL = (int)(qual + 0.5);
     if (v->QUAL > opt->max_qual) v->QUAL = opt->max_qual;
@@ -607,8 +611,10 @@ void score_var_quality(const call_var_opt_t *opt, var_qual_acc_t *acc, int med_d
 
 // ---------------------------------------------------------------- weights --
 
+static void weights_clear(var_qual_weights_t *wt) { memset(wt, 0, sizeof(*wt)); }
+
 void var_qual_weights_default(var_qual_weights_t *wt) {
-    memset(wt, 0, sizeof(*wt));
+    weights_clear(wt);
 #include "var_qual_weights.inc"
 }
 
@@ -618,6 +624,7 @@ static int lookup_name(const char *s, const char **names, int n) {
 }
 
 int var_qual_weights_load(var_qual_weights_t *wt, const char *fn) {
+    if (strcmp(fn, "none") == 0) { weights_clear(wt); return 0; }
     FILE *fp = fopen(fn, "r");
     if (fp == NULL) { _err_error("Error: cannot open --qual-weights file %s\n", fn); return -1; }
     char line[512], tech_s[64], cls_s[64], feat_s[64]; double w; int n_line = 0, n_set = 0;

@@ -17,13 +17,16 @@
 //  2. Systematic error: the alt reads agree because the error is shared --
 //     strand-specific chemistry, a paralogous mapping, slippage in a long
 //     repeat, a read population the phasing could not place. More reads do not
-//     dilute it, so it cannot be a likelihood over independent reads. It is a
-//     logistic model over features of the read population, fitted per
-//     technology against truth sets by eval/qual_fit.py.
+//     dilute it, so it cannot be a likelihood over independent reads.
 //
-// The record is false if either explains it:
-//     P(false) = 1 - (1 - P_lik(false)) * (1 - P_art)
-// and QUAL = -10 log10 P(false). Where no artifact model is set, QUAL == QLIK.
+// The two meet in a logistic model, fitted per technology and class against
+// truth sets by eval/qual_eval.py:
+//     logit P(false) = w . x
+// over features of the read population plus QLIK itself, saturated so depth
+// alone cannot outvote an artifact. QUAL = -10 log10 P(false); where no model
+// is set, QUAL == QLIK. (A product form, 1 - (1 - P_lik)(1 - P_art), was tried
+// first: fitted, its artifact term collapsed to zero where its gradient
+// vanishes, and it could not correct an under-confident likelihood at all.)
 
 #ifdef __cplusplus
 extern "C" {
@@ -87,6 +90,8 @@ enum {
     VQF_DP_LOW,          // max(0, -log2(DP / chunk median DP))
     VQF_LOG_ALT,         // log1p(alt reads in the alt-carrying sample)
     VQF_VAF,             // alt fraction in the alt-carrying sample
+    VQF_LIK,             // min(QLIK, 60) / 10: the likelihood, saturating so an artifact can still outweigh depth
+    VQF_LIK_LOW,         // min(QLIK, 20) / 10: a second slope where sampling error dominates
     VQF_N
 };
 extern const char *LONGCALLD_VQF_NAMES[VQF_N];
@@ -99,15 +104,20 @@ extern const char *LONGCALLD_VQF_NAMES[VQF_N];
 #define VQ_N_CLASS 4
 #define VQ_N_TECH  2
 extern const char *LONGCALLD_VQ_CLASS_NAMES[VQ_N_CLASS];
+// One logistic model per cell: logit P(false) = w . x, with the likelihood
+// among the features (VQF_LIK, VQF_LIK_LOW). Its weight recalibrates QLIK --
+// for a prior that does not match the data's variant density, and for the
+// overdispersion the independent-read model ignores -- and the saturation lets
+// an artifact feature outweigh any depth of reads.
 typedef struct var_qual_weights_t {
     double w[VQ_N_TECH][VQ_N_CLASS][VQF_N];
-    uint8_t set[VQ_N_TECH][VQ_N_CLASS]; // 0: no artifact model for this cell, so QUAL == QLIK
+    uint8_t set[VQ_N_TECH][VQ_N_CLASS]; // 0: no model for this cell, so QUAL == QLIK
 } var_qual_weights_t;
 
 // What a record carries into the VCF.
 typedef struct var_qual_t {
     float qlik;              // likelihood-only phred
-    float p_art;             // artifact-model probability
+    float p_art;             // P(false) from the fitted model; 0 where none is set
     float sor, mq_rs, bq_rs; // strand odds ratio; rank-sum z of alt against ref (negative: alt lower)
     float feat[VQF_N];       // artifact features, printed under LONGCALLD_QUALCHK
     int16_t pl[2][3];        // [sample] normalised PL for 0/0, 0/1, 1/1, capped at 9999
@@ -134,7 +144,8 @@ void score_var_quality(const struct call_var_opt_t *opt, var_qual_acc_t *acc, in
 // GQ of a printed genotype carrying `dosage` alt alleles, from that sample's PL.
 int var_qual_gq(const int16_t pl[3], int dosage);
 void var_qual_weights_default(var_qual_weights_t *wt);
-// Overlay weights from a file of "tech class feature weight" lines.
+// Overlay weights from a file of "tech class feature weight" lines. The name
+// "none" clears every cell instead.
 int var_qual_weights_load(var_qual_weights_t *wt, const char *fn);
 
 #ifdef __cplusplus

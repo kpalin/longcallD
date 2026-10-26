@@ -108,6 +108,11 @@
 #define LONGCALLD_VQ_THETA_INDEL 1.25e-4 // ...indels outside repeats; x10 inside one
 #define LONGCALLD_VQ_SOM_PRIOR   1e-6    // somatic mutation per site
 #define LONGCALLD_VQ_PHASE_WEIGHT 0.5    // weight of the phased reading of a het
+// PL tempering, fitted on GIAB genotypes with eval/qual_eval.py gqfit: HiFi on
+// HG002 chr20 (Sequel II), tested on HG001 (log-loss 0.0324 -> 0.0194); ONT on
+// HG002 chr20:10-16Mb (R10.4.1 SUP, 0.0999 -> 0.0475).
+#define LONGCALLD_VQ_PL_SCALE_HIFI 0.41
+#define LONGCALLD_VQ_PL_SCALE_ONT  0.29
 
 // Artifact checks a paired somatic call is put through. Each bit is one check;
 // --som-artifact-mask selects which are enforced, and LONGCALLD_ARTCHK=1
@@ -429,6 +434,7 @@ typedef struct call_var_opt_t {
     int vq_bq_cap, vq_default_bq;   // base-quality cap; BQ assumed where a cell has none
     double vq_theta_snv, vq_theta_indel, vq_som_prior; // germline het priors; somatic prior per site
     double vq_phase_weight;         // weight of the phased reading of a het
+    double vq_pl_scale;             // PL tempering for read dependence; per technology
     int min_qual;                   // FILTER LowQual below this; 0 = off
     char *qual_weights_fn; var_qual_weights_t *vq_weights;
     int8_t no_vcf_header, out_amb_base, out_somatic, out_methylation;

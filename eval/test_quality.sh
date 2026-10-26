@@ -44,9 +44,11 @@ gq_check() { # $1 = vcf; prints the number of sample columns that disagree
 }
 
 # ---------------------------------------------------------- single sample ---
-"$BIN" call --hifi "$REF" "$HIFI" -t 1 -o "$T/full.vcf" 2>/dev/null
+# --qual-weights none: the likelihood alone, which is what the depth and QLIK
+# checks below are about. The fitted model is exercised further down.
+"$BIN" call --hifi --qual-weights none "$REF" "$HIFI" -t 1 -o "$T/full.vcf" 2>/dev/null
 samtools view -b -s 7.5 "$HIFI" -o "$T/half.bam" && samtools index "$T/half.bam"
-"$BIN" call --hifi "$REF" "$T/half.bam" -t 1 -o "$T/half.vcf" 2>/dev/null
+"$BIN" call --hifi --qual-weights none "$REF" "$T/half.bam" -t 1 -o "$T/half.vcf" 2>/dev/null
 nrec=$(grep -vc '^#' "$T/full.vcf")
 chk "single: records are written" yes "$([[ $nrec -gt 100 ]] && echo yes || echo no)"
 for tag in QLIK SOR MQRS BQRS RU RPL; do
@@ -57,9 +59,13 @@ for tag in PL UPR UPF; do
 done
 chk "bcftools accepts the records" 0 "$(bcftools view "$T/full.vcf" >/dev/null 2>&1; echo $?)"
 chk "single: GQ follows from PL and GT in every record" 0 "$(gq_check "$T/full.vcf")"
-# With no artifact model set, QUAL is QLIK rounded; with one, never above it.
-chk "single: QUAL never exceeds QLIK" 0 \
-    "$(awk -F'\t' '!/^#/ { if (match($8, /QLIK=[0-9.]+/)) { q = substr($8, RSTART+5, RLENGTH-5); if ($6 > q + 0.5) b++ } } END {print b+0}' "$T/full.vcf")"
+# With no model set, QUAL is QLIK rounded (and capped at 999, where QLIK is not).
+chk "single: without a model QUAL is QLIK" 0 \
+    "$(awk -F'\t' '!/^#/ { if (match($8, /QLIK=[0-9.]+/)) { q = substr($8, RSTART+5, RLENGTH-5) + 0; if (q > 999) q = 999; if ($6 - q > 0.55 || q - $6 > 0.55) b++ } } END {print b+0}' "$T/full.vcf")"
+# The built-in model must still produce valid records.
+"$BIN" call --hifi "$REF" "$HIFI" -t 1 -o "$T/model.vcf" 2>/dev/null
+chk "single: the built-in model scores the same records" "$nrec" "$(grep -vc '^#' "$T/model.vcf")"
+chk "single: the built-in model keeps GQ consistent with PL" 0 "$(gq_check "$T/model.vcf")"
 # Halving the reads must not raise QUAL on the sites both runs call, and must
 # lower it on most of them: sampling error is what QLIK measures.
 cmp_depth=$(awk -F'\t' 'NR==FNR { if (!/^#/) q[$2" "$4" "$5] = $6; next }
@@ -115,8 +121,8 @@ qual_at() { awk -F'\t' -v p="$2" '!/^#/ && $2==p {print $6}' "$1"; }
 chk "paired: GQ follows from each sample's own PL and GT" 0 "$(gq_check "$T/paired.vcf")"
 chk "paired: the injected SNV is somatic" yes \
     "$(awk -F'\t' -v p=$SITE '!/^#/ && $2==p && $8 ~ /(^|;)SOMATIC(;|$)/' "$T/paired.vcf" | grep -q . && echo yes || echo no)"
-chk "paired: a clonal somatic SNV at this depth scores QUAL >= 20" yes \
-    "$(awk -v q="$(qual_at "$T/paired.vcf" $SITE)" 'BEGIN{print (q >= 20) ? "yes" : "no"}')"
+chk "paired: a clonal somatic SNV against a clean 14x normal has QLIK >= 20" yes \
+    "$(awk -v q="$(info_at "$T/paired.vcf" $SITE QLIK)" 'BEGIN{print (q >= 20) ? "yes" : "no (" q ")"}')"
 # The normal is 0/0 and the tumour 0/1 there; each GQ must speak for its own column.
 chk "paired: the two samples get their own GQ" yes \
     "$(awk -F'\t' -v p=$SITE '!/^#/ && $2==p { n = split($9, k, ":"); for (i = 1; i <= n; i++) ix[k[i]] = i
