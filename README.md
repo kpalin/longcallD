@@ -168,13 +168,13 @@ The VCF has two sample columns, `NORMAL` then `TUMOR`:
 | `FILTER=NormalOnly` | present in the normal but not the tumor; treated as false |
 | `FILTER=LowDP` | too little depth in one sample to classify |
 | `FILTER=Ambiguous` | fits no class cleanly |
-| `FILTER=Unphased` | decided on pooled counts; no usable haplotype grid at this site |
 | `INFO/SOMATIC` | somatic |
 | `INFO/NORMALONLY`, `INFO/LOH` | normal-only, and whether the tumor has lost that copy |
 | `INFO/SOMHAP` | which tumor haplotype carries the alt |
 | `INFO/HAPVAF` | alt fraction **within that haplotype** |
 | `INFO/TVAF` | alt fraction over the **pooled** tumor depth, on `UNPHASED` calls only |
 | `INFO/SPV` | Fisher exact p, that slot against the other three |
+| `INFO/UNPHASED` | the verdict was reached on pooled counts; no usable haplotype grid at this site |
 | `FORMAT/HDP`, `FORMAT/HAD` | per-haplotype depth and alt depth |
 | `FORMAT/PS` | the phase block the grid decided the call on; absent on `UNPHASED` calls |
 
@@ -187,6 +187,19 @@ A somatic call that no haplotype could be resolved for carries `UNPHASED` and re
 instead. The two keys are mutually exclusive on purpose: they differ by a factor of two for the
 same clonal variant, so a single key holding either would quietly mix the two scales in anything
 that read it.
+
+Everything the record says about its own phasing is one decision, so the three statements cannot
+contradict each other. `UNPHASED` goes only on records that carry a verdict -- somatic, normal-only
+or LOH -- because it qualifies that verdict; it says nothing on a germline or ambiguous record, and
+putting it there was 99% of where it used to land. A record flagged `UNPHASED` reports no `PS` and
+prints `/` in both columns, and conversely a `|` genotype always comes with the `PS` that says which
+block haplotype 1 and 2 belong to. The phase set itself is the position of a heterozygous variant --
+the one whose two haplotypes the whole block is expressed relative to -- so it is always a position
+you can look up to find out what `HDP` and `HAD` mean downstream of it.
+
+A haplotype slot claims ALT on the same terms everywhere: `min_alt_dp` alt reads at `--min-hap-vaf`
+of that slot's own depth. The per-haplotype genotype is a genotype, not a cleanliness test, so a
+stray mis-assigned read in an otherwise reference slot does not make the sample homozygous.
 
 Across the two columns, `HDP` and `HAD` are the grid the verdict was decided on, so a disputed call
 can be checked from the VCF alone:
@@ -217,13 +230,21 @@ the DeepSomatic paper reports:
 
 | | TP | FP | FN | recall | precision | F1 |
 |---|---|---|---|---|---|---|
-| SNVs | 3087 | 137 | 353 | 0.8974 | 0.9575 | **0.9265** |
+| SNVs | 3087 | 145 | 353 | 0.8974 | 0.9551 | **0.9254** |
 | indels | 54 | 12 | 79 | 0.4060 | 0.8182 | **0.5427** |
-| records | 3141 | 149 | 432 | 0.8791 | 0.9547 | 0.9153 |
+| records | 3141 | 157 | 432 | 0.8791 | 0.9524 | 0.9143 |
 
 For comparison, Park et al. (2025, *Nat Biotechnol*) report SNV / indel F1 of 0.9536 / 0.8151 for
 DeepSomatic and 0.9310 / 0.4550 for ClairS v0.2.0 on the same benchmark. Both are trained models;
 longcallD is not.
+
+Measured in ten 25 Mb windows at `-t 6`, all ten completing whole. The previous revision of this
+table read 137 SNV false positives and 0.9265; four of that difference was a window that crashed
+and was retried in 6.25 Mb pieces, losing four false-positive calls along with the region, and four
+is the cost of naming phase sets after heterozygous variants only -- the same four weak adjacent
+pairs that `--som-artifact-mask` would catch with `ART_DIS_TO_VAR` enabled, which it is not by
+default. Window layout and thread count both move this figure by a few calls, so a comparison
+between revisions is only meaningful at a fixed layout.
 
 The indel figure is above the ClairS number; the SNV gap to both trained models is recall, not
 precision. Of the 353 SNVs still missed, about two thirds (236) never reach the VCF at all, and
@@ -243,7 +264,7 @@ Germline runs of homozygosity are no longer the leading cause. They were: stretc
 heterozygous sites per 40 kb against a chromosome average of 38 leave too few anchors to separate
 the reads, so a somatic variant's alt reads scatter across both haplotype slots and fail the
 "other tumor haplotype is clean" test. The haplotype grid is now distrusted where there is nothing
-to phase on, which routes those sites to the pooled `FILTER=Unphased` path instead of failing them.
+to phase on, which routes those sites to the pooled `INFO/UNPHASED` path instead of failing them.
 
 Indel precision is the figure that moved most in this table's last refresh, 0.6556 to 0.8182, on
 a net 19 fewer false indels for 5 fewer true ones. Two changes landed in that interval, and the
