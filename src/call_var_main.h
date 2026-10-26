@@ -109,10 +109,11 @@
 #define LONGCALLD_VQ_SOM_PRIOR   1e-6    // somatic mutation per site
 #define LONGCALLD_VQ_PHASE_WEIGHT 0.5    // weight of the phased reading of a het
 // PL tempering, fitted on GIAB genotypes with eval/qual_eval.py gqfit: HiFi on
-// HG002 chr20 (Sequel II), tested on HG001 (log-loss 0.0324 -> 0.0194); ONT on
-// HG002 chr20:10-16Mb (R10.4.1 SUP, 0.0999 -> 0.0475).
-#define LONGCALLD_VQ_PL_SCALE_HIFI 0.41
-#define LONGCALLD_VQ_PL_SCALE_ONT  0.29
+// HG002 chr20 (Sequel II), tested on HG001 (genotype log-loss 0.0153); ONT on
+// HG002 chr20:10-16Mb (R10.4.1 SUP, 0.0367). Untempered, the same PLs scored
+// 0.0324 and 0.0999 before the asymmetric indel errors.
+#define LONGCALLD_VQ_PL_SCALE_HIFI 0.30
+#define LONGCALLD_VQ_PL_SCALE_ONT  0.31
 
 // Artifact checks a paired somatic call is put through. Each bit is one check;
 // --som-artifact-mask selects which are enforced, and LONGCALLD_ARTCHK=1

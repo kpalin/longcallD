@@ -60,6 +60,8 @@ extern const double LONGCALLD_QGRID[LONGCALLD_QGRID_N];
 // haplotypes are final, i.e. after stitching.
 typedef struct var_qual_acc_t {
     uint16_t ne[2][3][2][LONGCALLD_QE_N]; // [sample][slot][ref/alt][error phred]: reads
+    float e_r, e_a;                       // indel context error: ref read shows it; alt read loses it
+    uint8_t is_indel;
     float ll[2][3][LONGCALLD_QGRID_N];    // [sample][slot][f]: sum over reads of log10 P(read | alt fraction f); filled by score_var_quality()
     int n_strand[2][2][2];                // [sample][ref/alt][fwd/rev]
     int n_unph[2][2];                     // [sample][ref/alt]: reads in slot 0 -- unassigned, or outside the site's block

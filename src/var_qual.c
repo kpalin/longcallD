@@ -172,19 +172,31 @@ void ref_repeat_context(const char *ref_seq, hts_pos_t beg, hts_pos_t end, hts_p
     }
 }
 
-// Per-read probability that an indel at this context is called where the read
-// carries none, or missed where it carries one. Log-linear in tract length,
-// per technology and period class. These are starting points; the fitted
-// artifact term absorbs what they get wrong, and eval/qual_fit.py reports the
-// observed rates per context so the table can be re-seeded.
-static double indel_ctx_error(int is_ont, int period, int tract) {
-    double a, b; int x;
-    if (period == 1 && tract >= 3) { a = is_ont ? 2.5 : 4.0; b = is_ont ? 0.15 : 0.30; x = tract - 2; }
-    else if (period == 2 && tract >= 4) { a = is_ont ? 2.7 : 4.0; b = is_ont ? 0.07 : 0.12; x = tract - 4; }
-    else if (period >= 3 && tract >= 6) { a = is_ont ? 2.8 : 4.0; b = is_ont ? 0.05 : 0.08; x = tract - 6; }
-    else { a = is_ont ? 2.7 : 4.0; b = 0; x = 0; }
-    double e = pow(10.0, -(a - b * x));
-    return e > 0.3 ? 0.3 : e;
+// Per-read indel error at this repeat context, in two directions that differ
+// by an order of magnitude: e_a, a read from the indel allele showing the
+// reference (slippage undoing the event), and e_r, a reference read showing
+// this particular indel. Measured on GIAB HG002 chr20 against v4.2.1:
+// hom-alt VAF = 1 - e_a, het VAF = (1 - e_a + e_r) / 2. In HiFi homopolymers
+// e_a climbs from ~2% at runs of 5 to 9% at 10, 15% at 15 and ~25% at 20,
+// while e_r stays at 1-4%; ONT has e_a ~6% to a run of 8, then 25-45%.
+// A single symmetric rate, as here before, took a T15 het at VAF 0.31 for
+// reference plus slippage and gave it QUAL 0.
+static void indel_ctx_error(int is_ont, int period, int tract, double *e_r, double *e_a) {
+    int L = tract;
+    if (period == 1 && L >= 3) {
+        if (!is_ont) { *e_a = 0.01 + 0.0135 * (L > 4 ? L - 4 : 0); *e_r = 0.001 + 0.002 * (L > 4 ? L - 4 : 0); }
+        else { *e_a = 0.06 + 0.08 * (L > 8 ? L - 8 : 0); *e_r = 0.005 + 0.02 * (L > 8 ? L - 8 : 0); }
+    } else if (period == 2 && L >= 4) {
+        if (!is_ont) { *e_a = 0.015 + 0.0025 * (L - 4); *e_r = 0.001 + 0.0005 * (L - 4); }
+        else { *e_a = 0.04 + 0.006 * (L - 4); *e_r = 0.003 + 0.002 * (L - 4); }
+    } else if (period >= 3 && L >= 6) {
+        if (!is_ont) { *e_a = 0.02 + 0.001 * (L - 6); *e_r = 0.001; }
+        else { *e_a = 0.06 + 0.002 * (L - 6); *e_r = 0.003; }
+    } else {
+        *e_a = is_ont ? 0.045 : 0.01; *e_r = is_ont ? 0.002 : 0.0003;
+    }
+    if (*e_a > 0.5) *e_a = 0.5;
+    if (*e_r > 0.15) *e_r = 0.15;
 }
 
 // ---------------------------------------------------------------- step 2 --
@@ -193,15 +205,16 @@ var_qual_acc_t *collect_var_qual_acc(const call_var_opt_t *opt, bam_chunk_t *chu
     if (chunk->n_cand_vars <= 0 || chunk->read_var_profile == NULL) return NULL;
     int n = chunk->n_cand_vars;
     var_qual_acc_t *acc = (var_qual_acc_t*)_err_calloc(n, sizeof(var_qual_acc_t));
-    // Per-variant constants: the indel context error, and whether it is an SNV.
-    double *e_ctx = (double*)_err_calloc(n, sizeof(double));
+    // Per-variant constant: an indel's context error, both directions. Applied
+    // when the grid is filled, so indel reads bin on their base error alone.
     for (int i = 0; i < n; ++i) {
         if (want != NULL && !want[i]) continue;
         const cand_var_t *cv = chunk->cand_vars + i;
         if (cv->var_type == BAM_CDIFF) continue;
-        uint8_t per, tr; char unit[8];
+        uint8_t per, tr; char unit[8]; double e_r, e_a;
         ref_repeat_context(chunk->ref_seq, chunk->ref_beg, chunk->ref_end, cv->pos, 0, &per, &tr, unit);
-        e_ctx[i] = indel_ctx_error(opt->is_ont, per, tr);
+        indel_ctx_error(opt->is_ont, per, tr, &e_r, &e_a);
+        acc[i].is_indel = 1; acc[i].e_r = (float)e_r; acc[i].e_a = (float)e_a;
     }
     int n_samples = chunk->n_samples > 0 ? chunk->n_samples : 1;
     double bq_cap = opt->vq_bq_cap;
@@ -233,7 +246,6 @@ var_qual_acc_t *collect_var_qual_acc(const call_var_opt_t *opt, bam_chunk_t *chu
         hts_pos_t ps = hap != 0 ? chunk->phase_sets[read_i] : 0;
         int mq = chunk->read_mapq != NULL ? chunk->read_mapq[read_i] : 60;
         if (mq > 60) mq = 60;
-        double e_mq = e_mq_tab[mq < 0 ? 0 : mq];
         int is_rev = chunk->read_is_rev != NULL ? chunk->read_is_rev[read_i] : 0;
         int conflict = chunk->n_clean_conflict_snps != NULL && chunk->n_clean_conflict_snps[read_i] >= 2;
         for (int var_i = p1->start_var_idx; var_i <= p1->end_var_idx; ++var_i) {
@@ -246,17 +258,10 @@ var_qual_acc_t *collect_var_qual_acc(const call_var_opt_t *opt, bam_chunk_t *chu
             int q = p1->qual != NULL ? p1->qual[j] : LONGCALLD_QUAL_UNKNOWN;
             int known = q != LONGCALLD_QUAL_UNKNOWN;
             if (!known) q = opt->vq_default_bq;
-            int qb = q < NQ ? q : NQ - 1, qe;
-            if (chunk->cand_vars[var_i].var_type == BAM_CDIFF) {
-                qe = snv_qe[qb][mq < 0 ? 0 : mq]; // e_bq/3: the one specific other base
-            } else {
-                double e_seq = e_ctx[var_i] + (1.0 - e_ctx[var_i]) * e_bq_tab[qb] / 3.0;
-                // A mismapped read shows the alt or the ref as a coin flip.
-                double e = (1.0 - e_mq) * e_seq + e_mq * 0.5;
-                qe = (int)(-10.0 * log10(e) + 0.5);
-                if (qe < 0) qe = 0;
-                if (qe >= LONGCALLD_QE_N) qe = LONGCALLD_QE_N - 1;
-            }
+            int qb = q < NQ ? q : NQ - 1;
+            // Base error e_bq/3 (the one specific other base) and mismapping; an
+            // indel's context error is composed with it in fill_ll().
+            int qe = snv_qe[qb][mq < 0 ? 0 : mq];
             if (acc[var_i].ne[smp][h][a][qe] < UINT16_MAX) acc[var_i].ne[smp][h][a][qe]++;
             acc[var_i].n_strand[smp][a][is_rev ? 1 : 0]++;
             if (h == 0) acc[var_i].n_unph[smp][a]++;
@@ -265,7 +270,6 @@ var_qual_acc_t *collect_var_qual_acc(const call_var_opt_t *opt, bam_chunk_t *chu
             { int b = mq < LONGCALLD_QHIST_N ? mq : LONGCALLD_QHIST_N - 1; if (acc[var_i].mq[smp][a][b] < UINT16_MAX) acc[var_i].mq[smp][a][b]++; }
         }
     }
-    free(e_ctx);
     return acc;
 }
 
@@ -326,7 +330,21 @@ static void fill_ll(var_qual_acc_t *acc) {
                 for (int qe = 0; qe < LONGCALLD_QE_N; ++qe) {
                     int n = acc->ne[s][h][a][qe];
                     if (n == 0) continue;
-                    for (int g = 0; g < LONGCALLD_QGRID_N; ++g) ll[g] += n * qe_ll_tab[qe][g][a];
+                    if (!acc->is_indel) {
+                        for (int g = 0; g < LONGCALLD_QGRID_N; ++g) ll[g] += n * qe_ll_tab[qe][g][a];
+                        continue;
+                    }
+                    // Indel: the context errors, one per direction, on top of the
+                    // read's own base and mapping error.
+                    double eb = pow(10.0, -qe / 10.0);
+                    double p_alt_if_ref = 1.0 - (1.0 - acc->e_r) * (1.0 - eb);
+                    double p_ref_if_alt = 1.0 - (1.0 - acc->e_a) * (1.0 - eb);
+                    for (int g = 0; g < LONGCALLD_QGRID_N; ++g) {
+                        double f = LONGCALLD_QGRID[g];
+                        double p = (a == 1) ? f * (1.0 - p_ref_if_alt) + (1.0 - f) * p_alt_if_ref
+                                            : f * p_ref_if_alt + (1.0 - f) * (1.0 - p_alt_if_ref);
+                        ll[g] += n * log10(p);
+                    }
                 }
             for (int g = 0; g < LONGCALLD_QGRID_N; ++g) acc->ll[s][h][g] = (float)ll[g];
         }
@@ -410,28 +428,34 @@ static double germline_lfalse(const call_var_opt_t *opt, const var_qual_acc_t *a
 
 // log10 P(not somatic | D). Hypotheses:
 //   absent:    every alt read in either sample is error
-//   germline:  normal het or hom; tumour at any fraction (copy-number changes and
-//              loss of heterozygosity included)
-//   somatic:   tumour haplotype h at within-haplotype fraction phi, the other
-//              haplotype clean, unassigned tumour reads at phi/2; normal clean
-//              or lightly contaminated by tumour
-// Without a usable grid every tumour read is unassigned, and the haplotype term
-// -- the evidence the grid adds -- is simply absent. Single-sample (mosaic)
-// calls drop the normal terms; their germline alternative is the diploid one.
+//   germline:  normal het or hom; tumour as for somatic, or at any fraction
+//   somatic:   normal clean or lightly contaminated by tumour; tumour either on
+//              one haplotype (h at within-haplotype fraction phi, the other
+//              haplotype clean, unassigned reads at phi/2) or at any pooled
+//              fraction up to 1
+// The pooled branch is not optional. Without it a somatic call at tumour VAF 1
+// -- copy-neutral loss of heterozygosity, common in HCC1395 -- could only be
+// germline, and a call whose alt reads the phasing split over both haplotypes
+// could only be absent: both came out at QUAL 0 with 40 clean alt reads
+// against a clean normal. The tumour cannot separate somatic from germline in
+// any case; only the normal can, so both hypotheses read the tumour alike.
+// Single-sample (mosaic) calls drop the normal terms; their germline
+// alternative is the diploid one.
 static double somatic_lfalse(const call_var_opt_t *opt, const var_qual_acc_t *acc, const var1_t *v, int n_samples,
                              int grid_ok) {
     const int T = LONGCALLD_SAMPLE_TUMOR, N = LONGCALLD_SAMPLE_NORMAL;
     int paired = n_samples > 1;
     double lt_abs = smp_ll(acc, T, QG_0);
-    double lt_som = -INFINITY;
-    for (int j = 0; j < QG_N_PHI; ++j) {
-        if (grid_ok) {
+    double lt_hap = -INFINITY, lt_pool = -INFINITY;
+    if (grid_ok)
+        for (int j = 0; j < QG_N_PHI; ++j)
             for (int h = 1; h <= 2; ++h) {
                 double l = slot_ll(acc, T, h, QG_PHI[j]) + slot_ll(acc, T, 3 - h, QG_0) + slot_ll(acc, T, 0, QG_PHI_HALF[j]);
-                lt_som = lse2(lt_som, l - log10(2.0 * QG_N_PHI));
+                lt_hap = lse2(lt_hap, l - log10(2.0 * QG_N_PHI));
             }
-        } else lt_som = lse2(lt_som, smp_ll(acc, T, QG_PHI_HALF[j]) - log10((double)QG_N_PHI));
-    }
+    for (int g = 1; g < LONGCALLD_QGRID_N; ++g) lt_pool = lse2(lt_pool, smp_ll(acc, T, g));
+    lt_pool -= log10((double)(LONGCALLD_QGRID_N - 1));
+    double lt_som = grid_ok ? lse2(lt_hap, lt_pool) - log10(2.0) : lt_pool;
     double h_abs, h_germ, h_som;
     if (paired) {
         double ln_abs = smp_ll(acc, N, QG_0);
@@ -454,16 +478,11 @@ static double somatic_lfalse(const call_var_opt_t *opt, const var_qual_acc_t *ac
         }
         double ln_germ = lse2(n_het + log10(2.0 / 3.0), smp_ll(acc, N, QG_1) + log10(1.0 / 3.0));
         // In the tumour a germline het also sits on one haplotype, so it gets the
-        // same haplotype model the somatic hypothesis does, mixed with any pooled
-        // fraction for copy-number change. The tumour alone cannot tell germline
-        // from somatic; only the normal can, and this keeps it that way. Scoring
-        // the germline tumour on pooled reads alone handed the somatic hypothesis
-        // the tumour's haplotype segregation as if it were evidence -- 3.7 of the
-        // 5 log10 units of a clonal test call.
-        double lt_any = -INFINITY;
-        for (int g = 0; g < LONGCALLD_QGRID_N; ++g) lt_any = lse2(lt_any, smp_ll(acc, T, g));
-        lt_any -= log10((double)LONGCALLD_QGRID_N);
-        double lt_germ = grid_ok ? lse2(lt_som, lt_any) - log10(2.0) : lt_any;
+        // same tumour model the somatic hypothesis does, plus a lost allele
+        // (fraction 0). Scoring the germline tumour on pooled reads alone handed
+        // the somatic hypothesis the tumour's haplotype segregation as if it
+        // were evidence -- 3.7 of the 5 log10 units of a clonal test call.
+        double lt_germ = lse2(lt_som + log10(21.0 / 22.0), lt_abs + log10(1.0 / 22.0));
         h_abs = ln_abs + lt_abs; h_germ = ln_germ + lt_germ; h_som = ln_clean + lt_som;
     } else {
         double gl[3];
