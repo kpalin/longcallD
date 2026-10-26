@@ -1576,7 +1576,25 @@ static int somatic_artifact_mask1(const call_var_opt_t *opt, bam_chunk_t *chunk,
     if (n <= 0) return 0;
     if (opt->is_ont && (aux->hap_alt_for_cov == 0 || aux->hap_alt_rev_cov == 0)) m |= LONGCALLD_ART_STRAND;
     if (aux->min_dis_to_var < opt->min_somatic_dis_to_var) m |= LONGCALLD_ART_DIS_TO_VAR;
-    if (median_int(aux->alt_quals, n) < chunk->median_qual) m |= LONGCALLD_ART_ALT_QUAL;
+    // An absolute floor, not chunk->median_qual. Half a chunk's bases sit below
+    // its median by construction, so comparing against it rejects roughly half
+    // of all sites whatever their quality, and where that median falls relative
+    // to a real variant's quality is a property of the basecaller rather than of
+    // the variant. Measured on HCC1395 chr1, the median alt base quality is Q36
+    // at truth somatic SNVs and Q13 at false ones on ONT, against Q40 for BOTH
+    // on HiFi. The chunk median at those sites is Q33 on ONT -- three points
+    // under the centre of the true distribution -- and this check alone
+    // accounted for 321 of the 1378 missed somatic SNVs, for 125 false ones it
+    // removed. On HiFi the same median is Q22, far below either class, so the
+    // check was nearly inert there and the fault never showed: it cost 0 true
+    // calls and removed 7 false ones.
+    //
+    // At an absolute Q20 the ONT SNV F1 goes 0.7252 -> 0.7788 with HiFi
+    // unchanged. The F1 curve is flat from Q18 to Q26 on ONT and from Q18 to
+    // Q35 on HiFi, so the value is a calibration rather than a fitted constant.
+    // The single-sample mosaic path still compares against the chunk median:
+    // these checks were written for it, and it has its own measurements.
+    if (median_int(aux->alt_quals, n) < opt->min_som_alt_qual) m |= LONGCALLD_ART_ALT_QUAL;
     if (median_int(aux->win_low_qual, n) < chunk->first_quar_qual) m |= LONGCALLD_ART_WIN_QUAL;
     if (median_int(aux->dis_to_indel_error, n) < opt->min_somatic_dis_to_seq_error) m |= LONGCALLD_ART_INDEL_ERR;
     if (median_int(aux->no_dense_diff, n) == 0) m |= LONGCALLD_ART_DENSE_DIFF;

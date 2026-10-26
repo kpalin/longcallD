@@ -74,9 +74,10 @@ chk "explicit -a beats the ONT preset" "Paired thresholds: -a 0.07"             
 # the caller changes which calls survive and leaves no other trace.
 flt() { "$BIN" call $1 "$REF" "$BAM" -N normal.bam -t 1 -o /dev/null 2>&1 \
           | grep -o 'Paired filters: .*' | tr -d '\r'; }
-chk "the grid read floor defaults to 2" "Paired filters: artifact mask 0x7d (snv) 0x27d (indel), grid distrusted above 0.02 over 2 read(s)" "$(flt --hifi)"
-chk "indels get their own artifact mask" "Paired filters: artifact mask 0x7d (snv) 0x200 (indel), grid distrusted above 0.02 over 2 read(s)" "$(flt "--hifi --som-artifact-mask-indel 0x200")"
-chk "the read floor is settable" "Paired filters: artifact mask 0x7d (snv) 0x27d (indel), grid distrusted above 0.05 over 3 read(s)" "$(flt "--hifi --max-unphased-frac 0.05 --min-unphased-reads 3")"
+chk "the grid read floor defaults to 2" "Paired filters: artifact mask 0x7d (snv) 0x27d (indel), --som-alt-qual 20, grid distrusted above 0.02 over 2 read(s)" "$(flt --hifi)"
+chk "indels get their own artifact mask" "Paired filters: artifact mask 0x7d (snv) 0x200 (indel), --som-alt-qual 20, grid distrusted above 0.02 over 2 read(s)" "$(flt "--hifi --som-artifact-mask-indel 0x200")"
+chk "the read floor is settable" "Paired filters: artifact mask 0x7d (snv) 0x27d (indel), --som-alt-qual 20, grid distrusted above 0.05 over 3 read(s)" "$(flt "--hifi --max-unphased-frac 0.05 --min-unphased-reads 3")"
+chk "the alt base-quality floor is settable" "Paired filters: artifact mask 0x7d (snv) 0x27d (indel), --som-alt-qual 14, grid distrusted above 0.02 over 2 read(s)" "$(flt "--hifi --som-alt-qual 14")"
 
 # A typo must not look like a successful run that happened to produce nothing.
 "$BIN" call --no-such-option "$REF" "$BAM" >/dev/null 2>&1

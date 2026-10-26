@@ -263,17 +263,17 @@ The same chromosome, truth set and high-confidence regions, on the ONT R10.4.1 t
 
 | | TP | FP | FN | recall | precision | F1 |
 |---|---|---|---|---|---|---|
-| SNVs | 2062 | 185 | 1378 | 0.5994 | 0.9177 | **0.7252** |
-| indels | 42 | 60 | 91 | 0.3158 | 0.4118 | **0.3574** |
-| records | 2104 | 249 | 1469 | 0.5889 | 0.8942 | 0.7101 |
+| SNVs | 2382 | 295 | 1058 | 0.6924 | 0.8898 | **0.7788** |
+| indels | 43 | 65 | 90 | 0.3233 | 0.3981 | **0.3568** |
+| records | 2425 | 364 | 1148 | 0.6787 | 0.8695 | 0.7623 |
 
 No comparator figures are quoted here: no published ONT result for chr1 inside this
 high-confidence BED has been found, and the ONT numbers that are published elsewhere are
 whole-genome at different coverage, so they are not interchangeable with these.
 
 Two things are worth reading off this table rather than inferred from the F1. The gap to HiFi is
-recall, not precision: 0.60 against 0.90, while precision is 0.92 against 0.96. And **43% of
-somatic calls fall back to the pooled `UNPHASED` test, against 36% on HiFi** (1173 of 2722,
+recall, not precision: 0.69 against 0.90, while precision is 0.89 against 0.96. And **43% of
+somatic calls fall back to the pooled `UNPHASED` test, against 36% on HiFi** (1391 of 3239,
 against 1425 of 3952) -- the four-slot haplotype test that the paired mode is built around
 reaches well under half the ONT calls, so these figures are substantially carried by the weaker
 evidence path. Every paired run logs both counts, so this split needs no post-processing.
@@ -293,8 +293,9 @@ pre-fix full-chr1 run of the same pair:
 
 | | SNV TP/FP | SNV F1 | indel TP/FP | indel F1 | wall | windows lost |
 |---|---|---|---|---|---|---|
-| before | 2068 / 370 | 0.7036 | 45 / 227 | 0.2222 | ~5 h | 2, recovered by subdivision |
-| after | 2062 / 185 | 0.7252 | 42 / 60 | 0.3574 | 31 min | none |
+| before both | 2068 / 370 | 0.7036 | 45 / 227 | 0.2222 | ~5 h | 2, recovered by subdivision |
+| after both | 2062 / 185 | 0.7252 | 42 / 60 | 0.3574 | 31 min | none |
+| and the alt-quality floor | 2382 / 295 | 0.7788 | 43 / 65 | 0.3568 | 31 min | none |
 
 SNV false positives halved and indel false positives fell by nearly four fifths, for 6 and 3 true
 calls respectively. The wall-clock and memory change is `9ac80ac` (the read/variant profile
@@ -303,7 +304,30 @@ allocated per read band): the earlier run aborted two whole windows under the be
 about 1 GB. A run that has to subdivide is also a run that could silently have dropped a window,
 which is how 40 Mb of an earlier chromosome went missing from a scored result.
 
-Indels remain the weak point on ONT, but no longer unusable: 60 false positives against 133 truth
+The last row is `--som-alt-qual`, described under *Somatic calling and filters*; the table at the
+top of this section is that row. It recovers 320 true somatic SNVs for 110 false ones, and is the
+single largest recall change measured on this benchmark. It was found by asking where the missed
+SNVs actually go rather than by sweeping thresholds: the full VCF is kept, not just the PASS
+records, so every false negative can be attributed. Of 1378 missed SNVs at the previous row, 861
+never reached the VCF, 492 carried `FILTER=Ambiguous`, 23 `LowDP`, and 2 passed as germline -- and
+re-running the classifier in Python from the VCF's own `HDP`/`HAD` grid showed that **405 of the 492
+had been classified SOMATIC and then demoted by the artifact mask**, not rejected by the four-slot
+test. They were also indistinguishable from the calls that survived: median tumour VAF 0.39 against
+0.46, zero alt reads in the normal at 97% of sites in both groups, against 0.12 and 73% for the
+false positives the mask kept.
+
+The 861 that never reach the VCF are mostly not recoverable by any threshold. Piled up directly on
+the BAMs, 371 have no alt read in the tumour at all and 241 have a single one genome-wide, below
+`--min-alt-dp`. Those are not truth-set errors: measured in the *HiFi* tumour BAM the same 371
+positions carry a median VAF of 0.085, and only 6% are zero there too, so they are genuinely
+subclonal at around 8-10%, which at 30x ONT is two to three expected reads. Of the rest, 39 fall
+under `--min-som-vaf` and the remaining 208 sit at a median tumour VAF of 0.095. A smaller tail is a
+real defect rather than a sampling limit -- `chr1:240793687` is 33/60 alt in the tumour and 0/45 in
+the normal and produces no record at all, and `chr1:154994929` calls cleanly as PASS+SOMATIC when a
+300 kb window is run around it. Both sit beside locally noisy stretches where the read filters
+collapse the usable depth, which is a separate question from any of the thresholds here.
+
+Indels remain the weak point on ONT, but no longer unusable: 65 false positives against 133 truth
 variants, from 227. They are basecaller slippage -- measured on an unfiltered run of the same
 pair, the false somatic indels sit in a homopolymer run of median length 12 and are a median 1 bp
 long, where the true ones sit at median run length 1 and are a median 13 bp long.
@@ -428,6 +452,37 @@ check alone rejects 1281 true somatic SNVs to remove 17 false ones, collapsing S
 every call's full mask, which re-measures the whole table in one pass -- worth doing before
 trusting these defaults on another technology, since the strand check (`0x001`) never fires on
 HiFi but is live on ONT.
+
+`--som-alt-qual` (default 20) is the base-quality floor the `0x004` check applies: a somatic call is
+rejected when the median base quality of its alt reads falls below it. It used to compare against
+the chunk's own median base quality, and that was the single worst threshold in the caller. Half a
+chunk's bases sit below its median by construction, so a median-relative test rejects roughly half
+of all sites whatever their quality -- and where that median lands relative to a real variant's
+quality is a property of the basecaller, not of the variant:
+
+| | median alt BQ, truth | median alt BQ, non-truth | the chunk median it was compared against |
+|---|---|---|---|
+| ONT | Q36 | Q13 | **Q33** |
+| HiFi | Q40 | Q40 | Q22 |
+
+On ONT the threshold landed three points under the centre of the *true* distribution and cut into
+it: of the 405 mask-demoted truth SNVs, `0x004` was the *sole* cause for 321, against 125 false
+ones it alone removed -- the only one of the six default bits whose ratio runs that way. The
+recovery bears that out: 320 true SNVs came back. On HiFi the same median sits 18 points
+below both classes, so the check was nearly inert -- 0 true calls and 7 false ones -- and the fault
+never showed. Moving to an absolute floor took ONT SNV F1 from 0.7252 to 0.7788 and left the HiFi
+VCF **byte-identical, every record including `FILTER`**. The F1 curve is flat from Q18 to Q26 on ONT
+and from Q18 to Q35 on HiFi, so 20 is a calibration rather than a constant fitted to chr1. The
+single-sample mosaic path still compares against the chunk median: these checks were written for it
+and it has its own measurements. `0x008` has the same shape -- it compares against the chunk's first
+quartile -- but costs only 2 true ONT SNVs, so it has been left alone.
+
+Both halves of this were measured from one instrumented run, not one run per setting. `paired_class`
+is consumed only by `src/vcf_utils.c`, for `FILTER` and `INFO`, so the artifact mask is an
+output-time relabel: `LONGCALLD_ARTCHK=1` prints each call's mask and `ARTRAW` prints the raw
+statistic behind every bit, which is enough to reconstruct the query VCF any mask or threshold would
+have produced. At the shipped defaults that reconstruction reproduces the scored call set record for
+record, which is what makes the other 63 mask subsets trustworthy without running them.
 
 `--som-artifact-mask-indel` (default `0x27d`) is the same mask for insertions and deletions, which
 fail in different ways: every count in the table above is really a statement about substitutions,

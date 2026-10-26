@@ -99,6 +99,7 @@ const struct option call_var_opt [] = {
     { "max-poa-msa-cells", 1, NULL, 0},
     { "som-pval", 1, NULL, 0},
     { "min-hap-vaf", 1, NULL, 0},
+    { "som-alt-qual", 1, NULL, 0},
     { "som-artifact-mask", 1, NULL, 0},
     { "som-artifact-mask-indel", 1, NULL, 0},
     { "max-unphased-frac", 1, NULL, 0},
@@ -227,6 +228,7 @@ call_var_opt_t *call_var_init_para(void) {
     opt->min_som_vaf = LONGCALLD_MIN_SOM_VAF;
     opt->min_som_indel_vaf = LONGCALLD_MIN_SOM_INDEL_VAF;
     opt->min_som_rep_indel_vaf = LONGCALLD_MIN_SOM_REP_INDEL_VAF;
+    opt->min_som_alt_qual = LONGCALLD_MIN_SOM_ALT_QUAL;
     opt->som_artifact_mask = LONGCALLD_ART_DEFAULT;
     opt->som_artifact_mask_indel = LONGCALLD_ART_DEFAULT_INDEL;
     opt->min_normal_phase_af = LONGCALLD_MIN_CAND_AF;
@@ -551,8 +553,8 @@ void finalise_sample_layout(call_var_opt_t *opt) {
         _err_info("Paired thresholds: -a %.2f%s, --som-pval %g, --min-hap-vaf %.2f\n",
                   opt->min_af, (opt->is_ont && !opt->min_af_set) ? " (ONT default)" : "",
                   opt->som_pval, opt->min_hap_vaf);
-        _err_info("Paired filters: artifact mask 0x%x (snv) 0x%x (indel), grid distrusted above %.2f over %d read(s)\n",
-                  opt->som_artifact_mask, opt->som_artifact_mask_indel,
+        _err_info("Paired filters: artifact mask 0x%x (snv) 0x%x (indel), --som-alt-qual %d, grid distrusted above %.2f over %d read(s)\n",
+                  opt->som_artifact_mask, opt->som_artifact_mask_indel, opt->min_som_alt_qual,
                   opt->max_unphased_frac, opt->min_unphased_reads);
     }
 }
@@ -1267,6 +1269,11 @@ static void call_var_usage(void) {//main usage
     fprintf(stderr, "                          or short tandem repeat, where slippage manufactures real reads\n");
     fprintf(stderr, "                          carrying a real indel that is not a somatic mutation. Lower all\n");
     fprintf(stderr, "                          three for a low-purity tumour, where clonal VAF is itself low\n");
+    fprintf(stderr, "       --som-alt-qual INT\n");
+    fprintf(stderr, "                          base-quality floor for the 0x004 artifact check: a somatic call\n");
+    fprintf(stderr, "                          is rejected when the median base quality of its alt reads falls\n");
+    fprintf(stderr, "                          below this [%d]. An absolute floor, not the chunk median, which\n", LONGCALLD_MIN_SOM_ALT_QUAL);
+    fprintf(stderr, "                          sits at Q33 on ONT where the true calls sit at Q36\n");
     fprintf(stderr, "       --som-artifact-mask INT\n");
     fprintf(stderr, "                          which artifact checks reject a somatic call, as a bit mask\n");
     fprintf(stderr, "                          [0x%x]: 0x002 another variant nearby, 0x004 low alt base\n", LONGCALLD_ART_DEFAULT);
@@ -1455,6 +1462,7 @@ int call_var_main_mode(int argc, char *argv[], int paired_cli) {
                     else if (strcmp(call_var_opt[op_idx].name, "max-poa-msa-cells") == 0) opt->max_poa_msa_cells = strtoll(optarg, NULL, 10);
                     else if (strcmp(call_var_opt[op_idx].name, "som-pval") == 0) { opt->som_pval = atof(optarg); opt->som_pval_set = 1; }
                     else if (strcmp(call_var_opt[op_idx].name, "min-hap-vaf") == 0) { opt->min_hap_vaf = atof(optarg); opt->min_hap_vaf_set = 1; }
+                    else if (strcmp(call_var_opt[op_idx].name, "som-alt-qual") == 0) opt->min_som_alt_qual = atoi(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "som-artifact-mask") == 0) opt->som_artifact_mask = (int)strtol(optarg, NULL, 0);
                     else if (strcmp(call_var_opt[op_idx].name, "som-artifact-mask-indel") == 0) opt->som_artifact_mask_indel = (int)strtol(optarg, NULL, 0);
                     else if (strcmp(call_var_opt[op_idx].name, "max-unphased-frac") == 0) opt->max_unphased_frac = atof(optarg);

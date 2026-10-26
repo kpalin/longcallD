@@ -97,13 +97,14 @@
 #define LONGCALLD_MIN_SOM_VAF 0.05            // tumour VAF floor, substitutions
 #define LONGCALLD_MIN_SOM_INDEL_VAF 0.15      // tumour VAF floor, indels
 #define LONGCALLD_MIN_SOM_REP_INDEL_VAF 0.30  // tumour VAF floor, indels in a repeat
+#define LONGCALLD_MIN_SOM_ALT_QUAL 20         // absolute base-quality floor for a somatic alt allele
 
 // Artifact checks a paired somatic call is put through. Each bit is one check;
 // --som-artifact-mask selects which are enforced, and LONGCALLD_ARTCHK=1
 // reports every call's full mask so the set can be re-measured.
 #define LONGCALLD_ART_STRAND      0x001 // alt seen on one strand only (ONT only)
 #define LONGCALLD_ART_DIS_TO_VAR  0x002 // another variant within min_somatic_dis_to_var
-#define LONGCALLD_ART_ALT_QUAL    0x004 // median alt base quality below the chunk median
+#define LONGCALLD_ART_ALT_QUAL    0x004 // median alt base quality below --som-alt-qual
 #define LONGCALLD_ART_WIN_QUAL    0x008 // low-quality window around the alt base
 #define LONGCALLD_ART_INDEL_ERR   0x010 // an indel error within min_somatic_dis_to_seq_error
 #define LONGCALLD_ART_DENSE_DIFF  0x020 // alt reads carry dense mismatches
@@ -357,6 +358,7 @@ typedef struct call_var_opt_t {
     double min_som_vaf;               // tumour VAF floor for a somatic substitution
     double min_som_indel_vaf;         // tumour VAF floor for a somatic indel
     double min_som_rep_indel_vaf;     // tumour VAF floor for a somatic indel in a homopolymer or short tandem repeat
+    int min_som_alt_qual;             // base-quality floor the 0x004 artifact check applies
     int som_artifact_mask;            // LONGCALLD_ART_* bits enforced on paired somatic substitutions
     int som_artifact_mask_indel;      // the same, for insertions and deletions
     int min_normal_phase_dp; // paired mode: min normal depth for a variant to drive phasing
