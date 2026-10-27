@@ -1645,6 +1645,9 @@ int call_var_main_mode(int argc, char *argv[], int paired_cli) {
         _err_info("Reads used for calling: tumour %" PRId64 ", normal %" PRId64 "\n",
                   pl.n_reads_per_sample[LONGCALLD_SAMPLE_TUMOR],
                   pl.n_reads_per_sample[LONGCALLD_SAMPLE_NORMAL]);
+        int64_t n_unmasked = paired_somatic_unmasked_count();
+        if (n_unmasked > 0)
+            _err_warning("%" PRId64 " somatic call(s) had no artifact mask from step 1 and were set to Ambiguous\n", n_unmasked);
     }
     int any_aln_out = 0;
     for (int i = 0; i < LONGCALLD_MAX_SAMPLES; ++i) if (opt->aln_outs[i] != NULL) any_aln_out = 1;

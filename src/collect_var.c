@@ -702,23 +702,42 @@ static void collect_paired_somatic_artifact_masks(const call_var_opt_t *opt, bam
     collect_all_var_slot_counts(chunk);
     if (chunk->var_slots == NULL) return;
     free(chunk->som_art_mask_hap); free(chunk->som_art_mask_pooled);
-    chunk->som_art_mask_hap = (int*)_err_calloc(chunk->n_cand_vars, sizeof(int));
-    chunk->som_art_mask_pooled = (int*)_err_calloc(chunk->n_cand_vars, sizeof(int));
+    chunk->som_art_mask_hap = (int*)_err_malloc(chunk->n_cand_vars * sizeof(int));
+    chunk->som_art_mask_pooled = (int*)_err_malloc(chunk->n_cand_vars * sizeof(int));
     chunk->n_som_art = chunk->n_cand_vars;
-    const int T = LONGCALLD_SAMPLE_TUMOR, N = LONGCALLD_SAMPLE_NORMAL;
+    const int T = LONGCALLD_SAMPLE_TUMOR;
+    // Every candidate with enough tumour alt to be called somatic gets both
+    // masks, whatever the normal looks like here. This used to skip sites the
+    // normal seemed to carry -- on its slots, or at pooled VAF >= -a -- and
+    // neither test is the classifier's: the slot grid is rebuilt after the
+    // stitch, normal alt reads in slot 0 never count against the grid branch,
+    // and the grid branch never reads the pooled normal VAF at all. A site
+    // skipped here and classified SOMATIC there kept a zero mask and passed
+    // every artifact check unexamined. The tumour's pooled alt count is the
+    // one input both steps agree on, since reads only move between slots.
+    // A TSD-flanked, poly-A-tailed insertion may stand on fewer reads.
     for (int i = 0; i < chunk->n_cand_vars; ++i) {
+        chunk->som_art_mask_hap[i] = chunk->som_art_mask_pooled[i] = LONGCALLD_ART_NOT_COMPUTED;
         const var_slot_counts_t *sc = chunk->var_slots + i;
-        int t_alt = smp_alt(sc, T), n_alt = smp_alt(sc, N), n_dp = smp_dp(sc, N);
-        if (t_alt < opt->min_somatic_alt_dp) continue;
-        if (slot_has_alt(sc, N, 1, opt) || slot_has_alt(sc, N, 2, opt)) continue; // germline or normal-only
-        if (n_dp > 0 && (double)n_alt / n_dp >= opt->min_af) continue;            // germline on pooled counts
-        int s1 = sc->alt[T][1] + sc->alt[N][1], s2 = sc->alt[T][2] + sc->alt[N][2];
+        const cand_var_t *cv = chunk->cand_vars + i;
+        int min_alt = opt->min_somatic_alt_dp;
+        if (cv->var_type == BAM_CINS && cv->tsd_len > 0 && te_signature_is_met(cv->tsd_len, cv->polya_len, cv->te_seq_i)
+            && opt->min_somatic_te_dp < min_alt)
+            min_alt = opt->min_somatic_te_dp;
+        if (smp_alt(sc, T) < min_alt) continue;
+        int s1 = sc->alt[T][1] + sc->alt[LONGCALLD_SAMPLE_NORMAL][1], s2 = sc->alt[T][2] + sc->alt[LONGCALLD_SAMPLE_NORMAL][2];
         int h = s1 > s2 ? 1 : (s2 > s1 ? 2 : (s1 > 0 ? 1 : 0));
         if (h != 0)
             chunk->som_art_mask_hap[i] = paired_somatic_artifact_mask(opt, chunk, i, h, sc->ps);
         chunk->som_art_mask_pooled[i] = paired_somatic_artifact_mask(opt, chunk, i, -1, -1);
     }
 }
+
+// Somatic calls that reached step 2 with no artifact mask for either branch,
+// and were demoted to Ambiguous rather than passed unexamined. Summed over
+// the worker threads and reported at the end of the run.
+static int64_t n_som_unmasked = 0;
+int64_t paired_somatic_unmasked_count(void) { return __atomic_load_n(&n_som_unmasked, __ATOMIC_RELAXED); }
 
 // Alt reads a slot may hold and still count as clean.
 static int clean_slot_limit(const call_var_opt_t *opt, const var_slot_counts_t *sc, int s, int h) {
@@ -2330,6 +2349,15 @@ int make_variants(const call_var_opt_t *opt, bam_chunk_t *chunk, var_t **_var) {
                 if (var->vars[i].paired_class == LONGCALLD_PAIRED_SOMATIC && cand_i < chunk->n_som_art) {
                     int art = var->vars[i].is_unphased_call ? chunk->som_art_mask_pooled[cand_i]
                                                             : chunk->som_art_mask_hap[cand_i];
+                    // A grid call whose haplotype mask step 1 could not pick a
+                    // haplotype for falls back to the pooled one, which checks
+                    // every alt read. With neither, the call is not passed
+                    // unexamined: it is demoted and counted.
+                    if (art == LONGCALLD_ART_NOT_COMPUTED) art = chunk->som_art_mask_pooled[cand_i];
+                    if (art == LONGCALLD_ART_NOT_COMPUTED) {
+                        __atomic_add_fetch(&n_som_unmasked, 1, __ATOMIC_RELAXED);
+                        art = LONGCALLD_ART_ALL;
+                    }
                     // Read off the reference rather than the reads, so it is
                     // not gathered with the rest in step 1. in_slip_repeat is
                     // only ever set on an indel, which is what keeps this bit

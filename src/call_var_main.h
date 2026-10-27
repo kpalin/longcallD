@@ -129,6 +129,7 @@
 #define LONGCALLD_ART_HOMOPOLYMER 0x100 // homopolymer error (substitutions only -- see below)
 #define LONGCALLD_ART_REPEAT_INDEL 0x200 // indel whose event base sits in a homopolymer or short tandem repeat
 #define LONGCALLD_ART_ALL         0x3ff
+#define LONGCALLD_ART_NOT_COMPUTED (-1) // mask slot never filled: the candidate looked unable to be somatic in step 1
 // Enforced by default: the six checks that cost essentially no true positives
 // on PacBio HiFi. Measured over 7260 paired somatic calls on chr1 (SEQC2
 // HCC1395, som.py inside the HC BED; the instrumented run lost chr1:137.5-150Mb,
