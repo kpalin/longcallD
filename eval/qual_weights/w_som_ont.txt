@@ -6,3 +6,6 @@ ont som_snv unphased_call -0.312004
 ont som_snv vaf -3.63615
 ont som_snv lik -1.11325
 ont som_snv lik_low -0.734052
+ont som_indel bias 4.64538
+ont som_indel lik -0.893697
+ont som_indel lik_low -0.331942

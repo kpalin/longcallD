@@ -635,7 +635,7 @@ Measured ranking, as AUPRC of true over false records, against the previous QUAL
 | ONT germline, HG002 chr20:10-16Mb, even 1 Mb windows | GIAB v4.2.1 | 4566 (140) | 0.9693 | 0.9988 | 0.9989 |
 | HiFi somatic SNV, HCC1395 chr1, even 25 Mb windows | SEQC2 v1.2.1 | 1763 (88) | 0.9501 | 0.9917 | 0.9958 |
 | ONT somatic SNV, HCC1395 chr1, even 25 Mb windows | SEQC2 v1.2.1 | 1426 (137) | 0.9039 | 0.9788 | 0.9958 |
-| ONT somatic indel, HCC1395 chr1 (not fitted) | SEQC2 v1.2.1 | 110 (68) | 0.3818 | 0.7061 | = QLIK |
+| ONT somatic indel, HCC1395 chr1, even 25 Mb windows (bias + QLIK only) | SEQC2 v1.2.1 | 56 (34) | -- | -- | calibration below |
 
 Held-out calibration of the fitted QUAL, false rate observed / predicted:
 
@@ -667,11 +667,18 @@ less than one standard error. The HiFi one keeps lower alt mapping quality, the 
 reads, and alt reads on both haplotypes. `eval/qual_eval.py fit` prints which
 features each refit keeps.
 
+ONT somatic indels have a calibration-only model: an intercept and the two `QLIK` terms, nothing
+else, because 51 training records cannot support more. `QLIK` alone was badly overconfident for
+them -- held-out records at `QLIK` 50-60 were 43% false -- and the fit cuts held-out log-loss
+from 3.00 to 0.50. Its QUAL tops out near 7, which is the honest ceiling while about 60% of ONT
+somatic indel calls on chr1 are false (held out: 0.72 false observed against 0.84 predicted at
+Q0-5, 0.35 against 0.22 at Q5-10).
+
 What it does not do:
-- **Cells with too little truth to fit keep `QUAL = QLIK`.** These are ONT germline SNVs (14
-  false records in the 6 Mb slice) and somatic indels on both technologies: 16 false HiFi
-  records on chr1, and 18 true ONT ones in the training half. Their QLIK ranks far better than
-  the old QUAL did, but its scale is overconfident.
+- **Cells with too little truth to fit keep `QUAL = QLIK`.** These are ONT germline SNVs (7
+  false records in each half of the 6 Mb slice) and HiFi somatic indels (8 false records in the
+  training half on chr1), where even the two-feature calibration has too few false calls to fit.
+  Their QLIK ranks far better than the old QUAL did, but its scale is overconfident.
 - **Germline records of a tumor/normal pair use the single-sample germline weights.** No paired
   germline truth was available to check them against.
 - **Germline HiFi SNVs use no `QLIK` term.** Nearly all of them saturate it, and the fit put a

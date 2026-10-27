@@ -44,3 +44,6 @@ wt->w[1][2][15] = -0.312004; wt->set[1][2] = 1; // ont som_snv unphased_call
 wt->w[1][2][19] = -3.63615; wt->set[1][2] = 1; // ont som_snv vaf
 wt->w[1][2][20] = -1.11325; wt->set[1][2] = 1; // ont som_snv lik
 wt->w[1][2][21] = -0.734052; wt->set[1][2] = 1; // ont som_snv lik_low
+wt->w[1][3][0] = 4.64538; wt->set[1][3] = 1; // ont som_indel bias
+wt->w[1][3][20] = -0.893697; wt->set[1][3] = 1; // ont som_indel lik
+wt->w[1][3][21] = -0.331942; wt->set[1][3] = 1; // ont som_indel lik_low
