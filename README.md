@@ -246,9 +246,9 @@ the DeepSomatic paper reports:
 
 | | TP | FP | FN | recall | precision | F1 |
 |---|---|---|---|---|---|---|
-| SNVs | 3087 | 145 | 353 | 0.8974 | 0.9551 | **0.9254** |
-| indels | 54 | 12 | 79 | 0.4060 | 0.8182 | **0.5427** |
-| records | 3141 | 157 | 432 | 0.8791 | 0.9524 | 0.9143 |
+| SNVs | 3102 | 134 | 338 | 0.9017 | 0.9586 | **0.9293** |
+| indels | 57 | 10 | 76 | 0.4286 | 0.8507 | **0.5700** |
+| records | 3159 | 144 | 414 | 0.8841 | 0.9564 | 0.9188 |
 
 For comparison, Park et al. (2025, *Nat Biotechnol*) report SNV / indel F1 of 0.9536 / 0.8151 for
 DeepSomatic and 0.9310 / 0.4550 for ClairS v0.2.0 on the same benchmark. Both are trained models;
@@ -261,6 +261,12 @@ is the cost of naming phase sets after heterozygous variants only -- the same fo
 pairs that `--som-artifact-mask` would catch with `ART_DIS_TO_VAR` enabled, which it is not by
 default. Window layout and thread count both move this figure by a few calls, so a comparison
 between revisions is only meaningful at a fixed layout.
+
+The table was last re-measured at 7362241 with the same 25 Mb layout at `-t 2`, where the previous
+revision reproduced its own figures exactly (3087 / 145 / 353 and 54 / 12 / 79). The gain is the
+phasing fix that lets only anchors vote on a read's haplotype (a48c1a6: +15 true and -6 false SNVs,
++3 true and -2 false indels), plus artifact masks for every call that can come out somatic
+(ffa06e6: -5 false SNVs). The miss analysis below was made on the previous revision.
 
 The indel figure is above the ClairS number; the SNV gap to both trained models is recall, not
 precision. Of the 353 SNVs still missed, about two thirds (236) never reach the VCF at all, and
@@ -300,9 +306,13 @@ The same chromosome, truth set and high-confidence regions, on the ONT R10.4.1 t
 
 | | TP | FP | FN | recall | precision | F1 |
 |---|---|---|---|---|---|---|
-| SNVs | 2382 | 295 | 1058 | 0.6924 | 0.8898 | **0.7788** |
-| indels | 43 | 65 | 90 | 0.3233 | 0.3981 | **0.3568** |
-| records | 2425 | 364 | 1148 | 0.6787 | 0.8695 | 0.7623 |
+| SNVs | 2390 | 262 | 1050 | 0.6948 | 0.9012 | **0.7846** |
+| indels | 41 | 61 | 92 | 0.3083 | 0.4020 | **0.3489** |
+| records | 2431 | 328 | 1142 | 0.6804 | 0.8811 | 0.7678 |
+
+Re-measured at 7362241 against a same-layout baseline that reproduced the previous figures: the
+anchor-only read phasing (a48c1a6) is +8 true and -28 false SNVs and -2 true and -4 false indels,
+and the artifact masks (ffa06e6) a further -5 false SNVs.
 
 No comparator figures are quoted here: no published ONT result for chr1 inside this
 high-confidence BED has been found, and the ONT numbers that are published elsewhere are
@@ -483,7 +493,10 @@ that may form their own cluster, and the per-position allele floor inside it. It
 -- 0.05 paired HiFi, 0.15 paired ONT -- and is separately settable so that the two can be tuned
 apart. It is not raised to the single-sample 0.20 on purpose: those reads are pooled tumour and
 normal, where a clonal heterozygous somatic indel at 50% purity sits near 0.125, so a 0.20 floor
-removes the only route by which such an indel gets a consensus of its own.
+removes the only route by which such an indel gets a consensus of its own. Swept on chr1, no
+setting beat the default on both variant classes: on HiFi, 0.10 and 0.15 moved SNVs by +4-5 true
+and +1 false and indels by -1 true and +1 false; on ONT, 0.05 cost 62 false SNVs for 4 true ones,
+and 0.10 gained 2 true and 3 fewer false indels for 17 extra false SNVs.
 
 `--som-artifact-mask` selects which sequencing-artifact checks reject a somatic call, as a bit
 mask. The default (`0x7d`) leaves out three of the nine: another variant nearby (`0x002`),
