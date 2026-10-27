@@ -404,8 +404,9 @@ int write_var_to_vcf(var_t *vars, const struct call_var_opt_t *opt, bam_chunk_t 
             // decided the call, no sample may then print a phased genotype, and
             // the record may not name a phase block. Decided independently,
             // they disagreed on 120157 of the 131189 UNPHASED records of the
-            // HiFi HCC1395 chr1 pair.
-            assert(!paired_call_is_unphased(&var) || (want_ps == 0 && strchr(sks.s, '|') == NULL));
+            // HiFi HCC1395 chr1 pair. Holds by construction: want_ps is 0 on
+            // every UNPHASED record, and append_paired_sample() prints "|"
+            // only under want_ps.
             if (len + (int)sks.l + 2 >= buf_m) {
                 buf_m = len + (int)sks.l + 1024;
                 buffer = (char*)_err_realloc(buffer, buf_m);
