@@ -158,6 +158,7 @@ int init_assign_read_hap_based_on_cons_alle(bam_chunk_t *chunk, int read_i, cand
     int n_clean_conflict_snps[3] = {0, 0, 0}; // for clean vars
     for (int var_i = p[read_i].start_var_idx; var_i <= p[read_i].end_var_idx; ++var_i) {
         if ((var_i_to_cate[var_i] & target_var_cate) == 0) continue;
+        if (chunk->var_may_vote != NULL && !chunk->var_may_vote[var_i]) continue;
         cand_var_t *var = cand_vars+var_i;
         // two purposes:
         // 1. calculate hap_scores: only use HET variants
@@ -598,6 +599,14 @@ int assign_hap_based_on_germline_het_vars_kmeans(const call_var_opt_t *opt, bam_
         free(valid_var_idx); free(var_is_valid); free(all_cate_idx);
         return 0;
     }
+    // Only anchors vote on a read's haplotype. Leaving the others out of
+    // valid_var_idx kept them from steering the variant-wise passes, but the
+    // read scorer selects by category, and a tumour-only variant at a pooled
+    // VAF in the het window is a CLEAN_HET_SNP: once the first pass had filled
+    // its per-haplotype consensus it pulled reads towards its own split, normal
+    // reads included. Single-sample calling leaves this NULL (every variant is
+    // an anchor), so its phasing is untouched.
+    chunk->var_may_vote = chunk->n_samples > 1 ? var_is_valid : NULL;
 
     // 1st loop: var-wise loop
     int init_var_i = select_init_var(cand_vars, valid_var_idx, n_valid_vars, var_i_to_cate);
@@ -684,6 +693,7 @@ int assign_hap_based_on_germline_het_vars_kmeans(const call_var_opt_t *opt, bam_
     inherit_phase_set_from_anchors(cand_vars, all_cate_idx, n_all_cate, var_is_valid);
     // update PS for read & var after all iterations
     update_read_phase_set(chunk, var_is_valid, p, cand_vars);
+    chunk->var_may_vote = NULL; // var_is_valid is freed below
     free(valid_var_idx); free(var_is_valid); free(all_cate_idx);
     return 0;
 }

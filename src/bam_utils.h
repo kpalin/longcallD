@@ -125,6 +125,10 @@ typedef struct bam_chunk_t {
     // for somatic, only non-noisy regions, we don't call somatic variants in noisy regions (for now)
     int n_cand_vars; cand_var_t *cand_vars;
     int *var_i_to_cate;
+    // Which candidates may vote when a read is assigned a haplotype; NULL = all.
+    // Set only for the duration of assign_hap_based_on_germline_het_vars_kmeans(),
+    // which owns the array.
+    const int *var_may_vote;
     var_slot_counts_t *var_slots; int n_var_slots; // size: n_cand_vars; paired mode only
     //   Artifact-check bitmasks for candidates that could be somatic, indexed by
     //   candidate. Gathered at the end of step 1 because the evidence they rest
