@@ -956,7 +956,25 @@ static void classify_paired_var1(const call_var_opt_t *opt, var1_t *v) {
     // this weaker evidence rather than silently blending the two.
     v->is_unphased_call = 1;
     double n_vaf = n_dp > 0 ? (double)n_alt / n_dp : 0;
-    if (n_vaf >= opt->min_af) { v->paired_class = LONGCALLD_PAIRED_GERMLINE; return; }
+    double t_vaf = t_dp > 0 ? (double)t_alt / t_dp : 0;
+    if (n_vaf >= opt->min_af) {
+        // The normal carries it. If the tumour does not -- by the same test a
+        // grid slot is held to, on pooled counts -- the samples disagree, and
+        // that is NormalOnly. Not LOH: with no haplotypes to look at, copy loss
+        // cannot be told from a real disagreement. This test used to come after
+        // the germline return, so it could only fire on a normal below -a,
+        // which is noise, while a normal het the tumour lacked passed as
+        // GERMLINE. A variant that names a phase set stays GERMLINE: the
+        // NormalOnly verdict strips FORMAT/PS, and the block would be left
+        // named after a record that no longer reports it.
+        int normal_has_it = n_alt >= opt->min_alt_dp;
+        int tumor_has_it = t_alt >= opt->min_alt_dp && t_vaf >= opt->min_af;
+        if (normal_has_it && !tumor_has_it && !var_prints_phased_het_in_normal(opt, sc))
+            v->paired_class = LONGCALLD_PAIRED_NORMAL_ONLY;
+        else
+            v->paired_class = LONGCALLD_PAIRED_GERMLINE;
+        return;
+    }
     if (n_alt <= opt->max_hap_alt && t_alt >= min_som_alt) {
         double p = fisher_exact_test(t_alt, t_dp - t_alt, n_alt, n_dp - n_alt, opt);
         if (p <= opt->som_pval) {
@@ -966,10 +984,8 @@ static void classify_paired_var1(const call_var_opt_t *opt, var1_t *v) {
             return;
         }
     }
-    if (n_alt >= opt->min_alt_dp && t_alt <= opt->max_hap_alt) {
-        v->paired_class = LONGCALLD_PAIRED_NORMAL_ONLY; return;
-    }
-    // AMBIG
+    // A normal below -a with a few alt reads is noise, not a NormalOnly
+    // verdict: AMBIG.
 }
 
 void copy_var(cand_var_t *to_var, cand_var_t *from_var) {
