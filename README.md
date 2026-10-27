@@ -120,6 +120,7 @@ To compile longcallD with the latest code from the repository, run:
 git clone --recursive https://github.com/yangao07/longcallD.git
 cd longcallD
 make
+make test   # unit tests (eval/unit); eval/test_*.sh hold the integration checks
 ```
 
 ## Usage
@@ -229,6 +230,11 @@ between them:
 longcallD paired -t16 ref.fa tumor.bam normal.bam \
     -b tumor.phased.bam --out-normal-bam normal.phased.bam > paired.vcf
 ```
+A sample may come in several files (`-X` for the tumor, repeated `-N` for the normal); each
+output merges its sample's files by coordinate. With `-N`, the operands after the tumor are
+regions (`paired ref.fa tumor.bam -N normal.bam chr1`), so an operand there that is an existing
+file is rejected rather than looked up as a region. The `--out-*-rnames` options are single-sample
+only; with a matched normal they are rejected.
 
 #### Accuracy
 
@@ -470,6 +476,14 @@ two ask different questions -- one about alignment quality, the other about how 
 fraction is worth calling -- and now have separate fields. On ONT chr1:1-5,000,000 the decoupling
 cut somatic SNV false positives from 23 to 14 and peak RSS from 4.23 to 3.62 GB at unchanged
 recall; passing `--noisy-rat 0.05` reproduces the old coupled behaviour record for record.
+
+`--poa-min-freq` is the last threshold that still follows `-a`. It is abPOA's floor for a second
+consensus in a noisy region that has no usable phasing: the smallest share of the region's reads
+that may form their own cluster, and the per-position allele floor inside it. It defaults to `-a`
+-- 0.05 paired HiFi, 0.15 paired ONT -- and is separately settable so that the two can be tuned
+apart. It is not raised to the single-sample 0.20 on purpose: those reads are pooled tumour and
+normal, where a clonal heterozygous somatic indel at 50% purity sits near 0.125, so a 0.20 floor
+removes the only route by which such an indel gets a consensus of its own.
 
 `--som-artifact-mask` selects which sequencing-artifact checks reject a somatic call, as a bit
 mask. The default (`0x7d`) leaves out three of the nine: another variant nearby (`0x002`),
