@@ -96,6 +96,7 @@ const struct option call_var_opt [] = {
     { "min-tumor-hap-dp", 1, NULL, 0},
     { "max-hap-alt", 1, NULL, 0},
     { "noisy-rat", 1, NULL, 0},
+    { "poa-min-freq", 1, NULL, 0},
     { "max-poa-cells", 1, NULL, 0},
     { "max-poa-msa-cells", 1, NULL, 0},
     { "som-pval", 1, NULL, 0},
@@ -287,6 +288,11 @@ call_var_opt_t *call_var_init_para(void) {
     // --noisy-rat 0.05 reproduces the old, coupled output record for record,
     // so the previous behaviour stays reachable.
     opt->min_noisy_reg_ratio = LONGCALLD_NOISY_REG_RATIO;
+    // abPOA's min_freq: the smallest share of a noisy region's reads that may
+    // form a second consensus (and the per-position allele floor inside it).
+    // It still follows -a by default -- the paired presets included -- so this
+    // field only makes it separately settable; see --poa-min-freq.
+    opt->poa_min_freq = -1;
     opt->max_noisy_frac_per_read = LONGCALLD_MAX_NOISY_FRAC_PER_READ;
     opt->min_hap_full_reads = LONGCALLD_MIN_HAP_FULL_READS;
     opt->min_hap_reads = LONGCALLD_MIN_HAP_READS;
@@ -1409,6 +1415,9 @@ static void call_var_usage(void) {//main usage
     fprintf(stderr, "       --noisy-rat FLOAT  fraction of a region's reads that must look noisy before\n");
     fprintf(stderr, "                          the region is re-aligned [%.2f]; independent of -a, which\n", (double)LONGCALLD_NOISY_REG_RATIO);
     fprintf(stderr, "                          only sets how small an allele fraction is worth calling\n");
+    fprintf(stderr, "       --poa-min-freq FLOAT\n");
+    fprintf(stderr, "                          smallest share of a noisy region's reads that may form a second\n");
+    fprintf(stderr, "                          consensus when the region has no usable phasing [-a]\n");
     // fprintf(stderr, "    -p --max-ploidy  INT  max. ploidy [%d]\n", LONGCALLD_DEF_PLOID);
     fprintf(stderr, "  Low allele-frequency mosaic/somatic variant calling: (effective when -s/--mosaic/--somatic is used)\n");
     // fprintf(stderr, "    --alpha          INT  alpha value of beta-binomial distribution [%d]\n", LONGCALLD_SOMATIC_BETA_ALPHA);
@@ -1508,6 +1517,11 @@ int call_var_main_mode(int argc, char *argv[], int paired_cli) {
                     else if (strcmp(call_var_opt[op_idx].name, "min-tumor-hap-dp") == 0) opt->min_tumor_hap_dp = atoi(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "max-hap-alt") == 0) opt->max_hap_alt = atoi(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "noisy-rat") == 0) opt->min_noisy_reg_ratio = atof(optarg);
+                    else if (strcmp(call_var_opt[op_idx].name, "poa-min-freq") == 0) {
+                        opt->poa_min_freq = atof(optarg);
+                        if (!(opt->poa_min_freq > 0 && opt->poa_min_freq <= 1))
+                            _err_error_exit("--poa-min-freq must be in (0, 1]: %s\n", optarg);
+                    }
                     else if (strcmp(call_var_opt[op_idx].name, "max-poa-cells") == 0) opt->max_poa_cells = strtoll(optarg, NULL, 10);
                     else if (strcmp(call_var_opt[op_idx].name, "max-poa-msa-cells") == 0) opt->max_poa_msa_cells = strtoll(optarg, NULL, 10);
                     else if (strcmp(call_var_opt[op_idx].name, "som-pval") == 0) { opt->som_pval = atof(optarg); opt->som_pval_set = 1; }
@@ -1596,6 +1610,7 @@ int call_var_main_mode(int argc, char *argv[], int paired_cli) {
         }
     }
     finalise_sample_layout(opt);
+    if (opt->poa_min_freq < 0) opt->poa_min_freq = opt->min_af; // after the paired -a presets
     // Paired records carry two sample columns and no ALTREADS field.
     if (opt->n_samples > 1 && (opt->output_var_rnames || opt->output_sv_rnames || opt->output_somatic_var_rnames))
         _err_error_exit("--out-var-rnames, --out-sv-rnames and --out-som-var-rnames are not supported with a matched normal.\n");

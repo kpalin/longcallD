@@ -819,7 +819,7 @@ int abpoa_partial_aln_msa_cons(const call_var_opt_t *opt, abpoa_t *ab, int sampl
     abpt->inc_path_score = 1;
     if (cons_lens != NULL && cons_seqs != NULL) abpt->out_cons = 1; else abpt->out_cons = 0;
     if (msa_seq_lens != NULL && msa_seqs != NULL) abpt->out_msa = 1; else abpt->out_msa = 0;
-    abpt->max_n_cons = max_n_cons; abpt->min_freq = opt->min_af;
+    abpt->max_n_cons = max_n_cons; abpt->min_freq = opt->poa_min_freq;
     abpt->match = opt->match; abpt->mismatch = opt->mismatch;
     abpt->gap_open1 = opt->gap_open1; abpt->gap_ext1 = opt->gap_ext1;
     abpt->gap_open2 = opt->gap_open2; abpt->gap_ext2 = opt->gap_ext2;
@@ -964,7 +964,7 @@ int abpoa_partial_aln_msa_cons(const call_var_opt_t *opt, abpoa_t *ab, int sampl
     if (msa_seq != NULL && msa_seq_len != NULL) abpt->out_msa = 1; else abpt->out_msa = 0;
     if (LONGCALLD_VERBOSE >= 2) abpt->out_msa = 1;
     abpt->cons_algrm = ABPOA_MF;
-    abpt->max_n_cons = max_n_cons; abpt->min_freq = opt->min_af;
+    abpt->max_n_cons = max_n_cons; abpt->min_freq = opt->poa_min_freq;
     abpt->match = opt->match; abpt->mismatch = opt->mismatch;
     abpt->gap_open1 = opt->gap_open1; abpt->gap_ext1 = opt->gap_ext1;
     abpt->gap_open2 = opt->gap_open2; abpt->gap_ext2 = opt->gap_ext2;

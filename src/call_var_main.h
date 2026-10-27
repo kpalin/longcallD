@@ -401,6 +401,7 @@ typedef struct call_var_opt_t {
     int64_t max_poa_msa_cells; // same, for the unbanded whole-MSA call site
     double max_var_ratio_per_read, max_noisy_frac_per_read;
     double min_noisy_reg_ratio; // fraction of noisy reads that triggers re-alignment
+    double poa_min_freq;        // abPOA min_freq for a second consensus; < 0 = follow min_af
     int min_hap_full_reads, min_hap_reads; //, min_no_hap_full_reads;
     // alignment
     int match, mismatch, gap_open1, gap_ext1, gap_open2, gap_ext2;
