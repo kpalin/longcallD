@@ -1071,40 +1071,66 @@ static int passthrough_keeps_sort_order(call_var_opt_t *opt, bam_hdr_t *header) 
 //
 // Our HP/PS are stripped: these reads were never phased, so carrying a tag over
 // from the input would misattribute someone else's phasing to us.
+static void strip_hp_ps(bam1_t *b) {
+    uint8_t *hp = bam_aux_get(b, "HP"); if (hp != NULL) bam_aux_del(b, hp);
+    uint8_t *ps = bam_aux_get(b, "PS"); if (ps != NULL) bam_aux_del(b, ps);
+}
+
+// Contig-major, and merged across the sample's files. A sample can have
+// several input files (-X, -L, repeated -N) feeding one output; walking them
+// file by file wrote file 2's chrM after file 1's chrUn and after file 1's
+// unmapped reads, and the output's sortedness check ended the run at the
+// very end. Ties on position go to the earlier file, so the output is
+// reproducible.
 static int64_t write_passthrough_records(call_var_opt_t *opt, bam_hdr_t *header) {
     int64_t n = 0;
-    bam1_t *b = bam_init1();
-    for (int i = 0; i < opt->n_in_bam_fn; ++i) {
-        samFile *in_bam = opt->bams[i]; hts_idx_t *idx = opt->idxs[i];
-        if (in_bam == NULL || idx == NULL) continue;
-        int smp = opt->bam_i_to_sample != NULL ? opt->bam_i_to_sample[i] : 0;
-        aln_out_t *out = (smp >= 0 && smp < LONGCALLD_MAX_SAMPLES) ? opt->aln_outs[smp] : NULL;
+    int n_fn = opt->n_in_bam_fn;
+    int *fi = (int*)_err_malloc(n_fn * sizeof(int));
+    hts_itr_t **iters = (hts_itr_t**)_err_calloc(n_fn, sizeof(hts_itr_t*));
+    bam1_t **recs = (bam1_t**)_err_malloc(n_fn * sizeof(bam1_t*));
+    int *live = (int*)_err_calloc(n_fn, sizeof(int));
+    for (int k = 0; k < n_fn; ++k) recs[k] = bam_init1();
+    for (int smp = 0; smp < LONGCALLD_MAX_SAMPLES; ++smp) {
+        aln_out_t *out = opt->aln_outs[smp];
         if (out == NULL) continue; // this sample has no alignment output
+        int n_f = 0;
+        for (int i = 0; i < n_fn; ++i) {
+            int s = opt->bam_i_to_sample != NULL ? opt->bam_i_to_sample[i] : 0;
+            if (s == smp && opt->bams[i] != NULL && opt->idxs[i] != NULL) fi[n_f++] = i;
+        }
         for (int t = 0; t < header->n_targets; ++t) {
             if (!skip_target_region(opt, header->target_name[t])) continue;
-            hts_itr_t *iter = sam_itr_queryi(idx, t, 0, header->target_len[t]);
-            if (iter == NULL) continue;
-            while (sam_itr_next(in_bam, iter, b) >= 0) {
-                uint8_t *hp = bam_aux_get(b, "HP"); if (hp != NULL) bam_aux_del(b, hp);
-                uint8_t *ps = bam_aux_get(b, "PS"); if (ps != NULL) bam_aux_del(b, ps);
-                aln_out_push(out, b, header->target_name[t]);
-                n++;
+            for (int k = 0; k < n_f; ++k) {
+                iters[k] = sam_itr_queryi(opt->idxs[fi[k]], t, 0, header->target_len[t]);
+                live[k] = iters[k] != NULL && sam_itr_next(opt->bams[fi[k]], iters[k], recs[k]) >= 0;
             }
-            hts_itr_destroy(iter);
+            while (1) {
+                int best = -1;
+                for (int k = 0; k < n_f; ++k)
+                    if (live[k] && (best < 0 || recs[k]->core.pos < recs[best]->core.pos)) best = k;
+                if (best < 0) break;
+                strip_hp_ps(recs[best]);
+                aln_out_push(out, recs[best], header->target_name[t]);
+                n++;
+                live[best] = sam_itr_next(opt->bams[fi[best]], iters[best], recs[best]) >= 0;
+            }
+            for (int k = 0; k < n_f; ++k) { if (iters[k] != NULL) hts_itr_destroy(iters[k]); iters[k] = NULL; }
         }
-        // Unmapped reads with no coordinate; these sort after everything placed.
-        hts_itr_t *iter = sam_itr_queryi(idx, HTS_IDX_NOCOOR, 0, 0);
-        if (iter != NULL) {
-            while (sam_itr_next(in_bam, iter, b) >= 0) {
-                uint8_t *hp = bam_aux_get(b, "HP"); if (hp != NULL) bam_aux_del(b, hp);
-                uint8_t *ps = bam_aux_get(b, "PS"); if (ps != NULL) bam_aux_del(b, ps);
-                aln_out_push(out, b, "*");
+        // Unmapped reads with no coordinate; these sort after everything placed,
+        // so every file's placed records must already be out.
+        for (int k = 0; k < n_f; ++k) {
+            hts_itr_t *iter = sam_itr_queryi(opt->idxs[fi[k]], HTS_IDX_NOCOOR, 0, 0);
+            if (iter == NULL) continue;
+            while (sam_itr_next(opt->bams[fi[k]], iter, recs[k]) >= 0) {
+                strip_hp_ps(recs[k]);
+                aln_out_push(out, recs[k], "*");
                 n++;
             }
             hts_itr_destroy(iter);
         }
     }
-    bam_destroy1(b);
+    for (int k = 0; k < n_fn; ++k) bam_destroy1(recs[k]);
+    free(fi); free(iters); free(recs); free(live);
     return n;
 }
 
