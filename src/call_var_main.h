@@ -483,6 +483,8 @@ typedef struct call_var_step_t {
     var_t *vars; // output, size: n_chunks
 } call_var_step_t;
 
+call_var_opt_t *call_var_init_para(void);
+void call_var_free_para(call_var_opt_t *opt);
 int call_var_main(int argc, char *argv[]);
 int paired_var_main(int argc, char *argv[]);
 int call_var_main_mode(int argc, char *argv[], int paired_cli);

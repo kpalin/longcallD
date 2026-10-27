@@ -232,7 +232,17 @@ $(SRC_DIR)/align.o: $(SRC_DIR)/align.c
 # layout mismatch instead of failing to compile.
 -include $(OBJS:.o=.d)
 
-.PHONY: all hts_all abpoa_all wfa2_all clean clean_all clean_hts clean_abpoa clean_wfa2
+# Unit tests: link every object but main.o into each eval/unit/test_*.c.
+UNIT_SRCS = $(wildcard eval/unit/test_*.c)
+UNIT_BINS = $(UNIT_SRCS:.c=)
+LIB_OBJS  = $(filter-out $(SRC_DIR)/main.o,$(OBJS))
+eval/unit/test_%: eval/unit/test_%.c $(LIB_OBJS) $(ABPOA_LIB) $(HTSLIB) $(WFA2_LIB)
+	$(CC) -c $(CFLAGS) $(INCLUDE) -I$(SRC_DIR) $< -o $@.o
+	$(CXX) $(BIN_LDFLAGS) $@.o $(LIB_OBJS) -o $@ $(LIB)
+test: $(UNIT_BINS)
+	@for t in $(UNIT_BINS); do echo "== $$t"; ./$$t || exit 1; done
+
+.PHONY: all hts_all abpoa_all wfa2_all clean clean_all clean_hts clean_abpoa clean_wfa2 test
 
 clean:
 	rm -f $(SRC_DIR)/*.o $(SRC_DIR)/*.d $(EDLIB_DIR)/src/*.d $(BIN) .build-mode .build-version

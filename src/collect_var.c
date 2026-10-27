@@ -784,7 +784,7 @@ static int paired_var_is_te_exempt(const call_var_opt_t *opt, const var1_t *v) {
 
 static void classify_paired_var1(const call_var_opt_t *opt, var1_t *v);
 
-static void classify_paired_var(const call_var_opt_t *opt, var1_t *v) {
+void classify_paired_var(const call_var_opt_t *opt, var1_t *v) {
     classify_paired_var1(opt, v);
     if (v->paired_class != LONGCALLD_PAIRED_SOMATIC) return;
     // The floor is there for polymerase slippage, which does not make a

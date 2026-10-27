@@ -72,3 +72,7 @@ pg
 .build-mode
 # commit stamp, so the embedded version matches the build
 .build-version
+
+# unit test binaries (eval/unit/test_*.c are the sources)
+eval/unit/test_*
+!eval/unit/test_*.c

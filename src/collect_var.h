@@ -151,6 +151,10 @@ void make_var_main(struct call_var_step_t *step, struct bam_chunk_t *chunk, stru
 void stitch_var_main(struct call_var_step_t *step, struct bam_chunk_t *bam_chunk);
 struct var_slot_counts_t;
 void free_cand_vars(struct cand_var_t *cand_vars, int m);
+// The paired verdict for one record from its slot grid, VAF floor included
+// (the artifact masks are applied by the caller). Exported for eval/unit.
+struct var1_t;
+void classify_paired_var(const struct call_var_opt_t *opt, struct var1_t *v);
 // Somatic calls demoted because step 1 computed no artifact mask for them.
 int64_t paired_somatic_unmasked_count(void);
 // Shared with the VCF writer so the two cannot drift apart: see collect_var.c.

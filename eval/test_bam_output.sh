@@ -185,6 +185,23 @@ chk "unmapped records come last" 0 "$(samtools view "$T/pass.bam" | awk '{if($3=
 chk "qname+flag multiset preserved" same \
     "$([[ "$(samtools view "$T/mixed.bam" | awk '{print $1"_"$2}' | sort | md5sum)" == "$(samtools view "$T/pass.bam" | awk '{print $1"_"$2}' | sort | md5sum)" ]] && echo same || echo differs)"
 
+# The same records split across two input files of one sample (-X). The
+# passthrough used to walk the files one after the other, so file 2's
+# excluded-contig records came after file 1's unmapped ones and the run died
+# at the very end with a truncated BAM.
+samtools view "$T/mixed.bam" | awk '{print $1}' | sort -u | awk 'NR%2' > "$T/names_a"
+for half in a b; do
+  { samtools view --no-PG -H "$T/mixed.bam"
+    samtools view "$T/mixed.bam" | awk -v f="$T/names_a" -v want=$half 'BEGIN{while((getline n < f)>0) a[n]=1} (want=="a") == ($1 in a)'
+  } | samtools sort -o "$T/split_$half.bam" - 2>/dev/null
+  samtools index "$T/split_$half.bam"
+done
+"$BIN" call --refine-aln "$REF" "$T/split_a.bam" -X "$T/split_b.bam" -t 2 -b "$T/split.out.bam" -o /dev/null >/dev/null 2>&1
+chk "two input files: run succeeds" 0 "$?"
+chk "two input files: every record kept" "$n_mixed" "$(samtools view -c "$T/split.out.bam")"
+chk "two input files: coordinate-sorted" 0 "$(samtools view "$T/split.out.bam" | awk '$3!="*"{if($3==p3 && $4<p4) n++; p3=$3;p4=$4} END{print n+0}')"
+chk "two input files: unmapped come last" 0 "$(samtools view "$T/split.out.bam" | awk '{if($3=="*") seen=1; else if(seen) n++} END{print n+0}')"
+
 # Opting out must drop exactly those records and stay sorted.
 "$BIN" call --refine-aln --no-out-aln-passthrough "$REF" "$T/mixed.bam" -t 1 -b "$T/nopass.bam" -o /dev/null >/dev/null 2>&1
 chk "--no-out-aln-passthrough omits them" "$((n_mixed - 13))" "$(samtools view -c "$T/nopass.bam")"
