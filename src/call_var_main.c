@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <getopt.h>
 #include <string.h>
+#include <unistd.h>
 #ifdef __linux__
 #include <sys/sysinfo.h>  // Linux-specific
 #elif __APPLE__
@@ -1245,6 +1246,14 @@ static void *call_var_worker_pipeline(void *shared, int step, void *in) { // kt_
     return 0;
 }
 
+// An output that cannot be opened has to stop the run at once: unchecked, a
+// mistyped --out-normal-bam path ran to completion and silently wrote no BAM.
+static htsFile *open_aln_out_file(const char *fn, const char *mode) {
+    htsFile *fp = hts_open(fn, mode);
+    if (fp == NULL) _err_error_exit("Could not open %s for writing.\n", fn);
+    return fp;
+}
+
 // 0 = `call`, 1 = `paired`. One option table and one usage function serve
 // both; the subcommand only changes the synopsis line and which options are
 // worth showing first.
@@ -1332,7 +1341,7 @@ static void call_var_usage(void) {//main usage
     fprintf(stderr, "       --min-unphased-reads INT\n");
     fprintf(stderr, "                          reads with no haplotype that --max-unphased-frac has to represent\n");
     fprintf(stderr, "                          before the grid is distrusted [%d]. At 1, one unassigned read in a\n", LONGCALLD_MIN_UNPHASED_READS);
-    fprintf(stderr, "                          30x sample is 3%%%% and diverts the call on its own\n");
+    fprintf(stderr, "                          30x sample is 3%% and diverts the call on its own\n");
     fprintf(stderr, "       --max-hap-alt-frac FLOAT\n");
     fprintf(stderr, "                          alt reads tolerated in a slot that should be clean, as a fraction\n");
     fprintf(stderr, "                          of that slot's own depth [%.2f]; used alongside --max-hap-alt\n", (double)LONGCALLD_MAX_HAP_ALT_FRAC);
@@ -1517,9 +1526,9 @@ int call_var_main_mode(int argc, char *argv[], int paired_cli) {
                     else if (strcmp(call_var_opt[op_idx].name, "min-normal-phase-af") == 0) opt->min_normal_phase_af = atof(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "max-normal-phase-af") == 0) opt->max_normal_phase_af = atof(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "no-out-aln-passthrough") == 0) opt->out_aln_passthrough = 0;
-                    else if (strcmp(call_var_opt[op_idx].name, "out-normal-bam") == 0)  { opt->out_naln_fp = hts_open(optarg, "wb"); opt->out_naln_is_cram = 0; }
-                    else if (strcmp(call_var_opt[op_idx].name, "out-normal-cram") == 0) { opt->out_naln_fp = hts_open(optarg, "wc"); opt->out_naln_is_cram = 1; }
-                    else if (strcmp(call_var_opt[op_idx].name, "out-normal-sam") == 0)  { opt->out_naln_fp = hts_open(optarg, "w");  opt->out_naln_is_cram = 0; }
+                    else if (strcmp(call_var_opt[op_idx].name, "out-normal-bam") == 0)  { opt->out_naln_fp = open_aln_out_file(optarg, "wb"); opt->out_naln_is_cram = 0; }
+                    else if (strcmp(call_var_opt[op_idx].name, "out-normal-cram") == 0) { opt->out_naln_fp = open_aln_out_file(optarg, "wc"); opt->out_naln_is_cram = 1; }
+                    else if (strcmp(call_var_opt[op_idx].name, "out-normal-sam") == 0)  { opt->out_naln_fp = open_aln_out_file(optarg, "w");  opt->out_naln_is_cram = 0; }
                     else if (strcmp(call_var_opt[op_idx].name, "tumor-name") == 0 ||
                              strcmp(call_var_opt[op_idx].name, "tumour-name") == 0) { free(opt->tumor_name); opt->tumor_name = strdup(optarg); }
                     else if (strcmp(call_var_opt[op_idx].name, "normal-name") == 0) { free(opt->normal_name); opt->normal_name = strdup(optarg); }
@@ -1529,9 +1538,9 @@ int call_var_main_mode(int argc, char *argv[], int paired_cli) {
             case 'E': set_exclude_ctg(opt, optarg); break;
             case 'X': set_extra_input_bam(opt, optarg); break;
             case 'N': set_normal_input_bam(opt, optarg); break;
-            case 'b': opt->out_aln_fp = hts_open(optarg, "wb"); opt->out_aln_is_cram = 0; break;
-            case 'C': opt->out_aln_fp = hts_open(optarg, "wc"); opt->out_aln_is_cram = 1; break;
-            case 'S': opt->out_aln_fp = hts_open(optarg, "w"); opt->out_aln_is_cram = 0; break;
+            case 'b': opt->out_aln_fp = open_aln_out_file(optarg, "wb"); opt->out_aln_is_cram = 0; break;
+            case 'C': opt->out_aln_fp = open_aln_out_file(optarg, "wc"); opt->out_aln_is_cram = 1; break;
+            case 'S': opt->out_aln_fp = open_aln_out_file(optarg, "w"); opt->out_aln_is_cram = 0; break;
             case 'c': opt->min_dp = atoi(optarg); break;
             case 'd': opt->min_alt_dp = atoi(optarg); break;
             case 'a': opt->min_af = atof(optarg); opt->min_af_set = 1; break;
@@ -1577,9 +1586,22 @@ int call_var_main_mode(int argc, char *argv[], int paired_cli) {
                 call_var_usage();
             }
             set_normal_input_bam(opt, argv[optind++]);
+        } else if (paired_cli && optind < argc && access(argv[optind], F_OK) == 0) {
+            // With -N the operands after the tumour are regions, which is
+            // what lets `paired ref T -N N chr1` work. An operand that is an
+            // existing file was almost certainly meant as a second normal,
+            // and was being looked up as a region name.
+            _err_error_exit("With -N/--normal, the operands after the tumour are regions, but '%s' is a file. "
+                            "Give every normal with -N, or none of them.\n", argv[optind]);
         }
     }
     finalise_sample_layout(opt);
+    // Paired records carry two sample columns and no ALTREADS field.
+    if (opt->n_samples > 1 && (opt->output_var_rnames || opt->output_sv_rnames || opt->output_somatic_var_rnames))
+        _err_error_exit("--out-var-rnames, --out-sv-rnames and --out-som-var-rnames are not supported with a matched normal.\n");
+    opt->dbg_artchk = getenv("LONGCALLD_ARTCHK") != NULL;
+    opt->dbg_slotchk = getenv("LONGCALLD_SLOTCHK") != NULL;
+    opt->dbg_qualchk = getenv("LONGCALLD_QUALCHK") != NULL;
     if (opt->out_naln_fp != NULL && opt->n_samples < 2)
         _err_error_exit("--out-normal-bam/-cram/-sam needs a matched normal; supply one with -N/--normal.\n");
     // check if hifi and ont are both set

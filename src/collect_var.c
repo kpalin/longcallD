@@ -694,7 +694,7 @@ static int som_artifact_mask_for(const call_var_opt_t *opt, const var1_t *v) {
 static void collect_paired_somatic_artifact_masks(const call_var_opt_t *opt, bam_chunk_t *chunk) {
     if (chunk->n_cand_vars <= 0 || chunk->read_var_cr == NULL) return;
     if (opt->som_artifact_mask == 0 && opt->som_artifact_mask_indel == 0 &&
-        getenv("LONGCALLD_ARTCHK") == NULL) return; // nothing will consume them
+        !opt->dbg_artchk) return; // nothing will consume them
     // Not a redundant recompute: the slots built in
     // assign_hap_based_on_germline_het_vars_kmeans() predate haplotype
     // assignment, and picking which haplotype carries the alt needs the
@@ -2343,7 +2343,7 @@ int make_variants(const call_var_opt_t *opt, bam_chunk_t *chunk, var_t **_var) {
                     // INDEL_ERR, and with one or two reads STRAND is a coin toss.
                     if (paired_var_is_te_exempt(opt, var->vars + i))
                         art_mask &= LONGCALLD_ART_DENSE_DIFF | LONGCALLD_ART_LONG_CLIP;
-                    if (getenv("LONGCALLD_ARTCHK") != NULL)
+                    if (opt->dbg_artchk)
                         fprintf(stderr, "ARTCHK\t%" PRId64 "\t%d\t%d\t%d\t%.4f\t%d\n", var->vars[i].pos, art,
                                 var->vars[i].type == BAM_CDIFF, var->vars[i].is_unphased_call, var->vars[i].hap_vaf,
                                 art_mask);
@@ -2357,7 +2357,7 @@ int make_variants(const call_var_opt_t *opt, bam_chunk_t *chunk, var_t **_var) {
         // LONGCALLD_SLOTCHK=1 dumps the per-(sample, haplotype) tallies beside the
         // pooled counters, so the two can be cross-checked on real data. See
         // eval/test_slot_counts.sh. Off unless the variable is set.
-        if (chunk->var_slots != NULL && getenv("LONGCALLD_SLOTCHK") != NULL) {
+        if (chunk->var_slots != NULL && opt->dbg_slotchk) {
             var_slot_counts_t *sc = chunk->var_slots + cand_i;
             int tot_dp = 0, tot_alt = 0; // across all samples, so the columns mean the same thing in both modes
             for (int smp = 0; smp < sc->n_samples; ++smp) { tot_dp += smp_dp(sc, smp); tot_alt += smp_alt(sc, smp); }

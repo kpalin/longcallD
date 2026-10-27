@@ -439,6 +439,9 @@ typedef struct call_var_opt_t {
     int min_qual;                   // FILTER LowQual below this; 0 = off
     char *qual_weights_fn; var_qual_weights_t *vq_weights;
     int8_t no_vcf_header, out_amb_base, out_somatic, out_methylation;
+    // LONGCALLD_ARTCHK / SLOTCHK / QUALCHK debug dumps, read once at start-up
+    // rather than per variant in the worker threads.
+    int8_t dbg_artchk, dbg_slotchk, dbg_qualchk;
 } call_var_opt_t;
 
 typedef struct {

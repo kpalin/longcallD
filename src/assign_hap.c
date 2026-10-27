@@ -1683,7 +1683,7 @@ int paired_somatic_artifact_mask(const call_var_opt_t *opt, bam_chunk_t *chunk,
     if (ovlp_n > 0) {
         cand_somatic_var_aux_info_t *aux = collect_somatic_var_aux_info(opt, chunk, ps, alt_hap, var_i, ovlp_n, ovlp_b);
         m = somatic_artifact_mask1(opt, chunk, aux);
-        if (getenv("LONGCALLD_ARTCHK") != NULL) {
+        if (opt->dbg_artchk) {
             int n = aux->hap_alt_dp;
             fprintf(stderr, "ARTRAW\t%" PRId64 "\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n",
                     chunk->cand_vars[var_i].pos, alt_hap, m, n,

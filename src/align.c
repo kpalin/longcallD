@@ -795,12 +795,13 @@ int abpoa_partial_aln_msa_cons(const call_var_opt_t *opt, abpoa_t *ab, int sampl
             if (read_lens[i] > max_len) max_len = read_lens[i];
         }
         if (sum_len * max_len > opt->max_poa_cells) {
-            static int n_warned = 0;
-            if (n_warned < 5) {
+            static int n_warned = 0; // shared by the worker threads
+            int nw = __atomic_add_fetch(&n_warned, 1, __ATOMIC_RELAXED);
+            if (nw <= 5) {
                 _err_warning("Skipping a partial-order alignment of %d reads (%" PRId64 " bp, longest %" PRId64 " bp): "
                              "it needs %.3g DP cells, over the --max-poa-cells budget of %.3g.%s\n",
                              n_reads, sum_len, max_len, (double)(sum_len * max_len), (double)opt->max_poa_cells,
-                             ++n_warned == 5 ? " Further such warnings suppressed." : "");
+                             nw == 5 ? " Further such warnings suppressed." : "");
             }
             return 0;
         }
@@ -942,12 +943,13 @@ int abpoa_partial_aln_msa_cons(const call_var_opt_t *opt, abpoa_t *ab, int sampl
             if (read_lens[i] > max_len) max_len = read_lens[i];
         }
         if (sum_len * max_len > opt->max_poa_msa_cells) {
-            static int n_warned = 0;
-            if (n_warned < 5) {
+            static int n_warned = 0; // shared by the worker threads
+            int nw = __atomic_add_fetch(&n_warned, 1, __ATOMIC_RELAXED);
+            if (nw <= 5) {
                 _err_warning("Skipping a multiple alignment of %d reads (%" PRId64 " bp, longest %" PRId64 " bp): "
                              "it needs %.3g DP cells, over the --max-poa-msa-cells budget of %.3g.%s\n",
                              n_reads, sum_len, max_len, (double)(sum_len * max_len), (double)opt->max_poa_msa_cells,
-                             ++n_warned == 5 ? " Further such warnings suppressed." : "");
+                             nw == 5 ? " Further such warnings suppressed." : "");
             }
             return 0;
         }

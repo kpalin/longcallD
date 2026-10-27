@@ -52,7 +52,7 @@ void write_vcf_header(bam_hdr_t *hdr, struct call_var_opt_t *opt) {
 
     // FILTER fields
     bcf_hdr_append(vcf_hdr, "##FILTER=<ID=PASS,Description=\"All filters passed\">");
-    {
+    if (opt->min_qual > 0) { // declared only when it can be set
         char lq[256];
         snprintf(lq, sizeof(lq), "##FILTER=<ID=LowQual,Description=\"QUAL below --min-qual %d\">", opt->min_qual);
         bcf_hdr_append(vcf_hdr, lq);
@@ -98,7 +98,7 @@ void write_vcf_header(bam_hdr_t *hdr, struct call_var_opt_t *opt) {
     bcf_hdr_append(vcf_hdr, "##INFO=<ID=BQRS,Number=1,Type=Float,Description=\"Rank-sum z of alt against ref base quality; negative: alt lower\">");
     bcf_hdr_append(vcf_hdr, "##INFO=<ID=RU,Number=1,Type=String,Description=\"Repeat unit of the homopolymer or tandem repeat at the variant\">");
     bcf_hdr_append(vcf_hdr, "##INFO=<ID=RPL,Number=1,Type=Integer,Description=\"Length in reference bases of that repeat tract\">");
-    if (getenv("LONGCALLD_QUALCHK") != NULL)
+    if (opt->dbg_qualchk)
         bcf_hdr_append(vcf_hdr, "##INFO=<ID=QF,Number=.,Type=Float,Description=\"Debug: quality class, model P(false) (0 where none is set), then the model features in var_qual.h order\">");
 
     // FORMAT fields
@@ -111,8 +111,9 @@ void write_vcf_header(bam_hdr_t *hdr, struct call_var_opt_t *opt) {
     bcf_hdr_append(vcf_hdr, "##FORMAT=<ID=UPR,Number=2,Type=Integer,Description=\"Unphased reads: of all reads, and of alt reads, those with no haplotype in the site's phase block\">");
     bcf_hdr_append(vcf_hdr, "##FORMAT=<ID=UPF,Number=2,Type=Float,Description=\"Unphased proportion: UPR over this sample's DP, and over its alt reads\">");
     bcf_hdr_append(vcf_hdr, "##FORMAT=<ID=PS,Number=1,Type=Integer,Description=\"Phase set\">");
-    // per-sample variant supporting read IDs
-    bcf_hdr_append(vcf_hdr, "##FORMAT=<ID=ALTREADS,Number=.,Type=String,Description=\"IDs of reads supporting the variant\">");
+    // per-sample variant supporting read IDs; the paired writer has none
+    if (opt->n_samples <= 1)
+        bcf_hdr_append(vcf_hdr, "##FORMAT=<ID=ALTREADS,Number=.,Type=String,Description=\"IDs of reads supporting the variant\">");
     if (opt->n_samples > 1) {
         bcf_hdr_append(vcf_hdr, "##FORMAT=<ID=HDP,Number=2,Type=Integer,Description=\"Depth on haplotype 1 and 2\">");
         bcf_hdr_append(vcf_hdr, "##FORMAT=<ID=HAD,Number=2,Type=Integer,Description=\"Alt depth on haplotype 1 and 2\">");
@@ -184,12 +185,12 @@ static void append_unphased_fields(kstring_t *ks, const var1_t *v, int smp) {
 }
 
 // INFO fields behind QUAL.
-static void append_qual_info(kstring_t *ks, const var1_t *v) {
+static void append_qual_info(kstring_t *ks, const struct call_var_opt_t *opt, const var1_t *v) {
     const var_qual_t *q = &v->vq;
     if (!q->is_set) return;
     ksprintf(ks, ";QLIK=%.1f;SOR=%.3f;MQRS=%.2f;BQRS=%.2f", q->qlik, q->sor, q->mq_rs, q->bq_rs);
     if (q->rep_period > 0 && q->rep_unit[0] != '\0') ksprintf(ks, ";RU=%s;RPL=%d", q->rep_unit, q->rep_len);
-    if (getenv("LONGCALLD_QUALCHK") != NULL) {
+    if (opt->dbg_qualchk) {
         ksprintf(ks, ";QF=%d,%.4g", q->vq_class, q->p_art);
         for (int f = 0; f < VQF_N; ++f) ksprintf(ks, ",%.4g", q->feat[f]);
     }
@@ -367,7 +368,7 @@ int write_var_to_vcf(var_t *vars, const struct call_var_opt_t *opt, bam_chunk_t 
         }
         {
             kstring_t qks = KS_INITIALIZE;
-            append_qual_info(&qks, &var);
+            append_qual_info(&qks, opt, &var);
             if (qks.l > 0) {
                 if (len + (int)qks.l + 2 >= buf_m) { buf_m = len + (int)qks.l + 1024; buffer = (char*)_err_realloc(buffer, buf_m); }
                 len += snprintf(buffer + len, buf_m - len, "%s", qks.s);
