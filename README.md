@@ -635,7 +635,11 @@ Pass `w.txt` to `--qual-weights`, or rebuild the defaults with
 holds the fits shipped here.
 
 `QUAL` is written to one decimal. A calibrated score whose whole range is a few units -- ONT
-somatic indels top out near 7 -- loses most of its ranking to ties when rounded to an integer.
+somatic indels top out near 7 -- loses its ranking to ties when rounded to an integer: on HCC1395
+chr1 the decimal restored their best F1 cut to QLIK's (0.404, from 0.396). It does not undo the
+model's own saturation: every fitted cell sees `QLIK` only up to 60, so the 22 ONT somatic indels at
+`QLIK` 60 or more all score 7.0 (8 of them false), and `INFO/QLIK` still ranks that class better
+(AUPRC 0.683 against 0.631).
 
 `--min-qual N` sets the `LowQual` filter on records below `N`, comparing against that one-decimal
 value (so 3.6 is below 4); it is off by default, so `PASS` is unchanged. `--qual-weights FILE` replaces the built-in weights (`none` clears them, leaving
