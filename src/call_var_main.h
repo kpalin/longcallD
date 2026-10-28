@@ -322,7 +322,11 @@ typedef struct var1_t {
     int n_alt_allele; // currently, only one alt allele
     uint8_t **alt_bases; int *alt_len;
     int DP, AD[2]; uint8_t GT[2]; // DP/AD/GT
-    int QUAL, GQ; // phred-scaled; see var_qual.h. GQ is the first sample's; paired GQ is per sample, from vq.pl
+    // Phred-scaled; see var_qual.h. QUAL is kept to one decimal: a calibrated score
+    // whose whole range is a few units (ONT somatic indels top out near 7) loses
+    // its ranking to ties when rounded to an integer. GQ is the first sample's;
+    // paired GQ is per sample, from vq.pl.
+    float QUAL; int GQ;
     var_qual_t vq; // likelihoods, PL, artifact features and repeat context behind QUAL/GQ
     int *alt_read_i;
 

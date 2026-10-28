@@ -59,9 +59,9 @@ for tag in PL UPR UPF; do
 done
 chk "bcftools accepts the records" 0 "$(bcftools view "$T/full.vcf" >/dev/null 2>&1; echo $?)"
 chk "single: GQ follows from PL and GT in every record" 0 "$(gq_check "$T/full.vcf")"
-# With no model set, QUAL is QLIK rounded (and capped at 999, where QLIK is not).
+# With no model set, QUAL is QLIK to one decimal (and capped at 999, where QLIK is not).
 chk "single: without a model QUAL is QLIK" 0 \
-    "$(awk -F'\t' '!/^#/ { if (match($8, /QLIK=[0-9.]+/)) { q = substr($8, RSTART+5, RLENGTH-5) + 0; if (q > 999) q = 999; if ($6 - q > 0.55 || q - $6 > 0.55) b++ } } END {print b+0}' "$T/full.vcf")"
+    "$(awk -F'\t' '!/^#/ { if (match($8, /QLIK=[0-9.]+/)) { q = substr($8, RSTART+5, RLENGTH-5) + 0; if (q > 999) q = 999; if ($6 - q > 0.06 || q - $6 > 0.06) b++ } } END {print b+0}' "$T/full.vcf")"
 # The built-in model must still produce valid records.
 "$BIN" call --hifi "$REF" "$HIFI" -t 1 -o "$T/model.vcf" 2>/dev/null
 chk "single: the built-in model scores the same records" "$nrec" "$(grep -vc '^#' "$T/model.vcf")"

@@ -325,10 +325,10 @@ int write_var_to_vcf(var_t *vars, const struct call_var_opt_t *opt, bam_chunk_t 
         if (opt->n_samples > 1) {
             kstring_t fks = KS_INITIALIZE;
             append_paired_filter(&fks, opt, &var);
-            len += snprintf(buffer + len, buf_m - len, "\t%d\t%s\t", var.QUAL, fks.s ? fks.s : "PASS");
+            len += snprintf(buffer + len, buf_m - len, "\t%.1f\t%s\t", var.QUAL, fks.s ? fks.s : "PASS");
             ks_free(&fks);
         } else {
-            len += snprintf(buffer + len, buf_m - len, "\t%d\t%s\t", var.QUAL,
+            len += snprintf(buffer + len, buf_m - len, "\t%.1f\t%s\t", var.QUAL,
                             (opt->min_qual > 0 && var.QUAL < opt->min_qual) ? "LowQual" : "PASS");
         }
         if (var.is_clean) len += snprintf(buffer + len, buf_m - len, "CLEAN;");

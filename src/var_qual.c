@@ -625,8 +625,8 @@ void score_var_quality(const call_var_opt_t *opt, var_qual_acc_t *acc, int med_d
         qual = -10.0 * ln_p / M_LN10;
     }
     if (qual < 0) qual = 0;
-    v->QUAL = (int)(qual + 0.5);
-    if (v->QUAL > opt->max_qual) v->QUAL = opt->max_qual;
+    if (qual > opt->max_qual) qual = opt->max_qual;
+    v->QUAL = (float)(floor(qual * 10.0 + 0.5) / 10.0); // one decimal, as printed
     v->GQ = var_qual_gq(q->pl[0], (v->GT[0] != 0) + (v->GT[1] != 0));
     q->is_set = 1;
 }

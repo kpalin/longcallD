@@ -634,8 +634,11 @@ Pass `w.txt` to `--qual-weights`, or rebuild the defaults with
 `eval/qual_eval.py inc eval/qual_weights/*.txt > src/var_qual_weights.inc`. `eval/qual_weights/`
 holds the fits shipped here.
 
-`--min-qual N` sets the `LowQual` filter on records below `N`; it is off by default, so `PASS`
-is unchanged. `--qual-weights FILE` replaces the built-in weights (`none` clears them, leaving
+`QUAL` is written to one decimal. A calibrated score whose whole range is a few units -- ONT
+somatic indels top out near 7 -- loses most of its ranking to ties when rounded to an integer.
+
+`--min-qual N` sets the `LowQual` filter on records below `N`, comparing against that one-decimal
+value (so 3.6 is below 4); it is off by default, so `PASS` is unchanged. `--qual-weights FILE` replaces the built-in weights (`none` clears them, leaving
 `QUAL = QLIK`). With `LONGCALLD_QUALCHK=1` every record carries `INFO/QF` with the raw features,
 which is what the fitting reads.
 
