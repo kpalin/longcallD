@@ -2125,6 +2125,8 @@ static void reseat_phase_sets_on_het_anchors(const call_var_opt_t *opt, bam_chun
 // record the writer prints as a phased heterozygote. reseat_... above makes this
 // true by construction; asserting it keeps the two from drifting if either the
 // writer's genotype rule or the minting path changes.
+static int64_t n_ps_unanchored = 0, n_ps_unanchored_chunks = 0; // summed over worker threads
+
 static void check_phase_set_het_anchors(const call_var_opt_t *opt, const bam_chunk_t *chunk) {
     if (chunk->n_samples <= 1 || chunk->var_slots == NULL) return;
     int n = chunk->n_cand_vars;
@@ -2146,17 +2148,28 @@ static void check_phase_set_het_anchors(const call_var_opt_t *opt, const bam_chu
         hts_pos_t ps = v[i].phase_set;
         if (ps <= 0 || ps < first) continue;
         if (bsearch(&ps, ok, n_ok, sizeof(hts_pos_t), cmp_ps) != NULL) continue;
-        if (n_bad < 10)
+        if (LONGCALLD_VERBOSE >= 2 && n_bad < 10)
             _err_warning("phase set %" PRIi64 " is not named after a record the writer prints as a phased het (carried by %s:%" PRIi64 ")\n",
                          ps, chunk->tname, v[i].pos);
         n_bad++;
     }
     free(ok);
-    // A warning, not an assert: the Makefile does not define NDEBUG, and on the
-    // GIAB chr20 tumour/normal mixture this aborted the whole run over a label.
-    if (n_bad > 0)
-        _err_warning("%s:%" PRIi64 "-%" PRIi64 ": %d variant(s) carry a phase set not named after a phased het\n",
-                     chunk->tname, chunk->reg_beg, chunk->reg_end, n_bad);
+    // Counted, not asserted (the Makefile does not define NDEBUG, and on the GIAB
+    // chr20 mixture this aborted the run over a label) and not printed per
+    // variant either: a whole-genome ONT pair logged it hundreds of times. The
+    // run reports one total; -V 2 lists the first records of each chunk.
+    if (n_bad > 0) {
+        __atomic_add_fetch(&n_ps_unanchored, n_bad, __ATOMIC_RELAXED);
+        __atomic_add_fetch(&n_ps_unanchored_chunks, 1, __ATOMIC_RELAXED);
+        if (LONGCALLD_VERBOSE >= 1)
+            _err_warning("%s:%" PRIi64 "-%" PRIi64 ": %d variant(s) carry a phase set not named after a phased het\n",
+                         chunk->tname, chunk->reg_beg, chunk->reg_end, n_bad);
+    }
+}
+
+void paired_phase_set_unanchored_count(int64_t *n_vars, int64_t *n_chunks) {
+    *n_vars = __atomic_load_n(&n_ps_unanchored, __ATOMIC_RELAXED);
+    *n_chunks = __atomic_load_n(&n_ps_unanchored_chunks, __ATOMIC_RELAXED);
 }
 
 int make_variants(const call_var_opt_t *opt, bam_chunk_t *chunk, var_t **_var) {

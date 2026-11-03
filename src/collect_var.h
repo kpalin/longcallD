@@ -155,6 +155,9 @@ void free_cand_vars(struct cand_var_t *cand_vars, int m);
 // (the artifact masks are applied by the caller). Exported for eval/unit.
 struct var1_t;
 void classify_paired_var(const struct call_var_opt_t *opt, struct var1_t *v);
+// Variants, and chunks holding them, whose phase set is not named after a
+// record printed as a phased het. Reported once at the end of a paired run.
+void paired_phase_set_unanchored_count(int64_t *n_vars, int64_t *n_chunks);
 // Somatic calls demoted because step 1 computed no artifact mask for them.
 int64_t paired_somatic_unmasked_count(void);
 // Shared with the VCF writer so the two cannot drift apart: see collect_var.c.

@@ -1715,6 +1715,11 @@ int call_var_main_mode(int argc, char *argv[], int paired_cli) {
         int64_t n_unmasked = paired_somatic_unmasked_count();
         if (n_unmasked > 0)
             _err_warning("%" PRId64 " somatic call(s) had no artifact mask from step 1 and were set to Ambiguous\n", n_unmasked);
+        int64_t n_ps_vars, n_ps_chunks;
+        paired_phase_set_unanchored_count(&n_ps_vars, &n_ps_chunks);
+        if (n_ps_vars > 0)
+            _err_warning("%" PRId64 " variant(s) in %" PRId64 " chunk(s) carry a phase set that is not named after a "
+                         "record printed as a phased het; -V 1 lists the chunks, -V 2 the records\n", n_ps_vars, n_ps_chunks);
     }
     int any_aln_out = 0;
     for (int i = 0; i < LONGCALLD_MAX_SAMPLES; ++i) if (opt->aln_outs[i] != NULL) any_aln_out = 1;
