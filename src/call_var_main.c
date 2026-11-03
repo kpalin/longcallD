@@ -1306,6 +1306,47 @@ static int64_t parse_cell_budget(const char *name, const char *arg) {
     return (int64_t)(v + 0.5);
 }
 
+static double physical_memory_gb(void) {
+    long pages = sysconf(_SC_PHYS_PAGES), page = sysconf(_SC_PAGE_SIZE);
+    return (pages > 0 && page > 0) ? (double)pages * page / 1073741824.0 : 0;
+}
+
+// A rough upper picture of peak memory, printed before any work starts, so a
+// configuration that cannot fit is visible at second zero rather than as an
+// OOM kill an hour in. Two parts, because they fail differently:
+//   - the working set: the README's per-thread figure for 40x germline calling
+//     (1 GB HiFi, 2 GB ONT), times the number of samples, doubled when
+//     --refine-aln writes an alignment (measured on an ONT pair: 1.2-1.7 GB per
+//     thread against 0.4-1.2 GB without);
+//   - the alignment budgets: one partial-order alignment per worker thread at
+//     most, at about 0.54 B per --max-poa-cells cell and 7 B per
+//     --max-poa-msa-cells cell (both measured). These are ceilings a run only
+//     reaches in satellite DNA, but nothing stops every thread reaching them.
+static void report_memory_estimate(const call_var_opt_t *opt) {
+    const double GB = 1073741824.0;
+    int n_smp = opt->n_samples > 0 ? opt->n_samples : 1, t = opt->n_threads;
+    int refine_out = opt->refine_bam && (opt->out_aln_fp != NULL || opt->out_naln_fp != NULL);
+    double per_thread = (opt->is_ont ? 2.0 : 1.0) * n_smp * (refine_out ? 2.0 : 1.0);
+    double typical = per_thread * t;
+    double poa = opt->max_poa_cells * 0.54 / GB, msa = opt->max_poa_msa_cells * 7.0 / GB;
+    double worst = typical + t * (poa > msa ? poa : msa);
+    double phys = physical_memory_gb();
+    _err_info("Memory estimate: about %.0f GB at ~40x (%.1f GB per thread x %d threads, %d sample(s)%s); "
+              "a single alignment at the --max-poa-cells / --max-poa-msa-cells budget can add %.1f / %.1f GB per thread, "
+              "up to %.0f GB in all. Physical memory: %.0f GB.\n",
+              typical, per_thread, t, n_smp, refine_out ? ", --refine-aln output" : "", poa, msa, worst, phys);
+    if (phys <= 0) return;
+    if (typical > phys)
+        _err_warning("The estimated working set (%.0f GB) exceeds physical memory (%.0f GB): lower -t.\n", typical, phys);
+    // Only when the budgets alone cannot fit: with the defaults a few threads
+    // can approach a small machine's memory on paper, and warning about that on
+    // every run would teach people to ignore the warning.
+    if (worst - typical > phys)
+        _err_warning("The alignment budgets alone allow %.0f GB (%d threads x %.1f GB), more than the %.0f GB "
+                     "installed: lower --max-poa-cells / --max-poa-msa-cells or -t, or restrict regions "
+                     "(anno/*.reg.nocen.bed excludes centromeres).\n", worst - typical, t, poa > msa ? poa : msa, phys);
+}
+
 // 0 = `call`, 1 = `paired`. One option table and one usage function serve
 // both; the subcommand only changes the synopsis line and which options are
 // worth showing first.
@@ -1690,6 +1731,7 @@ int call_var_main_mode(int argc, char *argv[], int paired_cli) {
         opt->n_threads = MIN_OF_TWO(opt->n_threads, get_num_processors());
         opt->pl_threads = MIN_OF_TWO(2, opt->n_threads); // MIN_OF_TWO(opt->n_threads, CALL_VAR_PL_THREAD_N);
     }
+    report_memory_estimate(opt);
     if (opt->out_vcf_fn == NULL) opt->out_vcf_fn = strdup("-");
     if (opt->out_vcf_type == 'z') opt->out_vcf = hts_open(opt->out_vcf_fn, "wz");
     else opt->out_vcf = hts_open(opt->out_vcf_fn, "w");
