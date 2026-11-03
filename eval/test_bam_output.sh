@@ -202,6 +202,33 @@ chk "two input files: every record kept" "$n_mixed" "$(samtools view -c "$T/spli
 chk "two input files: coordinate-sorted" 0 "$(samtools view "$T/split.out.bam" | awk '$3!="*"{if($3==p3 && $4<p4) n++; p3=$3;p4=$4} END{print n+0}')"
 chk "two input files: unmapped come last" 0 "$(samtools view "$T/split.out.bam" | awk '{if($3=="*") seen=1; else if(seen) n++} END{print n+0}')"
 
+# Paired output: each sample's file must declare that sample's read groups,
+# including those of a second input file. Both outputs used to be written with
+# the tumour's header, and CRAM encoding warned once for every normal read.
+rerg() {  # $1=in $2=out $3=read group: replace every RG
+  { samtools view --no-PG -H "$1" | grep -v '^@RG'; printf '@RG\tID:%s\tSM:%s\n' "$3" "$3"
+    samtools view "$1" | awk -v id="$3" 'BEGIN{OFS="\t"} {n=0; for(i=1;i<=NF;i++) if($i !~ /^RG:Z:/) f[++n]=$i;
+      s=f[1]; for(i=2;i<=n;i++) s=s OFS f[i]; print s, "RG:Z:" id}'
+  } | samtools sort -o "$2" - 2>/dev/null; samtools index "$2"
+}
+samtools view "$HIFI" | awk '{print $1}' | sort -u | awk 'NR%3==0' > "$T/rg_n"
+samtools view "$HIFI" | awk '{print $1}' | sort -u | awk 'NR%3==1' > "$T/rg_t1"
+for part in n t1 t2; do
+  { samtools view --no-PG -H "$HIFI"
+    case $part in
+      t2) samtools view "$HIFI" | grep -vFwf "$T/rg_n" | grep -vFwf "$T/rg_t1" ;;
+      *)  samtools view "$HIFI" | grep -Fwf "$T/rg_$part" ;;
+    esac; } | samtools view -b -o "$T/rg_$part.raw.bam" - 2>/dev/null
+done
+rerg "$T/rg_t1.raw.bam" "$T/rg_t1.bam" TRG1; rerg "$T/rg_t2.raw.bam" "$T/rg_t2.bam" TRG2; rerg "$T/rg_n.raw.bam" "$T/rg_n.bam" NRG
+"$BIN" paired "$REF" "$T/rg_t1.bam" -X "$T/rg_t2.bam" "$T/rg_n.bam" -t 2 -C "$T/rg_t.cram" --out-normal-cram "$T/rg_n.cram" \
+    -o /dev/null > /dev/null 2> "$T/rg.err"
+chk "paired CRAM: no read names an undeclared read group" 0 "$(grep -c 'Missing @RG' "$T/rg.err")"
+chk "paired CRAM: tumour output declares both tumour read groups" "TRG1 TRG2" \
+    "$(samtools view -H --reference "$REF" "$T/rg_t.cram" | awk -F'\t' '/^@RG/{sub("ID:","",$2); print $2}' | sort | tr '\n' ' ' | sed 's/ $//')"
+chk "paired CRAM: normal output declares only the normal read group" "NRG" \
+    "$(samtools view -H --reference "$REF" "$T/rg_n.cram" | awk -F'\t' '/^@RG/{sub("ID:","",$2); print $2}' | tr '\n' ' ' | sed 's/ $//')"
+
 # Opting out must drop exactly those records and stay sorted.
 "$BIN" call --refine-aln --no-out-aln-passthrough "$REF" "$T/mixed.bam" -t 1 -b "$T/nopass.bam" -o /dev/null >/dev/null 2>&1
 chk "--no-out-aln-passthrough omits them" "$((n_mixed - 13))" "$(samtools view -c "$T/nopass.bam")"

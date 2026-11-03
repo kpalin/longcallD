@@ -1158,8 +1158,36 @@ static struct aln_out_t *open_one_aln_out(call_var_opt_t *opt, htsFile *fp, int 
     return aln_out_init(fp, header, is_cram, opt->no_reorder, window);
 }
 
-static void call_var_pl_write_bam_header(call_var_opt_t *opt, bam_hdr_t *header) {
-    add_longcalld_pg_line(header);
+// The header one sample's alignment output is written with: a copy of that
+// sample's first input header, plus the @RG lines of its other input files.
+// Both outputs used to share the tumour's header, so every normal read named a
+// read group the normal file did not declare -- htslib warns once per record,
+// 1.87 million lines on one whole-genome ONT normal.
+static bam_hdr_t *sample_out_header(const call_var_opt_t *opt, const call_var_pl_t *pl, int smp) {
+    bam_hdr_t *h = NULL;
+    for (int i = 0; i < opt->n_in_bam_fn; ++i) {
+        int s = opt->bam_i_to_sample != NULL ? opt->bam_i_to_sample[i] : 0;
+        if (s != smp) continue;
+        bam_hdr_t *in = pl->io_aux[0].headers[i];
+        if (h == NULL) {
+            if ((h = sam_hdr_dup(in)) == NULL) _err_error_exit("Failed to copy the BAM header of input %d.\n", i);
+            continue;
+        }
+        int n_rg = sam_hdr_count_lines(in, "RG");
+        for (int k = 0; k < n_rg; ++k) {
+            const char *id = sam_hdr_line_name(in, "RG", k);
+            if (id == NULL || sam_hdr_line_index(h, "RG", id) >= 0) continue; // already declared
+            kstring_t line = KS_INITIALIZE;
+            if (sam_hdr_find_line_pos(in, "RG", k, &line) == 0 && sam_hdr_add_lines(h, line.s, line.l) < 0)
+                _err_error_exit("Failed to add read group %s to the output header.\n", id);
+            ks_free(&line);
+        }
+    }
+    return h;
+}
+
+static void call_var_pl_write_bam_header(call_var_opt_t *opt, const call_var_pl_t *pl) {
+    bam_hdr_t *header = pl->io_aux[0].headers[0]; // contig order, shared by every input
 
     // Say what we actually produce. With the reorder buffer the output really is
     // coordinate-sorted; with --no-reorder it is not, and claiming otherwise is
@@ -1171,13 +1199,6 @@ static void call_var_pl_write_bam_header(call_var_opt_t *opt, bam_hdr_t *header)
                      "--no-out-aln-passthrough to drop those records instead.\n");
         opt->no_reorder = 1;
     }
-    if (opt->no_reorder) {
-        if (sam_hdr_update_hd(header, "SO", "unsorted", "GO", "none") < 0)
-            _err_warning("Failed to set @HD SO:unsorted in the output header.\n");
-    } else {
-        if (sam_hdr_update_hd(header, "SO", "coordinate") < 0)
-            _err_warning("Failed to set @HD SO:coordinate in the output header.\n");
-    }
     // Realignment can only move a record's POS left, and only within the noisy
     // region it was realigned inside -- regions longer than max_noisy_reg_len are
     // skipped entirely -- so that length (plus both flanks) bounds the shift.
@@ -1188,10 +1209,24 @@ static void call_var_pl_write_bam_header(call_var_opt_t *opt, bam_hdr_t *header)
     // Thread budget is shared between the outputs.
     int n_out = (opt->out_aln_fp != NULL) + (opt->out_naln_fp != NULL);
     int per_out = n_out > 1 ? (opt->n_threads + 1) / 2 : opt->n_threads;
-    opt->aln_outs[LONGCALLD_SAMPLE_TUMOR] =
-        open_one_aln_out(opt, opt->out_aln_fp, opt->out_aln_is_cram, header, window, per_out);
-    opt->aln_outs[LONGCALLD_SAMPLE_NORMAL] =
-        open_one_aln_out(opt, opt->out_naln_fp, opt->out_naln_is_cram, header, window, per_out);
+    htsFile *fps[2] = { opt->out_aln_fp, opt->out_naln_fp };
+    int is_cram[2] = { opt->out_aln_is_cram, opt->out_naln_is_cram };
+    int smps[2] = { LONGCALLD_SAMPLE_TUMOR, LONGCALLD_SAMPLE_NORMAL };
+    for (int k = 0; k < 2; ++k) {
+        if (fps[k] == NULL) continue;
+        bam_hdr_t *h = sample_out_header(opt, pl, smps[k]);
+        if (h == NULL) _err_error_exit("No input file belongs to the sample of an alignment output.\n");
+        add_longcalld_pg_line(h);
+        if (opt->no_reorder) {
+            if (sam_hdr_update_hd(h, "SO", "unsorted", "GO", "none") < 0)
+                _err_warning("Failed to set @HD SO:unsorted in the output header.\n");
+        } else {
+            if (sam_hdr_update_hd(h, "SO", "coordinate") < 0)
+                _err_warning("Failed to set @HD SO:coordinate in the output header.\n");
+        }
+        opt->aln_outs[smps[k]] = open_one_aln_out(opt, fps[k], is_cram[k], h, window, per_out);
+        opt->aln_outs[smps[k]]->own_hdr = 1; // freed with the output
+    }
 }
 
 // work with sorted SAM/BAM/CRAM
@@ -1650,7 +1685,7 @@ int call_var_main_mode(int argc, char *argv[], int paired_cli) {
     call_var_pl_open_fa_bam(opt, &pl, argv+optind, argc-optind);
 
     // write VCF/BAM header
-    if (opt->out_aln_fp != NULL || opt->out_naln_fp != NULL) call_var_pl_write_bam_header(opt, pl.io_aux[0].headers[0]);
+    if (opt->out_aln_fp != NULL || opt->out_naln_fp != NULL) call_var_pl_write_bam_header(opt, &pl);
     if (opt->out_vcf != NULL && (opt->out_vcf_type == 'z' || opt->no_vcf_header == 0)) write_vcf_header(pl.io_aux[0].headers[0], opt);
     // start to work !!!
     pl.opt = opt;

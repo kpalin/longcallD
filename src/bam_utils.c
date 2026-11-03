@@ -2207,6 +2207,7 @@ void aln_out_free(aln_out_t *o) {
     if (o == NULL) return;
     aln_out_flush(o);
     free(o->buf);
+    if (o->own_hdr) sam_hdr_destroy(o->hdr);
     free(o);
 }
 
