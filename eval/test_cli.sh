@@ -89,6 +89,15 @@ chk "--gap-aln left works" "0:yes" "$ec:$([[ -s g.vcf ]] && echo yes || echo no)
 "$BIN" call --gap-aln bogus "$REF" "$BAM" -o g2.vcf >/dev/null 2>&1
 chk "--gap-aln bogus rejected" 1 "$?"
 
+# The DP-cell budgets take the form the README writes them in. strtoll() read
+# "2e8" as 2, so every alignment was skipped and calls were silently lost.
+"$BIN" call "$REF" "$BAM" -o cb_def.vcf >/dev/null 2>&1
+"$BIN" call --max-poa-cells 2e9 --max-poa-msa-cells 2e8 "$REF" "$BAM" -o cb_sci.vcf >/dev/null 2>&1
+chk "--max-poa-*-cells 2e9/2e8 equal the defaults" same \
+    "$(cmp -s <(grep -v '^#' cb_def.vcf) <(grep -v '^#' cb_sci.vcf) && echo same || echo differs)"
+"$BIN" call --max-poa-msa-cells 2e8x "$REF" "$BAM" -o /dev/null >/dev/null 2>&1
+chk "--max-poa-msa-cells 2e8x rejected" 1 "$?"
+
 # opt_str said "L:" while the table said no_argument, so -L ate ref.fa.
 printf '%s\n' "$BAM" > list.txt
 "$BIN" call -L "$REF" list.txt -o l.vcf >/dev/null 2>&1; ec=$?

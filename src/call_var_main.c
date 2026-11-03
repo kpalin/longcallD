@@ -1295,6 +1295,17 @@ static htsFile *open_aln_out_file(const char *fn, const char *mode) {
     return fp;
 }
 
+// A DP-cell budget, written either way: 200000000 or 2e8. strtoll() stopped at
+// the "e", so "2e8" -- the form the README gives the defaults in -- meant a
+// budget of 2 cells and silently skipped every alignment.
+static int64_t parse_cell_budget(const char *name, const char *arg) {
+    char *end = NULL;
+    double v = strtod(arg, &end);
+    if (end == arg || *end != '\0' || !(v >= 1) || v > 9.0e18)
+        _err_error_exit("--%s needs a positive cell count such as 2e8 or 200000000, not '%s'\n", name, arg);
+    return (int64_t)(v + 0.5);
+}
+
 // 0 = `call`, 1 = `paired`. One option table and one usage function serve
 // both; the subcommand only changes the synopsis line and which options are
 // worth showing first.
@@ -1450,6 +1461,12 @@ static void call_var_usage(void) {//main usage
     fprintf(stderr, "       --noisy-rat FLOAT  fraction of a region's reads that must look noisy before\n");
     fprintf(stderr, "                          the region is re-aligned [%.2f]; independent of -a, which\n", (double)LONGCALLD_NOISY_REG_RATIO);
     fprintf(stderr, "                          only sets how small an allele fraction is worth calling\n");
+    fprintf(stderr, "       --max-poa-cells NUM\n");
+    fprintf(stderr, "                          largest partial-order alignment to attempt, in DP cells of about\n");
+    fprintf(stderr, "                          0.5 byte each; larger ones are skipped [2e9]\n");
+    fprintf(stderr, "       --max-poa-msa-cells NUM\n");
+    fprintf(stderr, "                          the same for the whole-region MSA, about 7 bytes per cell [2e8].\n");
+    fprintf(stderr, "                          Each worker thread may hold one such matrix at a time\n");
     fprintf(stderr, "       --poa-min-freq FLOAT\n");
     fprintf(stderr, "                          smallest share of a noisy region's reads that may form a second\n");
     fprintf(stderr, "                          consensus when the region has no usable phasing [-a]\n");
@@ -1557,8 +1574,8 @@ int call_var_main_mode(int argc, char *argv[], int paired_cli) {
                         if (!(opt->poa_min_freq > 0 && opt->poa_min_freq <= 1))
                             _err_error_exit("--poa-min-freq must be in (0, 1]: %s\n", optarg);
                     }
-                    else if (strcmp(call_var_opt[op_idx].name, "max-poa-cells") == 0) opt->max_poa_cells = strtoll(optarg, NULL, 10);
-                    else if (strcmp(call_var_opt[op_idx].name, "max-poa-msa-cells") == 0) opt->max_poa_msa_cells = strtoll(optarg, NULL, 10);
+                    else if (strcmp(call_var_opt[op_idx].name, "max-poa-cells") == 0) opt->max_poa_cells = parse_cell_budget("max-poa-cells", optarg);
+                    else if (strcmp(call_var_opt[op_idx].name, "max-poa-msa-cells") == 0) opt->max_poa_msa_cells = parse_cell_budget("max-poa-msa-cells", optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "som-pval") == 0) { opt->som_pval = atof(optarg); opt->som_pval_set = 1; }
                     else if (strcmp(call_var_opt[op_idx].name, "min-hap-vaf") == 0) { opt->min_hap_vaf = atof(optarg); opt->min_hap_vaf_set = 1; }
                     else if (strcmp(call_var_opt[op_idx].name, "som-alt-qual") == 0) opt->min_som_alt_qual = atoi(optarg);
