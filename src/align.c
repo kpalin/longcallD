@@ -1865,7 +1865,7 @@ int collect_noisy_reg_aln_strs(const call_var_opt_t *opt, bam_chunk_t *chunk, ht
     int n_cons = 0;
 
     int collect_ref_read_aln_str = 0;
-    if ((opt->refine_bam && opt->out_aln_fp != NULL) || opt->out_somatic) collect_ref_read_aln_str = 1;
+    if ((opt->refine_bam && (opt->out_aln_fp != NULL || opt->out_naln_fp != NULL)) || opt->out_somatic) collect_ref_read_aln_str = 1;
     // XXX only use fully-covered reads, including cliping reads (after re-align to backbone read)
     // two cases to call consensus sequences
     if (ps_with_both_haps > 0) { // call consensus sequences for each haplotype
@@ -1882,7 +1882,7 @@ int collect_noisy_reg_aln_strs(const call_var_opt_t *opt, bam_chunk_t *chunk, ht
         if (LONGCALLD_VERBOSE >= 1) fprintf(stderr, "Skipped %s:%" PRIi64 "-%" PRIi64 " %" PRIi64 " %d reads (%d full)\n", chunk->tname, noisy_reg_beg, noisy_reg_end, noisy_reg_end-noisy_reg_beg+1, n_noisy_reg_reads, n_full_reads);
     }
     // update digar based on ref vs read in MSA
-    if (n_cons > 0 && ((opt->refine_bam && opt->out_aln_fp != NULL) || opt->out_somatic)) {
+    if (n_cons > 0 && ((opt->refine_bam && (opt->out_aln_fp != NULL || opt->out_naln_fp != NULL)) || opt->out_somatic)) {
         update_digars_from_aln_str(chunk, noisy_reg_beg, noisy_reg_end, read_id_to_full_covers, read_reg_beg, read_reg_end,
                                    aln_strs, n_cons, clu_n_seqs, clu_read_ids);
     }

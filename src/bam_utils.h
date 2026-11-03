@@ -82,6 +82,23 @@ static inline int smp_alt(const var_slot_counts_t *c, int s) { return c->alt[s][
 static inline int smp_dp(const var_slot_counts_t *c, int s) { return slot_dp(c,s,0) + slot_dp(c,s,1) + slot_dp(c,s,2); }
 static inline int slot_oth(const var_slot_counts_t *c, int s, int h) { return c->oth[s][h]; }
 
+// What step 2 needs to rewrite one read under --refine-aln, reduced from its
+// digar at the end of step 1. Keeping the digar instead -- every diff, plus a
+// copy of the read's bases and qualities, and one entry per base inside each
+// re-aligned noisy region -- held about 6 bytes per input base for a whole
+// contig until it was written: 151 GB before chr1 of an ONT pair was out.
+typedef struct refined_aln_t {
+    hts_pos_t pos;      // 1-based start of the refined alignment; 0 when the read has no digar
+    int qlen;           // query length the digar describes, checked against the record
+    int n_cigar; uint32_t *cigar; // merged ops, before the primary's H->S fix-up
+    int nm;             // valid when the input record carries NM
+    char *md, *cs;      // NULL unless the input record carries that tag
+} refined_aln_t;
+
+#define LONGCALLD_TAG_NM 0x1
+#define LONGCALLD_TAG_MD 0x2
+#define LONGCALLD_TAG_CS 0x4
+
 typedef struct bam_chunk_t {
     // input
     // tid = pl->reg_chunks[reg_chunk_i].reg_tids[reg_i] 
@@ -105,6 +122,8 @@ typedef struct bam_chunk_t {
     uint64_t *read_sigs; // size: m_reads, identity of the record loaded at each read_i; see bam_record_sig()
     uint8_t *read_sample_idx; // size: m_reads, which input sample each read came from
     uint8_t *read_mapq, *read_is_rev; // size: m_reads; outlive the BAM records, for the quality model
+    uint8_t *read_aln_tags;           // size: m_reads; LONGCALLD_TAG_* bits: which of NM/MD/cs the input record carries
+    struct refined_aln_t *refined;    // size: n_reads; --refine-aln with an alignment output only, see bam_chunk_compact_refine()
     int *bam_read_off; // size: n_bam, the read_i at which each input file's reads start.
                        // The loader fills chunk->reads in BAM-major order, so the writer
                        // needs this to recover read_i while emitting in coordinate order.
@@ -278,7 +297,7 @@ void collect_all_var_slot_counts(bam_chunk_t *chunk);
 // grow, fill and free the array; they must agree, or the result is a leak or a
 // free of uninitialised pointers.
 #define need_read_names(opt) ((opt)->output_var_rnames || (opt)->output_sv_rnames || \
-                              (opt)->output_somatic_var_rnames || (opt)->out_aln_fp != NULL)
+                              (opt)->output_somatic_var_rnames || (opt)->out_aln_fp != NULL || (opt)->out_naln_fp != NULL)
 
 // Is this record one that the variant caller takes into chunk->reads[]?
 //
@@ -309,6 +328,7 @@ static inline uint64_t bam_record_sig(const bam1_t *b) {
 int write_read_to_bam(bam_chunk_t *chunk, const struct call_var_opt_t *opt, const struct call_var_io_aux_t *io_aux);
 int write_untagged_read_to_bam(bam_chunk_t *chunk, aln_out_t *out, bam1_t *read, void *phase_by_qname);
 void bam_chunk_mid_free(bam_chunk_t *chunk, const struct call_var_opt_t *opt);
+void bam_chunk_compact_refine(bam_chunk_t *chunk);
 void bam_chunks_mid_free(bam_chunk_t *chunks, int n_chunks, const struct call_var_opt_t *opt);
 void bam_chunk_post_free(bam_chunk_t *chunk, const struct call_var_opt_t *opt);
 void bam_chunks_post_free(bam_chunk_t *chunks, int n_chunks, const struct call_var_opt_t *opt);

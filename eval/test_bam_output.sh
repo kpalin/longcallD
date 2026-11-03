@@ -229,6 +229,17 @@ chk "paired CRAM: tumour output declares both tumour read groups" "TRG1 TRG2" \
 chk "paired CRAM: normal output declares only the normal read group" "NRG" \
     "$(samtools view -H --reference "$REF" "$T/rg_n.cram" | awk -F'\t' '/^@RG/{sub("ID:","",$2); print $2}' | tr '\n' ' ' | sed 's/ $//')"
 
+# --refine-aln with only the normal output must refine it exactly as when the
+# tumour output is written too. Three places decided "is there an alignment
+# output?" from the tumour file alone, so a normal-only run refined from freed
+# digars, skipped the noisy-region rewrite and lost supplementary phasing.
+"$BIN" paired --refine-aln "$REF" "$T/rg_t1.bam" "$T/rg_n.bam" -t 2 -b "$T/rf_t.bam" --out-normal-bam "$T/rf_n_both.bam" \
+    -o /dev/null > /dev/null 2>&1
+"$BIN" paired --refine-aln "$REF" "$T/rg_t1.bam" "$T/rg_n.bam" -t 2 --out-normal-bam "$T/rf_n_only.bam" \
+    -o /dev/null > /dev/null 2>&1
+chk "refined normal output alone equals it written beside the tumour" same \
+    "$(cmp -s <(samtools view "$T/rf_n_both.bam") <(samtools view "$T/rf_n_only.bam") && echo same || echo differs)"
+
 # Opting out must drop exactly those records and stay sorted.
 "$BIN" call --refine-aln --no-out-aln-passthrough "$REF" "$T/mixed.bam" -t 1 -b "$T/nopass.bam" -o /dev/null >/dev/null 2>&1
 chk "--no-out-aln-passthrough omits them" "$((n_mixed - 13))" "$(samtools view -c "$T/nopass.bam")"

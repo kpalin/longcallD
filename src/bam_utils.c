@@ -1445,6 +1445,8 @@ int bam_chunk_init0(bam_chunk_t *chunk, const struct call_var_opt_t *opt, int n_
     chunk->read_sample_idx = (uint8_t*)_err_calloc(n_reads, sizeof(uint8_t));
     chunk->read_mapq = (uint8_t*)_err_calloc(n_reads, sizeof(uint8_t));
     chunk->read_is_rev = (uint8_t*)_err_calloc(n_reads, sizeof(uint8_t));
+    chunk->read_aln_tags = (uint8_t*)_err_calloc(n_reads, sizeof(uint8_t));
+    chunk->refined = NULL;
     chunk->n_samples = opt->n_samples;
     chunk->n_sample_reads = (int*)_err_calloc(opt->n_samples > 0 ? opt->n_samples : 1, sizeof(int));
     chunk->is_invalid = 0;
@@ -1504,6 +1506,7 @@ int bam_chunk_realloc(bam_chunk_t *chunk, const struct call_var_opt_t *opt) {
     chunk->read_sample_idx = (uint8_t*)_err_realloc(chunk->read_sample_idx, m_reads * sizeof(uint8_t));
     chunk->read_mapq = (uint8_t*)_err_realloc(chunk->read_mapq, m_reads * sizeof(uint8_t));
     chunk->read_is_rev = (uint8_t*)_err_realloc(chunk->read_is_rev, m_reads * sizeof(uint8_t));
+    chunk->read_aln_tags = (uint8_t*)_err_realloc(chunk->read_aln_tags, m_reads * sizeof(uint8_t));
     chunk->n_clean_agree_snps = (int*)_err_realloc(chunk->n_clean_agree_snps, m_reads * sizeof(int));
     chunk->n_clean_conflict_snps = (int*)_err_realloc(chunk->n_clean_conflict_snps, m_reads * sizeof(int));
     chunk->is_ont_palindrome = (uint8_t*)_err_realloc(chunk->is_ont_palindrome, m_reads * sizeof(uint8_t));
@@ -1516,7 +1519,7 @@ int bam_chunk_realloc(bam_chunk_t *chunk, const struct call_var_opt_t *opt) {
         chunk->reads[i] = bam_init1();
         chunk->digars[i].n_digar = chunk->digars[i].m_digar = 0;
         chunk->is_skipped[i] = 0; chunk->read_sigs[i] = 0; chunk->read_sample_idx[i] = 0;
-        chunk->read_mapq[i] = 0; chunk->read_is_rev[i] = 0;
+        chunk->read_mapq[i] = 0; chunk->read_is_rev[i] = 0; chunk->read_aln_tags[i] = 0;
         chunk->n_clean_agree_snps[i] = 0; chunk->n_clean_conflict_snps[i] = 0;
         chunk->phase_scores[i] = 0; chunk->haps[i] = 0; chunk->phase_sets[i] = -1;
         chunk->is_skipped_for_somatic[i] = 0;
@@ -1595,6 +1598,7 @@ void bam_chunk_free(bam_chunk_t *chunk) {
 }
 
 void bam_chunk_free_digar(bam_chunk_t *chunk) {
+    if (chunk->digars == NULL) return;
     for (int i = 0; i < chunk->m_reads; i++) {
         if (chunk->digars[i].m_digar > 0) {
             free_digar1(chunk->digars[i].digars, chunk->digars[i].n_digar);
@@ -1614,7 +1618,13 @@ void bam_chunk_post_free(bam_chunk_t *chunk, const struct call_var_opt_t *opt) {
     free(chunk->is_skipped);
     free(chunk->read_sigs); // needed by write_read_to_bam in step 2, so not freed in mid_free
     free(chunk->read_sample_idx); free(chunk->n_sample_reads);
-    free(chunk->read_mapq); free(chunk->read_is_rev);
+    free(chunk->read_mapq); free(chunk->read_is_rev); free(chunk->read_aln_tags);
+    if (chunk->refined != NULL) {
+        for (int i = 0; i < chunk->n_reads; i++) {
+            free(chunk->refined[i].cigar); free(chunk->refined[i].md); free(chunk->refined[i].cs);
+        }
+        free(chunk->refined); chunk->refined = NULL;
+    }
     free(chunk->n_clean_agree_snps); free(chunk->n_clean_conflict_snps);
     free(chunk->is_ont_palindrome); free(chunk->is_skipped_for_somatic);
     free(chunk->haps); free(chunk->phase_sets); free(chunk->phase_scores);
@@ -1628,7 +1638,6 @@ void bam_chunk_post_free(bam_chunk_t *chunk, const struct call_var_opt_t *opt) {
     chunk->som_art_mask_hap = NULL; chunk->som_art_mask_pooled = NULL; chunk->n_som_art = 0;
     free(chunk->n_up_ovlp_reads); free(chunk->n_down_ovlp_reads); free(chunk->n_up_ovlp_skip_reads); free(chunk->n_down_ovlp_skip_reads);
     free(chunk->up_ovlp_read_i); free(chunk->down_ovlp_read_i);
-    if (opt->out_aln_fp != NULL && opt->refine_bam) bam_chunk_free_digar(chunk);
     if (LONGCALLD_VERBOSE >= 2) {
         for (int i = 0; i < chunk->m_reads; i++) {
             bam_destroy1(chunk->reads[i]);
@@ -1654,7 +1663,11 @@ void bam_chunk_post_free(bam_chunk_t *chunk, const struct call_var_opt_t *opt) {
 // crash inside cr_get_ctg().
 void bam_chunk_mid_free(bam_chunk_t *chunk, const struct call_var_opt_t *opt) {
     if (chunk->low_comp_cr != NULL) { cr_destroy(chunk->low_comp_cr); chunk->low_comp_cr = NULL; }
-    if (opt->out_aln_fp == NULL || opt->refine_bam == 0) bam_chunk_free_digar(chunk);
+    // --refine-aln used to keep every digar until the reads were written, and
+    // only when the tumour output was requested: with only --out-normal-* the
+    // digars were freed here and step 3 refined from freed memory.
+    if (opt->refine_bam && (opt->out_aln_fp != NULL || opt->out_naln_fp != NULL)) bam_chunk_compact_refine(chunk);
+    bam_chunk_free_digar(chunk); chunk->digars = NULL;
     bam_chunk_clear_var_noisy_read_cache(chunk);
     // The per-region read lists are sized by chunk_noisy_regs->n_r, so they have
     // to be freed while that object still exists.
@@ -1850,6 +1863,14 @@ int collect_ref_seq_bam_main(const struct call_var_pl_t *pl, struct call_var_io_
             // built: the quality model compares ref and alt reads on both.
             chunk->read_mapq[chunk->n_reads] = chunk->reads[chunk->n_reads]->core.qual;
             chunk->read_is_rev[chunk->n_reads] = bam_is_rev(chunk->reads[chunk->n_reads]) ? 1 : 0;
+            // Which alignment tags --refine-aln will have to rewrite, so the
+            // digar can be reduced before the record is read again in step 3.
+            {
+                bam1_t *r = chunk->reads[chunk->n_reads];
+                chunk->read_aln_tags[chunk->n_reads] = (bam_aux_get(r, "NM") != NULL ? LONGCALLD_TAG_NM : 0) |
+                                                       (bam_aux_get(r, "MD") != NULL ? LONGCALLD_TAG_MD : 0) |
+                                                       (bam_aux_get(r, "cs") != NULL ? LONGCALLD_TAG_CS : 0);
+            }
             chunk->n_reads++;
             if (chunk->n_reads == chunk->m_reads) bam_chunk_realloc(chunk, opt);
         }
@@ -2040,26 +2061,54 @@ int update_bam1_tags(bam1_t *b, digar1_t *digar, int n_digar, const char *ref_se
     return 0;
 }
 
+// Reduce every read's digar to what refine_bam1() needs in step 3, so the digar
+// can be freed with the rest of step 1's working set. Same ops, same tags, in
+// the same order as refine_bam1() used to compute them from the digar there.
+void bam_chunk_compact_refine(bam_chunk_t *chunk) {
+    if (chunk->is_invalid || chunk->digars == NULL || chunk->n_reads <= 0) return;
+    chunk->refined = (refined_aln_t*)_err_calloc(chunk->n_reads, sizeof(refined_aln_t));
+    for (int i = 0; i < chunk->n_reads; ++i) {
+        digar_t *d = chunk->digars + i; refined_aln_t *r = chunk->refined + i;
+        r->qlen = digar2qlen(d);
+        if (d->n_digar <= 0) continue; // step 3 reports the length mismatch, as before
+        r->pos = d->digars[0].pos;
+        int m_cigar = d->n_digar;
+        r->cigar = (uint32_t*)_err_malloc(m_cigar * sizeof(uint32_t));
+        for (int j = 0; j < d->n_digar; ++j)
+            r->cigar = longcalld_push_cigar(&r->n_cigar, &m_cigar, r->cigar, d->digars[j].type, d->digars[j].len);
+        r->cigar = (uint32_t*)_err_realloc(r->cigar, r->n_cigar * sizeof(uint32_t)); // merged: usually far shorter
+        uint8_t tags = chunk->read_aln_tags[i];
+        if (tags & LONGCALLD_TAG_NM) r->nm = get_nm_from_digar(d->digars, d->n_digar);
+        if (tags & LONGCALLD_TAG_MD) {
+            kstring_t *md = get_md_from_digar(d->digars, d->n_digar, chunk->ref_seq, chunk->ref_beg, chunk->ref_end);
+            r->md = md->s; free(md);
+        }
+        if (tags & LONGCALLD_TAG_CS) {
+            kstring_t *cs = get_cs_from_digar(d->digars, d->n_digar, chunk->ref_seq, chunk->ref_beg, chunk->ref_end);
+            r->cs = cs->s; free(cs);
+        }
+    }
+}
+
+static void replace_aux_Z(bam1_t *b, const char tag[2], const char *val) {
+    uint8_t *t = bam_aux_get(b, tag);
+    if (t == NULL || val == NULL || strcmp(val, (char*)bam_aux2Z(t)) == 0) return;
+    bam_aux_del(b, t);
+    bam_aux_append(b, tag, 'Z', strlen(val) + 1, (uint8_t*)val);
+}
+
 int refine_bam1(bam_chunk_t *chunk, int read_i, bam1_t *b) {
-    // update b->core.pos based on chunk->digars[read_i]
-    hts_pos_t new_pos = chunk->digars[read_i].digars[0].pos; // assume the first digar is the start position
+    const refined_aln_t *r = chunk->refined + read_i;
+    hts_pos_t new_pos = r->pos; // 1-based start of the first digar
     if (new_pos < 1) {
         fprintf(stderr, "Error: Invalid position %" PRId64 " for read %s in chunk %s:%" PRId64 "-%" PRId64 "\n",
                 new_pos, bam_get_qname(b), chunk->tname, chunk->reg_beg, chunk->reg_end);
         return -1; // Invalid position
     }
-    // fprintf(stderr, "refining read: %s %" PRId64 "\n", bam_get_qname(b), b->core.pos);
-    if (new_pos != b->core.pos + 1) { // bam1_t->core.pos is 0-based, chunk->digars[read_i].digars[0].pos is 1-based
-        b->core.pos = new_pos - 1; // Update to 0-based
-    }
-    // update b->cigar based on chunk->digars[read_i]
-    uint32_t *new_cigar = (uint32_t*)_err_malloc(chunk->digars[read_i].n_digar * sizeof(uint32_t));
-    int new_n_cigar = 0, new_m_cigar = chunk->digars[read_i].n_digar;
-    for (int i = 0; i < chunk->digars[read_i].n_digar; ++i) {
-        new_cigar = longcalld_push_cigar(&new_n_cigar, &new_m_cigar, new_cigar,
-                             chunk->digars[read_i].digars[i].type,
-                             chunk->digars[read_i].digars[i].len);
-    }
+    if (new_pos != b->core.pos + 1) b->core.pos = new_pos - 1; // bam1_t->core.pos is 0-based
+    int new_n_cigar = r->n_cigar;
+    uint32_t *new_cigar = (uint32_t*)_err_malloc(new_n_cigar * sizeof(uint32_t));
+    memcpy(new_cigar, r->cigar, new_n_cigar * sizeof(uint32_t));
     // XXX currently, no supp alignment will be processed/generated
     // fix CLIP in CIGAR, change HARD_CLIP in primary CIGAR to SOFT_CLIP
     if (!(b->core.flag & BAM_FSUPPLEMENTARY)) {
@@ -2078,40 +2127,31 @@ int refine_bam1(bam_chunk_t *chunk, int read_i, bam1_t *b) {
         free(new_cigar);
         return 0; // No need to update
     }
-    // fprintf(stderr, "Refining BAM record: %s, old CIGAR: %d %d\n", bam_get_qname(b), new_n_cigar, old_n_cigar);
-    // for (int i = 0; i < old_n_cigar; ++i) {
-        // fprintf(stderr, "%d%c", old_cigar[i] >> BAM_CIGAR_SHIFT , "MIDNSHP=X"[bam_cigar_op(old_cigar[i])]);
-    // } 
-    // fprintf(stderr, "\nNew CIGAR: ");
-    // for (int i = 0; i < new_n_cigar; ++i) {
-        // fprintf(stderr, "%d%c", new_cigar[i] >> BAM_CIGAR_SHIFT, "MIDNSHP=X"[bam_cigar_op(new_cigar[i])]);
-    // } fprintf(stderr, "\n");
-
     int old_data_len = b->l_data, new_data_len = b->l_data + (new_n_cigar-old_n_cigar) * sizeof(uint32_t);
     if (new_data_len > b->m_data) sam_realloc_bam_data(b, new_data_len);
-    // fprintf(stderr, "old_l_data: %d, new_l_data: %d, %d\n", old_data_len, new_data_len, b->m_data);
     uint8_t *new_data = (uint8_t*)_err_malloc(b->m_data);
-
     // Copy: QNAME
     int qname_len = b->core.l_qname;
     memcpy(new_data, b->data, qname_len);
-
     // Copy: new CIGAR
     memcpy(new_data + qname_len, new_cigar, new_n_cigar * sizeof(uint32_t));
-
     // Copy: SEQ + QUAL + AUX
     int rest_len = old_data_len - (qname_len + old_n_cigar * sizeof(uint32_t));
-    // fprintf(stderr, "memcpy: new_size: %d, %d, new_offset: %d, old_size: %d, rest_len: %d\n", b->m_data, new_data_len, qname_len + new_n_cigar * sizeof(uint32_t), qname_len + old_n_cigar * sizeof(uint32_t), rest_len);
     memcpy(new_data + qname_len + new_n_cigar * sizeof(uint32_t),
            b->data + qname_len + old_n_cigar * sizeof(uint32_t), rest_len);
-
     free(b->data); free(new_cigar);
     b->data = new_data;
     b->core.n_cigar = new_n_cigar;
     b->l_data = new_data_len;
-    // calculate NM/MD/cs tags
-    // fprintf(stderr, "%s\n", bam_get_qname(b));
-    update_bam1_tags(b, chunk->digars[read_i].digars, chunk->digars[read_i].n_digar, chunk->ref_seq, chunk->ref_beg, chunk->ref_end);
+    // NM/MD/cs, each only where the record carries it (update_bam1_tags()'s rule)
+    uint8_t *nm_tag = bam_aux_get(b, "NM");
+    if (nm_tag != NULL && (chunk->read_aln_tags[read_i] & LONGCALLD_TAG_NM) && r->nm != bam_aux2i(nm_tag)) {
+        int nm = r->nm;
+        bam_aux_del(b, nm_tag);
+        bam_aux_append(b, "NM", 'i', 4, (uint8_t *)&nm);
+    }
+    replace_aux_Z(b, "MD", r->md);
+    replace_aux_Z(b, "cs", r->cs);
     return 0;
 }
 
@@ -2260,10 +2300,10 @@ int write_processed_read_to_bam(const call_var_opt_t *opt, bam_chunk_t *chunk, a
     // refine bam cigars
     if (opt->refine_bam) {
         // check if bam and chunk->digars[read_i] match
-        if (digar2qlen(chunk->digars+read_i) != read->core.l_qseq) {
+        if (chunk->refined == NULL || chunk->refined[read_i].qlen != read->core.l_qseq) {
             _err_error_exit("Read length mismatch when writing BAM record: %s:%" PRId64 " %s, digar_qlen: %d, bam_qlen: %d\n",
                             chunk->tname, read->core.pos+1, bam_get_qname(read),
-                            digar2qlen(chunk->digars+read_i), read->core.l_qseq);
+                            chunk->refined != NULL ? chunk->refined[read_i].qlen : -1, read->core.l_qseq);
         }
         if (refine_bam1(chunk, read_i, read) != 0)
             _err_error_exit("Failed to refine BAM record: %s:%" PRId64 " %s\n", chunk->tname, read->core.pos+1, bam_get_qname(read));
