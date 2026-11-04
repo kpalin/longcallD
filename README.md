@@ -145,6 +145,41 @@ or
 longcallD call -t16 ref.fa sample_part1.bam -X sample_part2.bam -X sample_part3.bam > sample.vcf
 ```
 
+### Phasing
+Haplotypes are assembled from the reads after Longshot ([Edge & Bansal 2019](https://doi.org/10.1038/s41467-019-12493-y))
+and the HapCUT2 objective it uses. Each read is one fragment of allele calls, every call weighed by
+the same per-read error model as `QUAL` (base and mapping quality, and an indel's repeat context in
+each direction). Haplotypes are found by local search on the fragment likelihood
+`sum_f log(P(f|H) + P(f|~H))`, then every variant is re-genotyped on the reads' haplotype
+likelihoods, and the two steps alternate until the likelihood settles. This runs once over each
+chromosome, so a read that crosses chunk boundaries is one fragment with one `HP`/`PS`.
+
+* **Blocks are never split.** A phase block is a connected component of the reads: two hets one
+  read informatively covers are in the same block. Only substitutions and indels outside any repeat
+  link, and only through calls with error below `--min-allele-qual` (phred 7) on reads with mapping
+  quality `--min-phase-mapq` (20). Repeat and noisy-region indels are phased against their block
+  but cannot join two blocks.
+* **Reads that contradict a het prune it.** A het whose single flip costs less than
+  `--min-phase-qual` (phred 10) with two or more linking reads, or that the reads place on no
+  haplotype once phased, is written `FILTER=HapInconsistent` with its unphased genotype: a
+  sequencing or mapping artifact rather than a het of either chromosome.
+* **Every other het is phased.** A het no read links to another is a block of its own.
+* **Reads** get `HP` when the posterior over their calls in their own block exceeds
+  `--hap-assign-qual` (phred 10). That includes reads calling skips and sites in a read's own noisy
+  regions, which tag reads but never link or genotype.
+* `INFO/PQ` is a het's phase quality and `INFO/SQ` the switch quality to the previous het of its
+  block, both phred.
+
+`--legacy-phasing` restores the previous adjacent-pair phasing for comparison.
+[`eval/phase_qc.py`](eval/phase_qc.py) checks a VCF and its tagged BAM/CRAM(s) for the invariants
+above (unphased PASS hets, reads with phased alleles in two blocks, untagged reads with consistent
+phased alleles, unphased somatic calls whose alt reads are tagged) and, given a phased truth VCF,
+counts switch and flip errors:
+```
+eval/phase_qc.py --vcf paired.vcf.gz --bam normal.phased.bam --bam tumor.phased.bam \
+    --min-mapq 20 --min-qual 20 [--truth truth.vcf.gz --bed confident.bed]
+```
+
 ### Paired tumor/normal somatic calling
 With a matched normal, `longcallD paired` calls somatic variants by comparing the two samples
 **per haplotype** rather than per sample:
@@ -176,9 +211,10 @@ The VCF has two sample columns, `NORMAL` then `TUMOR`:
 | `INFO/HAPVAF` | alt fraction **within that haplotype** |
 | `INFO/TVAF` | alt fraction over the **pooled** tumor depth, on `UNPHASED` calls only |
 | `INFO/SPV` | Fisher exact p, that slot against the other three |
-| `INFO/UNPHASED` | the verdict was reached on pooled counts; no usable haplotype grid at this site |
+| `FILTER=HapInconsistent` | the phased reads do not agree on which haplotype carries the allele (see [Phasing](#phasing)) |
+| `INFO/UNPHASED` | the verdict was reached on pooled counts and the reads carrying the alt are on no single haplotype of a block |
 | `FORMAT/HDP`, `FORMAT/HAD` | per-haplotype depth and alt depth |
-| `FORMAT/PS` | the phase block the grid decided the call on; absent on `UNPHASED` calls |
+| `FORMAT/PS` | the phase block the call is phased in; absent on `UNPHASED` calls |
 | `QUAL` | on a `SOMATIC` record, -10 log10 P(not somatic); otherwise -10 log10 P(no variant). See [QUAL, GQ and PL](#qual-gq-and-pl) |
 | `FORMAT/GQ`, `FORMAT/PL` | each sample's own genotype quality and likelihoods |
 | `FORMAT/UPR`, `FORMAT/UPF` | unphased reads in that sample, of all reads and of alt reads: count and share |
@@ -188,6 +224,11 @@ somatic variant is `purity/2`, confounding purity, ploidy and cellular fraction.
 within-haplotype fraction estimates purity x cancer-cell-fraction directly: a clonal variant reads
 1.0 where the pooled VAF would read about 0.25.
 
+A somatic, normal-only or LOH verdict reached on pooled counts -- the grid failed one of its trust
+gates -- is still phased when the reads carrying the alt sit on one haplotype of the site's block:
+those reads were tagged by the normal's germline hets. It reports `PS`, `SOMHAP` and `HAPVAF`. The
+normal column of a germline record prints the assembled genotype, phased; the tumor column keeps
+its per-haplotype depth floor, so a tumor that lost a copy prints `/` beside a `PS`.
 A somatic call that no haplotype could be resolved for carries `UNPHASED` and reports `TVAF`
 instead. The two keys are mutually exclusive on purpose: they differ by a factor of two for the
 same clonal variant, so a single key holding either would quietly mix the two scales in anything
