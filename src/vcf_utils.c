@@ -59,6 +59,11 @@ void write_vcf_header(bam_hdr_t *hdr, struct call_var_opt_t *opt) {
     }
     bcf_hdr_append(vcf_hdr, "##FILTER=<ID=RefCall,Description=\"Reference call\">");
     bcf_hdr_append(vcf_hdr, "##FILTER=<ID=NoCall,Description=\"Site has depth=0 resulting in no call\">");
+    if (!opt->legacy_phasing) {
+        bcf_hdr_append(vcf_hdr, "##FILTER=<ID=HapInconsistent,Description=\"Once the reads are phased they do not agree on which haplotype carries the allele: a sequencing or mapping artifact. Left out of the phasing and written with its unphased genotype\">");
+        bcf_hdr_append(vcf_hdr, "##INFO=<ID=PQ,Number=1,Type=Float,Description=\"Phase quality: phred loss in read likelihood from flipping this het alone within its block\">");
+        bcf_hdr_append(vcf_hdr, "##INFO=<ID=SQ,Number=1,Type=Float,Description=\"Switch quality: phred loss in read likelihood from a switch between the previous het of the block and this one\">");
+    }
     if (opt->n_samples > 1) {
         bcf_hdr_append(vcf_hdr, "##FILTER=<ID=NormalOnly,Description=\"Present in the normal but not the tumour; treated as false\">");
         bcf_hdr_append(vcf_hdr, "##FILTER=<ID=LowDP,Description=\"Too little depth in one sample to classify\">");
@@ -151,6 +156,7 @@ static void append_paired_filter(kstring_t *ks, const struct call_var_opt_t *opt
         case LONGCALLD_PAIRED_AMBIG: kputs("Ambiguous", ks); n++; break;
         default: break; // SOMATIC and GERMLINE pass
     }
+    if (v->hap_inconsistent) { if (n++) kputc(';', ks); kputs("HapInconsistent", ks); }
     if (opt->min_qual > 0 && v->QUAL < opt->min_qual) { if (n++) kputc(';', ks); kputs("LowQual", ks); }
     if (n == 0) kputs("PASS", ks);
     // Note: a call made without a usable haplotype grid is reported through
@@ -328,8 +334,10 @@ int write_var_to_vcf(var_t *vars, const struct call_var_opt_t *opt, bam_chunk_t 
             len += snprintf(buffer + len, buf_m - len, "\t%.1f\t%s\t", var.QUAL, fks.s ? fks.s : "PASS");
             ks_free(&fks);
         } else {
+            int low = opt->min_qual > 0 && var.QUAL < opt->min_qual;
             len += snprintf(buffer + len, buf_m - len, "\t%.1f\t%s\t", var.QUAL,
-                            (opt->min_qual > 0 && var.QUAL < opt->min_qual) ? "LowQual" : "PASS");
+                            var.hap_inconsistent ? (low ? "HapInconsistent;LowQual" : "HapInconsistent")
+                                                 : (low ? "LowQual" : "PASS"));
         }
         if (var.is_clean) len += snprintf(buffer + len, buf_m - len, "CLEAN;");
         if (opt->n_samples > 1) {
@@ -341,6 +349,10 @@ int write_var_to_vcf(var_t *vars, const struct call_var_opt_t *opt, bam_chunk_t 
         } else if (var.is_somatic) len += snprintf(buffer + len, buf_m - len, "SOMATIC;");
         if (var.te_seq_i >= 0) len += snprintf(buffer + len, buf_m - len, "MEI;");
         len += snprintf(buffer + len, buf_m - len, "END=%" PRId64 "", var.pos + var.ref_len - 1);
+        if (!opt->legacy_phasing && var.PS > 0) {
+            if (var.PQ >= 0) len += snprintf(buffer + len, buf_m - len, ";PQ=%.1f", var.PQ > 999 ? 999 : var.PQ);
+            if (var.SQ >= 0) len += snprintf(buffer + len, buf_m - len, ";SQ=%.1f", var.SQ > 999 ? 999 : var.SQ);
+        }
         if (opt->n_samples > 1 && var.paired_class == LONGCALLD_PAIRED_SOMATIC) {
             if (var.som_hap > 0) {
                 len += snprintf(buffer + len, buf_m - len, ";SOMHAP=%d;HAPVAF=%.4f", var.som_hap, var.hap_vaf);

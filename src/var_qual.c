@@ -181,7 +181,8 @@ void ref_repeat_context(const char *ref_seq, hts_pos_t beg, hts_pos_t end, hts_p
 // while e_r stays at 1-4%; ONT has e_a ~6% to a run of 8, then 25-45%.
 // A single symmetric rate, as here before, took a T15 het at VAF 0.31 for
 // reference plus slippage and gave it QUAL 0.
-static void indel_ctx_error(int is_ont, int period, int tract, double *e_r, double *e_a) {
+// Shared with hap_asm.c, so the phasing weighs an indel read by the same rates.
+void indel_ctx_error(int is_ont, int period, int tract, double *e_r, double *e_a) {
     int L = tract;
     if (period == 1 && L >= 3) {
         if (!is_ont) { *e_a = 0.01 + 0.0135 * (L > 4 ? L - 4 : 0); *e_r = 0.001 + 0.002 * (L > 4 ? L - 4 : 0); }

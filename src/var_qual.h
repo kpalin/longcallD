@@ -140,6 +140,9 @@ var_qual_acc_t *collect_var_qual_acc(const struct call_var_opt_t *opt, struct ba
 // Repeat context at a reference position: an indel's event base, a substitution's base.
 void ref_repeat_context(const char *ref_seq, hts_pos_t beg, hts_pos_t end, hts_pos_t pos, int is_snv,
                         uint8_t *period, uint8_t *tract_len, char *unit);
+// Per-read indel error at a repeat context: e_r, a reference read showing the
+// indel; e_a, an indel read showing the reference.
+void indel_ctx_error(int is_ont, int period, int tract, double *e_r, double *e_a);
 // Fill v->vq and set v->QUAL and v->GQ. med_dp is the chunk's median output depth.
 void score_var_quality(const struct call_var_opt_t *opt, var_qual_acc_t *acc, int med_dp,
                        struct var1_t *v);

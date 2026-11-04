@@ -339,6 +339,9 @@ typedef struct var1_t {
     uint8_t is_unphased_call; // decided on pooled per-sample counts, not on the slot grid
     float hap_vaf;            // alt fraction within that haplotype; estimates purity x cancer-cell fraction
     double paired_pval;       // Fisher exact, one slot against the other three
+    // Haplotype assembly (hap_asm.c): reads disagree on the allele's haplotype;
+    // phred phase quality and switch quality to the previous het, -1 unset.
+    uint8_t hap_inconsistent; float PQ, SQ;
 } var1_t;
 
 typedef struct var_t {
@@ -390,6 +393,12 @@ typedef struct call_var_opt_t {
     int max_hap_alt;                         // alt reads tolerated in a slot that should be clean
     double som_pval;                         // Fisher exact, one slot against the other three
     double min_normal_phase_af, max_normal_phase_af; // AF window a normal site must sit in to anchor phasing
+    // Haplotype assembly (hap_asm.c)
+    double min_allele_qual;   // phred a read's allele call needs to link variants into a block
+    double min_phase_qual;    // phred below which a het the reads contradict is pruned (HapInconsistent)
+    double hap_assign_qual;   // phred posterior a read needs for HP
+    int min_phase_mapq;       // mapping quality a read needs to link variants
+    uint8_t legacy_phasing;   // old adjacent-pair blocks and one-vote stitch, for comparison
     // somatic/mosaic variant
     int min_somatic_dis_to_var, min_somatic_dis_to_homopolymer_indel_error, min_somatic_dis_to_seq_error, min_somatic_alt_dp, min_somatic_te_dp, min_somatic_hap_dp;
     double min_somatic_log_beta_binom, min_somatic_fisher_pval; //, max_somatic_alt_af; // 0.01~0.1

@@ -99,6 +99,8 @@ typedef struct refined_aln_t {
 #define LONGCALLD_TAG_MD 0x2
 #define LONGCALLD_TAG_CS 0x4
 
+typedef struct skip_call_t { int read_i, var_i; uint8_t a, q; } skip_call_t;
+
 typedef struct bam_chunk_t {
     // input
     // tid = pl->reg_chunks[reg_chunk_i].reg_tids[reg_i] 
@@ -156,6 +158,14 @@ typedef struct bam_chunk_t {
     //   candidate: one restricted to the haplotype carrying the alt, one over
     //   every overlapping read, for a call decided on pooled counts.
     int *som_art_mask_hap, *som_art_mask_pooled; int n_som_art; // size: n_cand_vars; paired mode only
+    // Haplotype assembly results per candidate (hap_asm.c), set at the stitch:
+    // LONGCALLD_HAP_* flags, and phred switch / phase quality, -1 unset.
+    uint8_t *var_hap_flag; float *var_sq, *var_pq; // size: n_cand_vars; NULL with --legacy-phasing
+    // Read bases at germline SNV candidates where a read has no profile call:
+    // reads collect_digars_from_bam() skipped, and sites inside a read's own
+    // noisy regions. Gathered while the digars exist. They take no part in
+    // calling or linking; they only let such a read be told its haplotype.
+    struct skip_call_t *skip_calls; int n_skip_calls;
     read_var_profile_t *read_var_profile; cgranges_t *read_var_cr;
     cgranges_t *var_noisy_read_cov_cr, *var_noisy_read_err_cr;
     int *var_noisy_read_marks, var_noisy_read_mark_id;

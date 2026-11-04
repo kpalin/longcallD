@@ -102,12 +102,14 @@ def gt_of(sample):
     return tuple(gt), bool(sample.phased)
 
 
-def load_calls(vcf, region, sidx, tidx):
+def load_calls(vcf, region, sidx, tidx, min_qual=0):
     """Het records of the phasing sample, somatic records, and all PASS germline genotypes."""
     hets, soms, gts = [], [], {}
     vf = pysam.VariantFile(vcf)
     names = list(vf.header.samples)
     for rec in iter_region(vf, region):
+        if min_qual > 0 and (rec.qual is None or rec.qual < min_qual):
+            continue
         s = rec.samples[names[sidx]]
         gt, phased = gt_of(s)
         som = 'SOMATIC' in rec.info
@@ -170,6 +172,7 @@ def main():
     ap.add_argument('--truth', help='phased truth VCF')
     ap.add_argument('--bed', help='restrict the truth comparison to these regions')
     ap.add_argument('--min-mapq', type=int, default=1)
+    ap.add_argument('--min-qual', type=float, default=0, help='ignore records below this QUAL (default: all)')
     ap.add_argument('--json', help='also write the summary as JSON here')
     ap.add_argument('--list', type=int, default=0, help='print up to N examples of each violation')
     a = ap.parse_args()
@@ -177,7 +180,7 @@ def main():
     tidx = a.tumor_sample
     if tidx is None and len(pysam.VariantFile(a.vcf).header.samples) > 1:
         tidx = 1
-    names, hets, soms, gts = load_calls(a.vcf, a.region, a.sample, tidx)
+    names, hets, soms, gts = load_calls(a.vcf, a.region, a.sample, tidx, a.min_qual)
     R = collections.OrderedDict()
     ex = collections.defaultdict(list)
 
@@ -366,14 +369,18 @@ def main():
         R['hom_called_het_in_truth'] = sum(1 for k in tp if q[k][0] == q[k][1] and truth[k][0][0] != truth[k][0][1])
         sw = fl = pairs = cover = 0
         for (c, ps), b in blocks.items():
-            seq = []
+            seq, at = [], []
             for h in b:
                 t = truth.get((h['chrom'], h['pos'], h['ref'], h['alts']))
                 if not t or not t[1] or t[0][0] == t[0][1] or sorted(t[0]) != sorted(h['gt']):
                     continue
                 seq.append(0 if tuple(h['gt']) == tuple(t[0]) else 1)
+                at.append(h['pos'])
             cover += len(seq)
             d = [x != y for x, y in zip(seq, seq[1:])]
+            for i, x in enumerate(d):
+                if x:
+                    example('switch', '%s:%d-%d PS=%s' % (c, at[i], at[i + 1], ps))
             pairs += len(d)
             sw += sum(d)
             i = 0

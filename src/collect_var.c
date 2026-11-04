@@ -12,6 +12,7 @@
 #include "assign_hap.h"
 #include "vcf_utils.h"
 #include "var_qual.h"
+#include "hap_asm.h"
 
 extern int LONGCALLD_VERBOSE;
 
@@ -2308,6 +2309,9 @@ int make_variants(const call_var_opt_t *opt, bam_chunk_t *chunk, var_t **_var) {
             var->vars[i].te_is_rev = cand_vars[cand_i].te_is_rev;
         } else var->vars[i].te_seq_i = -1;
         var->vars[i].PS = cand_vars[cand_i].phase_set;
+        var->vars[i].hap_inconsistent = chunk->var_hap_flag != NULL && (chunk->var_hap_flag[cand_i] & LONGCALLD_HAP_INCONSISTENT);
+        var->vars[i].PQ = chunk->var_pq != NULL ? chunk->var_pq[cand_i] : -1;
+        var->vars[i].SQ = chunk->var_sq != NULL ? chunk->var_sq[cand_i] : -1;
         var->vars[i].ref_bases = get_bseq(ref_seq+var->vars[i].pos-ref_beg, var->vars[i].ref_len);
         if (is_hom) {
             var->vars[i].alt_len = (int*)_err_malloc(1 * sizeof(int));
@@ -3871,6 +3875,9 @@ void collect_var_main(const call_var_pl_t *pl, bam_chunk_t *chunk) {
     //    model in step 2. Last, because every profile merge above rebuilds the
     //    profile; and here, because the read bases are freed with the digars.
     if (chunk->n_cand_vars > 0) fill_read_var_profile_qual(opt, chunk);
+    // 9. The reads skipped above still get a haplotype tag if they plainly sit
+    //    on one; their alleles are read here, the last point the digars exist.
+    if (!opt->legacy_phasing && chunk->n_cand_vars > 0) hap_asm_collect_skipped(opt, chunk);
 }
 
 // stitch ii-1 and ii
@@ -3880,6 +3887,10 @@ void stitch_var_main(call_var_step_t *step, bam_chunk_t *chunk) {
     for (int ii = 1; ii < step->n_chunks; ++ii) {
         flip_variant_hap(opt, chunk+ii-1, chunk+ii);
     }
+    // The chunk-local phasing above is only the starting point: the haplotypes,
+    // genotypes and read tags are assembled again over the whole chromosome,
+    // with every read one fragment however many chunks it crosses.
+    if (!opt->legacy_phasing) hap_asm_chunks(opt, chunk, step->n_chunks);
 }
 
 void make_var_main(call_var_step_t *step, bam_chunk_t *chunk, var_t *var, long ii) {

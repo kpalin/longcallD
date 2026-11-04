@@ -114,6 +114,11 @@ const struct option call_var_opt [] = {
     { "min-som-rep-indel-vaf", 1, NULL, 0},
     { "min-normal-phase-af", 1, NULL, 0},
     { "max-normal-phase-af", 1, NULL, 0},
+    { "min-allele-qual", 1, NULL, 0},
+    { "min-phase-qual", 1, NULL, 0},
+    { "hap-assign-qual", 1, NULL, 0},
+    { "min-phase-mapq", 1, NULL, 0},
+    { "legacy-phasing", 0, NULL, 0},
     { "no-out-aln-passthrough", 0, NULL, 0},
     { "out-normal-bam", 1, NULL, 0},
     { "out-normal-cram", 1, NULL, 0},
@@ -237,6 +242,15 @@ call_var_opt_t *call_var_init_para(void) {
     opt->som_artifact_mask_indel = LONGCALLD_ART_DEFAULT_INDEL;
     opt->min_normal_phase_af = LONGCALLD_MIN_CAND_AF;
     opt->max_normal_phase_af = LONGCALLD_MAX_CAND_AF;
+    // Haplotype assembly. 7 and 20 are Longshot's --min_allele_qual and
+    // --min_mapq. A read is tagged at posterior 0.9 rather than Longshot's
+    // 0.99: two agreeing calls at a 10% error rate (R9) give 0.988, and a read
+    // that agrees with one haplotype at two phased sites must be tagged.
+    opt->min_allele_qual = 7.0;
+    opt->min_phase_qual = 10.0;
+    opt->hap_assign_qual = 10.0;
+    opt->min_phase_mapq = 20;
+    opt->legacy_phasing = 0;
     opt->max_noisy_reg_cov = LONGCALLD_MAX_NOISY_REG_COV;
     // somatic/mosaic var
     opt->min_somatic_dis_to_var = LONGCALLD_MIN_SOMATIC_DIS_TO_VAR;
@@ -1444,7 +1458,19 @@ static void call_var_usage(void) {//main usage
     fprintf(stderr, "                          shared phasing [%.2f, %.2f]. Separate from -a on purpose: -a is\n", LONGCALLD_MIN_CAND_AF, LONGCALLD_MAX_CAND_AF);
     fprintf(stderr, "                          lowered in paired mode to detect low-fraction somatic variants,\n");
     fprintf(stderr, "                          which is no reason to let noisy normal sites decide haplotypes\n");
-    fprintf(stderr, "    --autosome-XY         only call variants on autosomes and sex chromosomes, e.g., (chr){1-22,XY} [default]\n");
+    fprintf(stderr, "  Phasing (read-backed haplotype assembly, after Longshot/HapCUT2):\n");
+    fprintf(stderr, "       --min-allele-qual FLOAT\n");
+    fprintf(stderr, "                          phred a read's allele call needs to link variants into a phase\n");
+    fprintf(stderr, "                          block [7]. Blocks are never split: hets a read links share one\n");
+    fprintf(stderr, "                          block\n");
+    fprintf(stderr, "       --min-phase-mapq INT  mapping quality a read needs to link variants [20]\n");
+    fprintf(stderr, "       --min-phase-qual FLOAT\n");
+    fprintf(stderr, "                          a het whose phase the reads contradict below this phred is left\n");
+    fprintf(stderr, "                          out of the phasing and written FILTER=HapInconsistent [10]\n");
+    fprintf(stderr, "       --hap-assign-qual FLOAT\n");
+    fprintf(stderr, "                          phred posterior a read needs for an HP tag [10]\n");
+    fprintf(stderr, "       --legacy-phasing  the previous adjacent-pair phasing, for comparison\n");
+    fprintf(stderr, "    --autosome-XY        only call variants on autosomes and sex chromosomes, e.g., (chr){1-22,XY} [default]\n");
     // fprintf(stderr, "                          if not found, all chromosomes/contigs will be processed automatically\n");
     fprintf(stderr, "    --autosome            only call variants on autosomes, e.g., (chr){1-22}\n");
     fprintf(stderr, "    --all-ctg             call variants on all chromosomes/contigs\n");
@@ -1632,6 +1658,11 @@ int call_var_main_mode(int argc, char *argv[], int paired_cli) {
                     else if (strcmp(call_var_opt[op_idx].name, "min-som-rep-indel-vaf") == 0) opt->min_som_rep_indel_vaf = atof(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "min-normal-phase-af") == 0) opt->min_normal_phase_af = atof(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "max-normal-phase-af") == 0) opt->max_normal_phase_af = atof(optarg);
+                    else if (strcmp(call_var_opt[op_idx].name, "min-allele-qual") == 0) opt->min_allele_qual = atof(optarg);
+                    else if (strcmp(call_var_opt[op_idx].name, "min-phase-qual") == 0) opt->min_phase_qual = atof(optarg);
+                    else if (strcmp(call_var_opt[op_idx].name, "hap-assign-qual") == 0) opt->hap_assign_qual = atof(optarg);
+                    else if (strcmp(call_var_opt[op_idx].name, "min-phase-mapq") == 0) opt->min_phase_mapq = atoi(optarg);
+                    else if (strcmp(call_var_opt[op_idx].name, "legacy-phasing") == 0) opt->legacy_phasing = 1;
                     else if (strcmp(call_var_opt[op_idx].name, "no-out-aln-passthrough") == 0) opt->out_aln_passthrough = 0;
                     else if (strcmp(call_var_opt[op_idx].name, "out-normal-bam") == 0)  { opt->out_naln_fp = open_aln_out_file(optarg, "wb"); opt->out_naln_is_cram = 0; }
                     else if (strcmp(call_var_opt[op_idx].name, "out-normal-cram") == 0) { opt->out_naln_fp = open_aln_out_file(optarg, "wc"); opt->out_naln_is_cram = 1; }
