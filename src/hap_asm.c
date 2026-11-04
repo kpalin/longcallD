@@ -450,6 +450,13 @@ void ha_run(const ha_opt_t *o, ha_t *h) {
             // this is not one of them.
             int b = ref_block(&w, v);
             x->ps = b >= 0 ? h->var[b].pos : (o->solo_needs_phasable && !x->phasable ? 0 : x->pos);
+        } else if (!x->pruned) {
+            // Not het here, but it still sits in the block its reads are on.
+            // In paired mode the per-sample slot evidence can still make it a
+            // het in one sample (make_variants()), and that genotype is
+            // expressed in this block's haplotypes.
+            int b = ref_block(&w, v);
+            x->ps = b >= 0 ? h->var[b].pos : 0;
         }
         // HapInconsistent: pruned, or called before phasing but carried by no
         // haplotype once the reads are phased -- its alt reads are spread over
@@ -586,8 +593,14 @@ static void hap_asm_group(const call_var_opt_t *opt, bam_chunk_t *chunks, int be
         for (int i = 0; i < c->n_cand_vars; ++i) {
             vmap[k][i] = -1;
             const cand_var_t *cv = c->cand_vars + i;
-            if (c->var_i_to_cate == NULL || (c->var_i_to_cate[i] & LONGCALLD_CAND_GERMLINE_VAR_CATE) == 0) continue;
-            if (cv->hap_to_cons_alle == NULL) continue;
+            if (c->var_i_to_cate == NULL) continue;
+            // A somatic candidate is placed in the block its reads are on and
+            // nothing else: in paired mode a normal het the tumour has lost
+            // (LOH) falls below the pooled candidate floor and is filed here,
+            // yet is classified germline later and must carry a phase set.
+            int som = c->var_i_to_cate[i] == LONGCALLD_CAND_SOMATIC_VAR;
+            if (!som && (c->var_i_to_cate[i] & LONGCALLD_CAND_GERMLINE_VAR_CATE) == 0) continue;
+            if (!som && cv->hap_to_cons_alle == NULL) continue;
             hts_pos_t rp = record_pos(cv);
             if (rp < c->reg_beg || rp > c->reg_end) continue;
             if (h.n_var == m_var) {
@@ -598,10 +611,19 @@ static void hap_asm_group(const call_var_opt_t *opt, bam_chunk_t *chunks, int be
             }
             ha_var_t *x = h.var + h.n_var; memset(x, 0, sizeof(*x));
             x->pos = rp; x->is_indel = cv->var_type != BAM_CDIFF; x->phasable = 1;
-            x->geno = (c->var_i_to_cate[i] & LONGCALLD_CAND_GERMLINE_CLEAN_VAR_CATE) ? 2 : 1;
-            int h1 = cv->hap_to_cons_alle[1], h2 = cv->hap_to_cons_alle[2];
-            if (h1 == -1 && h2 == -1) h1 = h2 = cv->hap_to_cons_alle[0];
-            x->g[0] = h1 == 1; x->g[1] = h2 == 1;
+            if (som) {
+                // Paired: genotyped on the normal's reads like any site, so a
+                // normal het the tumour lost becomes a het of the assembly (and
+                // may anchor it, given the normal-AF window below); a true
+                // tumour-only variant genotypes 0/0 there and changes nothing.
+                // Single-sample: a mosaic candidate is not a germline site.
+                x->geno = paired ? 2 : 0; x->phasable = paired;
+            } else {
+                x->geno = (c->var_i_to_cate[i] & LONGCALLD_CAND_GERMLINE_CLEAN_VAR_CATE) ? 2 : 1;
+                int h1 = cv->hap_to_cons_alle[1], h2 = cv->hap_to_cons_alle[2];
+                if (h1 == -1 && h2 == -1) h1 = h2 = cv->hap_to_cons_alle[0];
+                x->g[0] = h1 == 1; x->g[1] = h2 == 1;
+            }
             er[h.n_var] = ea[h.n_var] = 0;
             if (x->is_indel) {
                 uint8_t per, tr; char unit[8];
@@ -708,7 +730,8 @@ static void hap_asm_group(const call_var_opt_t *opt, bam_chunk_t *chunks, int be
         }
         for (int v = 0; v < h.n_var; ++v) {
             double af = ndp[v] > 0 ? (double)nalt[v] / ndp[v] : 0;
-            h.var[v].phasable = ndp[v] >= opt->min_normal_phase_dp && af >= opt->min_normal_phase_af && af <= opt->max_normal_phase_af;
+            h.var[v].phasable = h.var[v].phasable && ndp[v] >= opt->min_normal_phase_dp &&
+                                af >= opt->min_normal_phase_af && af <= opt->max_normal_phase_af;
         }
         free(ndp); free(nalt);
     }
@@ -733,10 +756,13 @@ static void hap_asm_group(const call_var_opt_t *opt, bam_chunk_t *chunks, int be
             int gv = vmap[k][i];
             if (gv < 0) continue;
             const ha_var_t *x = h.var + gv; cand_var_t *cv = c->cand_vars + i;
-            cv->hap_to_cons_alle[1] = x->g[0]; cv->hap_to_cons_alle[2] = x->g[1];
-            cv->phase_set = (x->g[0] != x->g[1] && x->ps > 0) ? x->ps : 0;
+            cv->phase_set = x->ps > 0 ? x->ps : 0; // the writer prints it only on a het genotype
             c->var_hap_flag[i] = x->inconsistent ? LONGCALLD_HAP_INCONSISTENT : 0;
             c->var_sq[i] = x->sq; c->var_pq[i] = x->pq;
+            // A somatic candidate's alleles come from the per-sample slot
+            // evidence in make_variants(), not from the germline assembly.
+            if (c->var_i_to_cate[i] == LONGCALLD_CAND_SOMATIC_VAR) continue;
+            cv->hap_to_cons_alle[1] = x->g[0]; cv->hap_to_cons_alle[2] = x->g[1];
         }
         for (int r = 0; r < c->n_reads; ++r) {
             int f = fmap[gid[k][r]];

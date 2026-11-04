@@ -119,8 +119,12 @@ def load_calls(vcf, region, sidx, tidx, min_qual=0):
             t = rec.samples[names[tidx]] if tidx is not None else s
             tgt, tph = gt_of(t)
             tps = t.get('PS') if 'PS' in rec.format else None
+            # Paired: phased against the normal's haplotypes means a PS and the
+            # haplotype carrying the alt (SOMHAP); the tumour GT may still print
+            # "/" where the tumour has lost the other copy.
+            phased = (tps is not None and tps > 0) and (tph or 'SOMHAP' in rec.info)
             soms.append(dict(chrom=rec.chrom, pos=rec.pos, ref=rec.ref, alt=alts[0] if alts else '',
-                             snv=snv, passed=is_pass(rec), ps=tps if tph else None))
+                             snv=snv, passed=is_pass(rec), ps=tps if phased else None))
             continue
         if is_pass(rec) and gt is not None and any(gt):
             gts[(rec.chrom, rec.pos, rec.ref, alts)] = gt
@@ -232,6 +236,7 @@ def main():
             som_snv[s['chrom']][s['pos'] - 1] = s
     link = collections.defaultdict(lambda: [0, 0])  # (chrom, i, j) -> [cis, trans]
     som_tagged_alt = collections.Counter()
+    i1_pairs = collections.Counter()
     v = collections.Counter()
     for bam in a.bam:
         af = pysam.AlignmentFile(bam, reference_filename=a.ref)
@@ -276,6 +281,7 @@ def main():
                 pss = set(x[1] for x in ph)
                 if len(pss) > 1:
                     v['I1_reads_spanning_blocks'] += 1
+                    i1_pairs[(chrom,) + tuple(sorted(pss))[:2]] += 1
                     example('I1', '%s %s:%d-%d PS=%s' % (r.query_name, chrom, r.reference_start, r.reference_end,
                                                          ','.join(map(str, sorted(pss)))))
                 if not hp:
@@ -400,6 +406,12 @@ def main():
     w = max(len(k) for k in R)
     for k, x in R.items():
         print('%-*s %s' % (w, k, x))
+    # where the violations concentrate
+    for (c, p1, p2), n in i1_pairs.most_common(10):
+        print('I1_pair\t%s\t%s\t%s\t%d' % (c, p1, p2, n))
+    i2_mb = collections.Counter('%s:%dMb' % (h['chrom'], h['pos'] // 1000000) for h in pass_hets if not h['phased'])
+    for k, n in i2_mb.most_common(10):
+        print('I2_window\t%s\t%d' % (k, n))
     for k, l in ex.items():
         for s in l:
             print('example\t%s\t%s' % (k, s))
