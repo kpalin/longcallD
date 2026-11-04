@@ -175,7 +175,7 @@ static void append_paired_filter(kstring_t *ks, const struct call_var_opt_t *opt
 // genotypes beside it, because the GT separator is decided per sample from that
 // sample's own slot depths while the flag is decided once for the site.
 static int paired_call_is_unphased(const var1_t *v) {
-    if (!v->is_unphased_call) return 0;
+    if (!v->is_unphased_call || v->alt_phased) return 0;
     return v->paired_class == LONGCALLD_PAIRED_SOMATIC ||
            v->paired_class == LONGCALLD_PAIRED_NORMAL_ONLY ||
            v->paired_class == LONGCALLD_PAIRED_LOH;
@@ -220,10 +220,20 @@ static void append_paired_sample(kstring_t *ks, const struct call_var_opt_t *opt
     // separator, which is also what keeps INFO/UNPHASED and the separator
     // answering the same question -- see paired_call_is_unphased().
     int phased = (want_ps && d1 >= min_hap_dp && d2 >= min_hap_dp);
+    // The normal's germline genotype is the haplotype assembly's (hap_asm.c),
+    // decided on the normal's own reads with every read weighed, so it is
+    // printed phased whenever the record has a phase set; the slot-depth floor
+    // above stays for the tumour, where a lost copy is a real event.
+    int asm_gt = !opt->legacy_phasing && smp == LONGCALLD_SAMPLE_NORMAL && want_ps &&
+                 v->paired_class == LONGCALLD_PAIRED_GERMLINE && v->n_alt_allele > 0;
 
     int dosage = -1; // alt alleles in the printed genotype; -1 for "./."
     if (dp == 0) {
         kputs("./.", ks);
+    } else if (asm_gt) {
+        int g1 = v->GT[0] ? 1 : 0, g2 = v->GT[1] ? 1 : 0;
+        kputw(g1, ks); kputc('|', ks); kputw(g2, ks);
+        dosage = g1 + g2;
     } else if (phased) {
         int g1 = paired_slot_is_alt(opt, sc, smp, 1) ? 1 : 0, g2 = paired_slot_is_alt(opt, sc, smp, 2) ? 1 : 0;
         kputw(g1, ks); kputc('|', ks); kputw(g2, ks);

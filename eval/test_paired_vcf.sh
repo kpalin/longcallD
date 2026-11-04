@@ -93,6 +93,16 @@ chk "normal has no alt on either haplotype" "0,0" \
 chk "tumour has alt on exactly one haplotype" yes \
     "$(bcftools query -f '%POS\t[%HAD\t]\n' "$T/paired.vcf" 2>/dev/null | awk -v p=$SITE '$1==p{split($3,a,","); print ((a[1]>0)!=(a[2]>0)) ? "yes" : "no"}')"
 
+# The injection went onto the reads carrying HET_ALT at HET, so the somatic
+# variant sits on that germline haplotype: same block, and SOMHAP is the slot
+# whose normal genotype carries the het's alt.
+het_q=$(bcftools query -f '%POS\t%ALT\t[%GT\t%PS\t]\n' "$T/paired.vcf" 2>/dev/null | awk -v p=$HET -v a=$HET_ALT '$1==p && $2==a')
+som_ps=$(bcftools query -f '%POS\t[%PS\t]\n' "$T/paired.vcf" 2>/dev/null | awk -v p=$SITE '$1==p{print $2}')
+chk "the somatic call is in the germline het's phase block" "$(echo "$het_q" | cut -f4)" "$som_ps"
+chk "SOMHAP is the haplotype carrying the het's alt" \
+    "$(echo "$het_q" | cut -f3 | awk '{print ($1=="1|0") ? 1 : (($1=="0|1") ? 2 : "none")}')" \
+    "$(echo "$rec" | cut -f8 | grep -oE 'SOMHAP=[12]' | cut -d= -f2)"
+
 # ----------------------------------------------------------- normal-only ---
 # The stated requirement: present only in the germline means flagged and
 # excluded from PASS, but still inspectable rather than silently dropped.

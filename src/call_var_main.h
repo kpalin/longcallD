@@ -342,6 +342,9 @@ typedef struct var1_t {
     // Haplotype assembly (hap_asm.c): reads disagree on the allele's haplotype;
     // phred phase quality and switch quality to the previous het, -1 unset.
     uint8_t hap_inconsistent; float PQ, SQ;
+    // Paired: decided on pooled counts (is_unphased_call), but the reads that
+    // carry the alt sit on one haplotype of the site's block, so it is phased.
+    uint8_t alt_phased;
 } var1_t;
 
 typedef struct var_t {

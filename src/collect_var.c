@@ -2140,7 +2140,15 @@ static void check_phase_set_het_anchors(const call_var_opt_t *opt, const bam_chu
     hts_pos_t *ok = (hts_pos_t*)_err_malloc(n * sizeof(hts_pos_t));
     int n_ok = 0;
     for (int i = 0; i < n; ++i) {
-        if (!var_prints_phased_het_in_normal(opt, chunk->var_slots + i)) continue;
+        if (opt->legacy_phasing) {
+            if (!var_prints_phased_het_in_normal(opt, chunk->var_slots + i)) continue;
+        } else {
+            // The assembler names a block after its first het, and the writer
+            // prints a germline het with a phase set phased in the normal.
+            const int *hc = v[i].hap_to_cons_alle;
+            if (hc == NULL || hc[1] == hc[2] || v[i].phase_set <= 0) continue;
+            if ((chunk->var_i_to_cate[i] & LONGCALLD_CAND_GERMLINE_VAR_CATE) == 0) continue;
+        }
         ok[n_ok++] = v[i].var_type == BAM_CDIFF ? v[i].pos : v[i].pos - 1;
     }
     qsort(ok, n_ok, sizeof(hts_pos_t), cmp_ps);
@@ -2312,6 +2320,7 @@ int make_variants(const call_var_opt_t *opt, bam_chunk_t *chunk, var_t **_var) {
         var->vars[i].hap_inconsistent = chunk->var_hap_flag != NULL && (chunk->var_hap_flag[cand_i] & LONGCALLD_HAP_INCONSISTENT);
         var->vars[i].PQ = chunk->var_pq != NULL ? chunk->var_pq[cand_i] : -1;
         var->vars[i].SQ = chunk->var_sq != NULL ? chunk->var_sq[cand_i] : -1;
+        var->vars[i].alt_phased = 0;
         var->vars[i].ref_bases = get_bseq(ref_seq+var->vars[i].pos-ref_beg, var->vars[i].ref_len);
         if (is_hom) {
             var->vars[i].alt_len = (int*)_err_malloc(1 * sizeof(int));
@@ -2376,6 +2385,31 @@ int make_variants(const call_var_opt_t *opt, bam_chunk_t *chunk, var_t **_var) {
                 // block's haplotypes, and must say which.
                 if (var->vars[i].PS <= 0 && !var->vars[i].is_unphased_call)
                     var->vars[i].PS = chunk->var_slots[cand_i].ps;
+                // A verdict reached on pooled counts -- the grid failed one of
+                // its trust gates -- is still a statement about one chromosome
+                // copy when the reads carrying the alt are on one haplotype of
+                // the site's block: they were tagged by the normal's germline
+                // hets. Phase it there. The verdict and the quality model keep
+                // is_unphased_call; only what the record says about phase changes.
+                if (!opt->legacy_phasing && var->vars[i].is_unphased_call && chunk->var_slots[cand_i].ps > 0) {
+                    int cls = var->vars[i].paired_class;
+                    int smp = cls == LONGCALLD_PAIRED_SOMATIC ? LONGCALLD_SAMPLE_TUMOR
+                            : (cls == LONGCALLD_PAIRED_NORMAL_ONLY || cls == LONGCALLD_PAIRED_LOH) ? LONGCALLD_SAMPLE_NORMAL : -1;
+                    const var_slot_counts_t *sc = chunk->var_slots + cand_i;
+                    if (smp >= 0) {
+                        int a1 = sc->alt[smp][1], a2 = sc->alt[smp][2];
+                        int h = a1 >= a2 ? 1 : 2, ah = h == 1 ? a1 : a2, ao = h == 1 ? a2 : a1;
+                        if (ah >= opt->min_alt_dp && ao <= clean_slot_limit(opt, sc, smp, 3 - h)) {
+                            var->vars[i].alt_phased = 1;
+                            var->vars[i].PS = sc->ps;
+                            if (cls == LONGCALLD_PAIRED_SOMATIC) {
+                                int d = slot_dp(sc, smp, h);
+                                var->vars[i].som_hap = (uint8_t)h;
+                                var->vars[i].hap_vaf = d > 0 ? (float)ah / d : 0;
+                            }
+                        }
+                    }
+                }
                 // Which slot carries the allele is one question; whether the
                 // reads carrying it are error is another, and paired mode used
                 // to ask only the first.
