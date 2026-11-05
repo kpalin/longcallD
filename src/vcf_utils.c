@@ -52,9 +52,11 @@ void write_vcf_header(bam_hdr_t *hdr, struct call_var_opt_t *opt) {
 
     // FILTER fields
     bcf_hdr_append(vcf_hdr, "##FILTER=<ID=PASS,Description=\"All filters passed\">");
-    if (opt->min_qual > 0) { // declared only when it can be set
+    if (opt->min_qual > 0 || (opt->n_samples > 1 && opt->min_som_qual > 0)) { // declared only when it can be set
         char lq[256];
-        snprintf(lq, sizeof(lq), "##FILTER=<ID=LowQual,Description=\"QUAL below --min-qual %d\">", opt->min_qual);
+        if (opt->n_samples > 1 && opt->min_som_qual >= 0)
+            snprintf(lq, sizeof(lq), "##FILTER=<ID=LowQual,Description=\"QUAL below --min-qual %d, or --min-som-qual %d for a somatic call\">", opt->min_qual, opt->min_som_qual);
+        else snprintf(lq, sizeof(lq), "##FILTER=<ID=LowQual,Description=\"QUAL below --min-qual %d\">", opt->min_qual);
         bcf_hdr_append(vcf_hdr, lq);
     }
     bcf_hdr_append(vcf_hdr, "##FILTER=<ID=RefCall,Description=\"Reference call\">");
@@ -169,7 +171,8 @@ static void append_paired_filter(kstring_t *ks, const struct call_var_opt_t *opt
     if (v->hap_discordant && v->paired_class == LONGCALLD_PAIRED_GERMLINE && opt->min_hap_conc > 0) {
         if (n++) kputc(';', ks); kputs("HapDiscordant", ks);
     }
-    if (opt->min_qual > 0 && v->QUAL < opt->min_qual) { if (n++) kputc(';', ks); kputs("LowQual", ks); }
+    int mq = (v->paired_class == LONGCALLD_PAIRED_SOMATIC && opt->min_som_qual >= 0) ? opt->min_som_qual : opt->min_qual;
+    if (mq > 0 && v->QUAL < mq) { if (n++) kputc(';', ks); kputs("LowQual", ks); }
     if (n == 0) kputs("PASS", ks);
     // Note: a call made without a usable haplotype grid is reported through
     // INFO/UNPHASED, not here. As a FILTER it made every such call non-PASS,

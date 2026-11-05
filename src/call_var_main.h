@@ -471,6 +471,7 @@ typedef struct call_var_opt_t {
     double vq_phase_weight;         // weight of the phased reading of a het
     double vq_pl_scale;             // PL tempering for read dependence; per technology
     int min_qual;                   // FILTER LowQual below this; 0 = off
+    int min_som_qual;               // ...for a paired somatic call; <0 = min_qual
     char *qual_weights_fn; var_qual_weights_t *vq_weights;
     int8_t no_vcf_header, out_amb_base, out_somatic, out_methylation;
     // LONGCALLD_ARTCHK / SLOTCHK / QUALCHK debug dumps, read once at start-up

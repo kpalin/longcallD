@@ -22,13 +22,14 @@ typedef struct {
     int type;              // BAM_CDIFF / BAM_CINS / BAM_CDEL
     int in_repeat, tsd_len, polya_len, te_seq_i;
     int want_cls, want_unphased, want_som_hap;
+    int nar;               // normal alt reads over every read (INFO/NAR); 0 if unset
 } case_t;
 
 static int run_case(const call_var_opt_t *opt, const case_t *c) {
     var1_t v; memset(&v, 0, sizeof(v));
     v.type = c->type; v.in_repeat = c->in_repeat;
     v.tsd_len = c->tsd_len; v.polya_len = c->polya_len; v.te_seq_i = c->te_seq_i;
-    v.slots.n_samples = 2; v.slots.ps = 100;
+    v.slots.n_samples = 2; v.slots.ps = 100; v.normal_any_alt = c->nar;
     for (int h = 0; h < 3; ++h) {
         v.slots.alt[N][h] = c->n[h][0]; v.slots.ref[N][h] = c->n[h][1];
         v.slots.alt[T][h] = c->t[h][0]; v.slots.ref[T][h] = c->t[h][1];
@@ -72,6 +73,12 @@ int main(void) {
         {"pooled: normal het, tumour lacks it",  {{5,5},{0,0},{0,0}},     {{0,20},{0,0},{0,0}},    BAM_CDIFF, 0, 0, 0, -1, LONGCALLD_PAIRED_NORMAL_ONLY, 1, -1},
         {"pooled: normal noise -> ambiguous",    {{2,58},{0,0},{0,0}},    {{0,20},{0,0},{0,0}},    BAM_CDIFF, 0, 0, 0, -1, LONGCALLD_PAIRED_AMBIG,       1, -1},
         {"pooled: phase-set anchor stays germline", {{0,0},{8,0},{0,8}},  {{0,20},{0,0},{0,0}},    BAM_CDIFF, 0, 0, 0, -1, LONGCALLD_PAIRED_GERMLINE,    1, -1},
+        // A somatic allele is in no normal read at all: an unassigned one, or
+        // one the slots never saw (left out of calling), counts as much as a
+        // phased one.
+        {"one unassigned normal alt read -> not somatic", {{1,0},{0,10},{0,10}}, {{0,0},{6,4},{0,10}}, BAM_CDIFF, 0, 0, 0, -1, LONGCALLD_PAIRED_AMBIG, 0, -1},
+        {"normal alt in a skipped read -> not somatic", {{0,0},{0,10},{0,10}}, {{0,0},{6,4},{0,10}}, BAM_CDIFF, 0, 0, 0, -1, LONGCALLD_PAIRED_AMBIG, 0, -1, 1},
+        {"one normal alt read, MEI too",         {{0,0},{1,9},{0,10}},    {{0,0},{1,9},{0,10}},    BAM_CINS,  0, 9, 25, 0, LONGCALLD_PAIRED_AMBIG,       0, -1},
     };
     int n = sizeof(cases) / sizeof(cases[0]), n_ok = 0;
     for (int i = 0; i < n; ++i) n_ok += run_case(opt, cases + i);

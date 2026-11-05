@@ -103,6 +103,7 @@ const struct option call_var_opt [] = {
     { "min-hap-vaf", 1, NULL, 0},
     { "som-alt-qual", 1, NULL, 0},
     { "min-qual", 1, NULL, 0},
+    { "min-som-qual", 1, NULL, 0},
     { "qual-weights", 1, NULL, 0},
     { "som-artifact-mask", 1, NULL, 0},
     { "som-artifact-mask-indel", 1, NULL, 0},
@@ -188,19 +189,24 @@ void set_ont_opt(call_var_opt_t *opt) {
 //   (median 4.8%, R10 0.7%), so the default per-read cut left them out of
 //   calling. 0.10 takes somatic SNV recall from 0.36 to 0.48 at equal F1 to
 //   0.15, for 2.9 GB and 16 min where 0.15 took 3.5 GB and 21 min.
-// - Dense mismatches (0x020) mark 83% of true somatic SNVs' alt reads on R9
-//   and 95% of false ones: no separation, and it alone cut recall to 0.08.
-//   The low-quality window (0x008) fails 31% of true SNVs. Neither is
-//   enforced; the strand, nearby-variant, alt-quality, indel-error and
-//   long-clip checks are (SNV F1 0.15 -> 0.60).
-// - Indels keep strand, indel error, long clip and the repeat cut, but not
-//   alt or window quality, which R9 indels fail regardless of truth.
+// - QUAL carries most of the artifact evidence already: at QUAL >= 4 the
+//   false somatic SNVs fall from 1382 to 13 with the masks off. Of the
+//   masks only indel error and long clip still pay on top (185 TP, 2 FP);
+//   dense mismatches (0x020), which mark 83% of true somatic SNVs on R9 and
+//   alone cut recall to 0.08, and the strand and alt-quality checks are not
+//   enforced. Indels keep strand, indel error, long clip and the repeat cut.
+// - Germline: HG002 R9 HAC 45x, GIAB v4.2.1. QUAL >= 10 and haplotype
+//   concordance tested against 12% (SNV) / 5% (indel) read error take SNV
+//   precision 0.913 -> 0.966 (F1 0.936 -> 0.956) and indel precision
+//   0.075 -> 0.289. A somatic call keeps its own QUAL floor of 4: at 10 it
+//   loses a fifth of its true calls.
 void set_ont_r9_opt(call_var_opt_t *opt) {
     set_ont_opt(opt);
     opt->is_ont_r9 = 1;
     opt->max_var_ratio_per_read = LONGCALLD_R9_MAX_VAR_RATIO_PER_READ;
-    opt->som_artifact_mask = LONGCALLD_ART_STRAND | LONGCALLD_ART_DIS_TO_VAR | LONGCALLD_ART_ALT_QUAL |
-                             LONGCALLD_ART_INDEL_ERR | LONGCALLD_ART_LONG_CLIP;
+    opt->min_qual = 10; opt->min_som_qual = 4;
+    opt->hap_conc_err[0] = 0.12; opt->hap_conc_err[1] = 0.05;
+    opt->som_artifact_mask = LONGCALLD_ART_INDEL_ERR | LONGCALLD_ART_LONG_CLIP;
     opt->som_artifact_mask_indel = LONGCALLD_ART_STRAND | LONGCALLD_ART_INDEL_ERR | LONGCALLD_ART_LONG_CLIP |
                                    LONGCALLD_ART_REPEAT_INDEL;
 }
@@ -384,7 +390,7 @@ call_var_opt_t *call_var_init_para(void) {
     opt->vq_bq_cap = 0; opt->vq_default_bq = 0; // per technology, resolved after option parsing
     opt->vq_theta_snv = LONGCALLD_VQ_THETA_SNV; opt->vq_theta_indel = LONGCALLD_VQ_THETA_INDEL;
     opt->vq_som_prior = LONGCALLD_VQ_SOM_PRIOR; opt->vq_phase_weight = LONGCALLD_VQ_PHASE_WEIGHT;
-    opt->min_qual = 0; opt->qual_weights_fn = NULL; opt->vq_weights = NULL;
+    opt->min_qual = 0; opt->min_som_qual = -1; opt->qual_weights_fn = NULL; opt->vq_weights = NULL;
     opt->out_vcf = NULL; opt->vcf_hdr = NULL; opt->out_vcf_fn = NULL; opt->out_vcf_type = 'v'; opt->no_vcf_header = 0; opt->out_amb_base = 0;
     opt->out_aln_fp = NULL; opt->out_aln_is_cram = 0; opt->refine_bam = 0;
     opt->out_naln_fp = NULL; opt->out_naln_is_cram = 0;
@@ -1431,7 +1437,8 @@ static void call_var_usage(void) {//main usage
     fprintf(stderr, "    --hifi                HiFi reads [default]\n");
     fprintf(stderr, "    --ont                 ONT reads \n");
     fprintf(stderr, "    --ont-r9              ONT R9.4.1 reads (Guppy HAC): --ont, with --max-var-ratio 0.10, somatic\n");
-    fprintf(stderr, "                          artifact masks 0x57 (snv) 0x251 (indel), --hap-conc-err 0.08,0.12\n");
+    fprintf(stderr, "                          artifact masks 0x50 (snv) 0x251 (indel), --hap-conc-err 0.12,0.05,\n");
+    fprintf(stderr, "                          --min-qual 10 --min-som-qual 4\n");
     fprintf(stderr, "    --max-var-ratio FLOAT a read with more candidate events per aligned base is left out of\n");
     fprintf(stderr, "                          calling [%.2f; %.2f with --ont-r9]\n", LONGCALLD_MAX_VAR_RATIO_PER_READ, LONGCALLD_R9_MAX_VAR_RATIO_PER_READ);
     fprintf(stderr, "    --max-noisy-frac FLOAT  ...or with more of its span in noisy regions [%.2f]\n", LONGCALLD_MAX_NOISY_FRAC_PER_READ);
@@ -1536,7 +1543,7 @@ static void call_var_usage(void) {//main usage
     fprintf(stderr, "                          read error, SNV[,indel], the off-allele reads of a haplotype must\n");
     fprintf(stderr, "                          exceed (binomially, at --hap-conc-pval) for HapDiscordant as well\n");
     fprintf(stderr, "                          as falling below --min-hap-conc [HiFi 0.05,0.12; ONT 0.05,0.08;\n");
-    fprintf(stderr, "                          R9 0.08,0.12]\n");
+    fprintf(stderr, "                          R9 0.12,0.05]\n");
     fprintf(stderr, "       --hap-conc-pval FLOAT  [1e-3; 0: the fraction alone decides]\n");
     fprintf(stderr, "       --hap-conc-allele-qual FLOAT\n");
     fprintf(stderr, "                          phred an allele call needs to count toward concordance [7]\n");
@@ -1557,6 +1564,7 @@ static void call_var_usage(void) {//main usage
     fprintf(stderr, "    -o --out-vcf    FILE  output phased VCF file [stdout]\n");
     fprintf(stderr, "    -O --out-type    STR  v/z: un/compressed VCF [v]\n");
     fprintf(stderr, "    --min-qual       INT  set FILTER LowQual on records whose QUAL is below this; 0 is off [0]\n");
+    fprintf(stderr, "    --min-som-qual   INT  the same for a paired somatic call [--min-qual]\n");
     fprintf(stderr, "                          QUAL is -10 log10 P(the record's claim is false): for a somatic\n");
     fprintf(stderr, "                          record, that it is not somatic; otherwise that there is no variant\n");
     fprintf(stderr, "    --qual-weights  FILE  artifact-model weights replacing the built-in ones, as lines of\n");
@@ -1719,6 +1727,7 @@ int call_var_main_mode(int argc, char *argv[], int paired_cli) {
                     else if (strcmp(call_var_opt[op_idx].name, "min-hap-vaf") == 0) { opt->min_hap_vaf = atof(optarg); opt->min_hap_vaf_set = 1; }
                     else if (strcmp(call_var_opt[op_idx].name, "som-alt-qual") == 0) opt->min_som_alt_qual = atoi(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "min-qual") == 0) opt->min_qual = atoi(optarg);
+                    else if (strcmp(call_var_opt[op_idx].name, "min-som-qual") == 0) opt->min_som_qual = atoi(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "qual-weights") == 0) { free(opt->qual_weights_fn); opt->qual_weights_fn = strdup(optarg); }
                     else if (strcmp(call_var_opt[op_idx].name, "som-artifact-mask") == 0) opt->som_artifact_mask = (int)strtol(optarg, NULL, 0);
                     else if (strcmp(call_var_opt[op_idx].name, "som-artifact-mask-indel") == 0) opt->som_artifact_mask_indel = (int)strtol(optarg, NULL, 0);
@@ -1831,8 +1840,11 @@ int call_var_main_mode(int argc, char *argv[], int paired_cli) {
     if (opt->is_pb_hifi && opt->is_ont) _err_error_exit("Cannot set both --hifi and --ont\n");
     // Quality model: per-technology base-quality cap, then the artifact weights.
     if (opt->hap_conc_err[0] < 0) {
-        opt->hap_conc_err[0] = opt->is_ont_r9 ? 0.08 : 0.05;
-        opt->hap_conc_err[1] = opt->is_ont_r9 ? 0.12 : opt->is_ont ? 0.08 : 0.12;
+        // --ont-r9 sets its own. Measured on HG002 chr20 GIAB v4.2.1: HiFi
+        // indels carry off-allele reads (length jitter) at any rate tighter
+        // than 0.12 without being false.
+        opt->hap_conc_err[0] = 0.05;
+        opt->hap_conc_err[1] = opt->is_ont ? 0.08 : 0.12;
     }
     if (opt->vq_bq_cap <= 0) opt->vq_bq_cap = opt->is_ont ? LONGCALLD_VQ_BQ_CAP_ONT : LONGCALLD_VQ_BQ_CAP_HIFI;
     if (opt->vq_default_bq <= 0) opt->vq_default_bq = opt->is_ont ? LONGCALLD_VQ_DEFAULT_BQ_ONT : LONGCALLD_VQ_DEFAULT_BQ_HIFI;

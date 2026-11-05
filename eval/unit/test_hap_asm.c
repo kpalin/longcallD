@@ -154,6 +154,38 @@ int main(void) {
         ha_free(&b.h);
     }
 
+    // 6. Five hets read by 20 reads per haplotype at 2% error, except that at
+    //    site 2 a third of haplotype 1's reads show haplotype 2's allele. With
+    //    the concordance test on, site 2 is HapDiscordant and leaves the
+    //    phasing; the others still link (PHASING). With it off, nothing is.
+    for (int on = 1; on >= 0; --on) {
+        ha_opt_t o2; ha_opt_init(&o2);
+        o2.min_hap_conc = on ? 0.9 : 0; o2.conc_err[0] = o2.conc_err[1] = 0.05;
+        int nv = 5; bld_t b; bld_init(&b, nv);
+        for (int r = 0; r < 40; ++r) {
+            int hap = r & 1; // 0: haplotype carrying 0,1,0,1,0; 1: the other
+            bld_frag(&b);
+            for (int v = 0; v < nv; ++v) {
+                int a = (v & 1) ^ hap;
+                if (urand() < 0.02) a ^= 1;
+                if (v == 2 && hap == 0 && r % 6 == 0) a ^= 1;
+                bld_call(&b, v, a, 0.02, 0);
+            }
+        }
+        ha_run(&o2, &b.h);
+        int others_linked = 1;
+        for (int v = 0; v < nv; ++v) if (v != 2 && !b.h.var[v].linked) others_linked = 0;
+        if (on) {
+            chk("a third of a haplotype's reads on the other allele -> HapDiscordant", b.h.var[2].discordant);
+            chk("and it is not used for phasing", !b.h.var[2].linked);
+            chk("its neighbours are (PHASING)", others_linked);
+            chk("and are not discordant", !b.h.var[0].discordant && !b.h.var[4].discordant);
+        } else {
+            chk("concordance off: nothing is discordant", !b.h.var[2].discordant);
+        }
+        ha_free(&b.h);
+    }
+
     printf("%d passed, %d failed\n", n_pass, n_fail);
     return n_fail ? 1 : 0;
 }

@@ -129,7 +129,9 @@ LongcallD requires a **reference genome (FASTA)** and a **long-read BAM/CRAM** f
 ```
 longcallD call -t16 ref.fa hifi.bam > hifi.vcf         # default for PacBio HiFi reads (--hifi)
 longcallD call -t16 ref.fa ont.bam --ont > ont.vcf     # for ONT reads
+longcallD call -t16 ref.fa r9.bam --ont-r9 > r9.vcf    # for ONT R9.4.1 (Guppy HAC) reads
 ```
+`--ont-r9` is `--ont` with the thresholds R9 needs (see [R9.4.1](#oxford-nanopore-r941)).
 
 ### Multiple input BAM/CRAM files of the same sample
 You can provide multiple BAM/CRAM files of the same sample for variant calling using `--input-is-list` or `-X`:
@@ -167,6 +169,18 @@ chromosome, so a read that crosses chunk boundaries is one fragment with one `HP
 * **Reads** get `HP` when the posterior over their calls in their own block exceeds
   `--hap-assign-qual` (phred 10). That includes reads calling skips and sites in a read's own noisy
   regions, which tag reads but never link or genotype.
+* **Germline calls must be carried by their haplotypes' reads.** Each read's haplotype at a site
+  is decided on its *other* sites (leave-one-out), and on every haplotype with at least
+  `--min-hap-conc-dp` (3) such reads, at least `--min-hap-conc` (0.9) of them must show the allele
+  the genotype puts there. A call that falls short, *and* whose off-allele reads are more than
+  `--hap-conc-err` read error explains (binomial, `--hap-conc-pval` 1e-3), is written
+  `FILTER=HapDiscordant` and leaves the phasing graph. `INFO/HC` holds the counts: reads showing
+  haplotype 1's allele, reads on haplotype 1, then the same for haplotype 2 (a homozygous site
+  pools every read in the first pair). The error rate guards against filtering true calls for
+  one stray read: on HG002 chr20 a plain 90% rule cost ONT R10 256 true SNVs for 4 false ones.
+  Defaults are 0.05 / 0.12 (SNV / indel) for HiFi, 0.05 / 0.08 for ONT, 0.12 / 0.05 for R9.
+* `INFO/PHASING` marks the sites used for phasing: hets in the final phasing graph, linked by
+  reads to another het of their block.
 * `INFO/PQ` is a het's phase quality and `INFO/SQ` the switch quality to the previous het of its
   block, both phred.
 
@@ -187,6 +201,13 @@ With a matched normal, `longcallD paired` calls somatic variants by comparing th
 longcallD paired -t16 ref.fa tumor.bam normal.bam > paired.vcf
 ```
 The normal can also be given with `-N/--normal`, which can be repeated.
+
+**A somatic call has no alt read in the normal** -- not in a phased read, not in an unphased one,
+not in one left out of calling as noisy -- counted from the alignments (`INFO/NAR`,
+`--max-normal-alt`, default 0). The haplotype grid alone let through up to `--min-alt-dp` alt reads
+per normal haplotype and any number of unassigned ones. On ONT R10 HCC1395 chr1:1-10 Mb this took
+somatic SNV false positives from 11 to 4 and true positives from 68 to 62; the lost calls have one
+normal alt read each, which `--max-normal-alt 1` takes back. On HiFi it changed nothing.
 
 Both samples are phased **together**, on variants that look germline heterozygous in the normal.
 Haplotype index `h` therefore means the same parental chromosome in both samples, which gives four
@@ -212,6 +233,9 @@ The VCF has two sample columns, `NORMAL` then `TUMOR`:
 | `INFO/TVAF` | alt fraction over the **pooled** tumor depth, on `UNPHASED` calls only |
 | `INFO/SPV` | Fisher exact p, that slot against the other three |
 | `FILTER=HapInconsistent` | the phased reads do not agree on which haplotype carries the allele (see [Phasing](#phasing)) |
+| `FILTER=HapDiscordant` | a germline call the normal's haplotype reads do not carry (see [Phasing](#phasing)) |
+| `INFO/NAR` | normal reads carrying the alt, over **every** normal read: phased, unphased, and those skipped from calling |
+| `INFO/PHASING` | the site was used for phasing |
 | `INFO/UNPHASED` | the verdict was reached on pooled counts and the reads carrying the alt are on no single haplotype of a block |
 | `FORMAT/HDP`, `FORMAT/HAD` | per-haplotype depth and alt depth |
 | `FORMAT/PS` | the phase block the call is phased in; absent on `UNPHASED` calls |
@@ -452,6 +476,51 @@ This sweep already includes the phase-set fix, so its rows rank the four mask se
 each other on one footing. Its absolute counts are still not the table's: the `0x27d` row reads
 37/57 where the table reads 42/60, a different run of the same configuration, so quote the table
 and read the sweep for the ordering and the cost of each bit.
+
+##### Oxford Nanopore R9.4.1
+
+No public R9.4.1 HAC tumour/normal pair has small-variant truth. The SEQC2 HCC1395 ONT BAMs
+(`ftp-trace.ncbi.nlm.nih.gov/.../Somatic_Mutation_WG/analysis/SVs/BAMs/`) are R9.4.1 but 10-25x,
+basecalled in real time by Guppy 3.3.3 (read divergence 0.07 against 0.054 for HAC), and their
+file names are swapped: `normal.ont.bam` holds the tumour. So `--ont-r9` was fitted on a synthetic
+pair, [`eval/make_synth_pair.py`](eval/make_synth_pair.py), built from HG002 R9.4.1 Guppy 4.2.2
+HAC reads (`HG002_ONT_50x_2_GRCh38.chr20.bam` from the PEPPER-DeepVariant case studies),
+chr20:10-16 Mb. Reads are split into normal and tumour by a hash of their name (22x each). HG002's
+hets are phased by trio from the GIAB HG003/HG004 truth, independently of longcallD, and 505
+SNVs and indels are written into the tumour reads of one haplotype, every read or half of them.
+The injected alleles therefore carry real R9 read error and real haplotype structure.
+
+| somatic SNV | TP | FP | precision | recall | F1 |
+|---|---|---|---|---|---|
+| `--ont` | 32 | 13 | 0.711 | 0.083 | 0.148 |
+| `--ont-r9` | 185 | 2 | **0.989** | 0.477 | **0.644** |
+
+Germline, HG002 R9.4.1 HAC 45x, chr20:10-16 Mb, GIAB v4.2.1:
+
+| | SNV prec | SNV recall | SNV F1 | indel prec | indel recall | indel F1 |
+|---|---|---|---|---|---|---|
+| `--ont`, concordance off | 0.912 | 0.957 | 0.934 | 0.080 | 0.551 | 0.140 |
+| `--ont-r9` | **0.964** | 0.946 | **0.955** | **0.281** | 0.357 | **0.314** |
+
+What `--ont-r9` changes, and why:
+
+* **`--max-var-ratio 0.10`.** Half of R9 HAC reads carry more than 5% candidate events per aligned
+  base (median 4.8%; R10 0.7%), so the default cut left them out of calling. 0.10 takes somatic
+  recall from 0.36 to 0.48. 0.15 is no better and costs 3.5 GB and 21 minutes for this 6 Mb pair,
+  against 2.9 GB and 16 minutes.
+* **Artifact masks 0x050 (SNV) and 0x251 (indel).** The dense-mismatch check (0x020) marks 83% of
+  true somatic SNVs' alt reads on R9 and 95% of false ones. It does not separate them, and on its
+  own it cut recall to 0.08. QUAL already carries most of the rest: at QUAL 4 false somatic SNVs
+  fall from 1382 to 13 with every mask off. Only the indel-error and long-clip checks still pay on
+  top of that.
+* **`--min-qual 10 --min-som-qual 4`.** Germline indel QUAL tops out near 15 on R9; below 10 sit
+  6400 of the 8600 false indels and a fifth of the true ones. A somatic call keeps a floor of 4:
+  at 10 it loses a fifth of its true calls.
+* **`--hap-conc-err 0.12,0.05`.** False R9 germline indels have many off-allele reads on their
+  own haplotypes, so testing indels against 5% read error removes half of them.
+
+Somatic indels remain out of reach on R9: 88 of the 117 injected indels never became candidates.
+The ONT R10 pair above was not re-scored with `--ont-r9`, which is not meant for it.
 
 #### Phase sets and the grid
 
