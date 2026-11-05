@@ -118,6 +118,16 @@ const struct option call_var_opt [] = {
     { "min-phase-qual", 1, NULL, 0},
     { "hap-assign-qual", 1, NULL, 0},
     { "min-phase-mapq", 1, NULL, 0},
+    { "min-hap-conc", 1, NULL, 0},
+    { "min-hap-conc-dp", 1, NULL, 0},
+    { "hap-conc-assign-qual", 1, NULL, 0},
+    { "hap-conc-allele-qual", 1, NULL, 0},
+    { "hap-conc-err", 1, NULL, 0},
+    { "hap-conc-pval", 1, NULL, 0},
+    { "max-normal-alt", 1, NULL, 0},
+    { "ont-r9", 0, NULL, 0},
+    { "max-var-ratio", 1, NULL, 0},
+    { "max-noisy-frac", 1, NULL, 0},
     { "legacy-phasing", 0, NULL, 0},
     { "no-out-aln-passthrough", 0, NULL, 0},
     { "out-normal-bam", 1, NULL, 0},
@@ -167,6 +177,32 @@ void set_ont_opt(call_var_opt_t *opt) {
     // ONT: 10/50
     opt->noisy_reg_max_xgaps = LONGCALLD_NOISY_REG_MAX_XGAPS; // 10
     opt->noisy_reg_slide_win = LONGCALLD_NOISY_REG_ONT_SLIDE_WIN; // 50bp slide window
+}
+
+// R9.4.1: ONT, at roughly twice R10's error. Everything --ont sets, then the
+// thresholds R9 needs on top.
+//
+// Measured on a synthetic pair built from HG002 R9.4.1 Guppy 4.2.2 HAC reads
+// (chr20:10-16 Mb, 22x + 22x, 505 trio-phased injected somatic variants):
+// - Half of R9 reads carry more than 5% candidate events per aligned base
+//   (median 4.8%, R10 0.7%), so the default per-read cut left them out of
+//   calling. 0.10 takes somatic SNV recall from 0.36 to 0.48 at equal F1 to
+//   0.15, for 2.9 GB and 16 min where 0.15 took 3.5 GB and 21 min.
+// - Dense mismatches (0x020) mark 83% of true somatic SNVs' alt reads on R9
+//   and 95% of false ones: no separation, and it alone cut recall to 0.08.
+//   The low-quality window (0x008) fails 31% of true SNVs. Neither is
+//   enforced; the strand, nearby-variant, alt-quality, indel-error and
+//   long-clip checks are (SNV F1 0.15 -> 0.60).
+// - Indels keep strand, indel error, long clip and the repeat cut, but not
+//   alt or window quality, which R9 indels fail regardless of truth.
+void set_ont_r9_opt(call_var_opt_t *opt) {
+    set_ont_opt(opt);
+    opt->is_ont_r9 = 1;
+    opt->max_var_ratio_per_read = LONGCALLD_R9_MAX_VAR_RATIO_PER_READ;
+    opt->som_artifact_mask = LONGCALLD_ART_STRAND | LONGCALLD_ART_DIS_TO_VAR | LONGCALLD_ART_ALT_QUAL |
+                             LONGCALLD_ART_INDEL_ERR | LONGCALLD_ART_LONG_CLIP;
+    opt->som_artifact_mask_indel = LONGCALLD_ART_STRAND | LONGCALLD_ART_INDEL_ERR | LONGCALLD_ART_LONG_CLIP |
+                                   LONGCALLD_ART_REPEAT_INDEL;
 }
 
 // extreme low allele frequency < 5% or even 1%
@@ -250,6 +286,16 @@ call_var_opt_t *call_var_init_para(void) {
     opt->min_phase_qual = 10.0;
     opt->hap_assign_qual = 10.0;
     opt->min_phase_mapq = 20;
+    // A germline call is held to the reads of its own haplotypes: nine in ten
+    // of them have to show the allele the genotype puts there.
+    opt->min_hap_conc = LONGCALLD_MIN_HAP_CONC;
+    opt->min_hap_conc_dp = LONGCALLD_MIN_HAP_CONC_DP;
+    opt->hap_conc_assign_qual = 20.0;
+    opt->hap_conc_allele_qual = 7.0;
+    opt->hap_conc_err[0] = opt->hap_conc_err[1] = -1; // per preset, after parsing
+    opt->hap_conc_pval = 1e-3;
+    // A somatic call may have no alt read in the normal at all.
+    opt->max_normal_any_alt = 0;
     opt->legacy_phasing = 0;
     opt->max_noisy_reg_cov = LONGCALLD_MAX_NOISY_REG_COV;
     // somatic/mosaic var
@@ -1384,6 +1430,11 @@ static void call_var_usage(void) {//main usage
     fprintf(stderr, "  Input:\n");
     fprintf(stderr, "    --hifi                HiFi reads [default]\n");
     fprintf(stderr, "    --ont                 ONT reads \n");
+    fprintf(stderr, "    --ont-r9              ONT R9.4.1 reads (Guppy HAC): --ont, with --max-var-ratio 0.10, somatic\n");
+    fprintf(stderr, "                          artifact masks 0x57 (snv) 0x251 (indel), --hap-conc-err 0.08,0.12\n");
+    fprintf(stderr, "    --max-var-ratio FLOAT a read with more candidate events per aligned base is left out of\n");
+    fprintf(stderr, "                          calling [%.2f; %.2f with --ont-r9]\n", LONGCALLD_MAX_VAR_RATIO_PER_READ, LONGCALLD_R9_MAX_VAR_RATIO_PER_READ);
+    fprintf(stderr, "    --max-noisy-frac FLOAT  ...or with more of its span in noisy regions [%.2f]\n", LONGCALLD_MAX_NOISY_FRAC_PER_READ);
     fprintf(stderr, "    --region-file   FILE  region bed file []\n");
     fprintf(stderr, "                          each line is a region, e.g., chr1         (whole chromosome)\n");
     fprintf(stderr, "                                                       chr1 100     (chr1:100-END)\n");
@@ -1404,6 +1455,9 @@ static void call_var_usage(void) {//main usage
     fprintf(stderr, "       --min-tumor-hap-dp INT\n");
     fprintf(stderr, "                          min. depth on the candidate tumour haplotype [4]\n");
     fprintf(stderr, "       --max-hap-alt   INT   alt reads tolerated in a slot that should be clean [0]\n");
+    fprintf(stderr, "       --max-normal-alt INT  alt reads a somatic call tolerates in the normal, over EVERY normal\n");
+    fprintf(stderr, "                          read: phased, unphased, and those skipped from calling (INFO NAR)\n");
+    fprintf(stderr, "                          [0; -1 off]\n");
     fprintf(stderr, "       --som-pval    FLOAT   max. Fisher exact p, one haplotype slot against the other\n");
     fprintf(stderr, "                          three, for a somatic call [%.3g with -N, %.3g otherwise]\n", (double)LONGCALLD_PAIRED_SOM_PVAL, 1e-3);
     fprintf(stderr, "       --min-hap-vaf FLOAT   alt fraction a (sample, haplotype) slot needs before it can\n");
@@ -1469,6 +1523,23 @@ static void call_var_usage(void) {//main usage
     fprintf(stderr, "                          out of the phasing and written FILTER=HapInconsistent [10]\n");
     fprintf(stderr, "       --hap-assign-qual FLOAT\n");
     fprintf(stderr, "                          phred posterior a read needs for an HP tag [10]\n");
+    fprintf(stderr, "       --min-hap-conc FLOAT\n");
+    fprintf(stderr, "                          share of a haplotype's reads that must show the allele a germline\n");
+    fprintf(stderr, "                          genotype puts there, each read's haplotype decided on its other\n");
+    fprintf(stderr, "                          sites; below it the het leaves the phasing and the call is written\n");
+    fprintf(stderr, "                          FILTER=HapDiscordant. Paired: normal reads [%.2f; 0 off]\n", (double)LONGCALLD_MIN_HAP_CONC);
+    fprintf(stderr, "       --min-hap-conc-dp INT  reads a haplotype needs before it is held to that [%d]\n", LONGCALLD_MIN_HAP_CONC_DP);
+    fprintf(stderr, "       --hap-conc-assign-qual FLOAT\n");
+    fprintf(stderr, "                          phred posterior a read needs, on its other sites, to count toward a\n");
+    fprintf(stderr, "                          haplotype there [20]\n");
+    fprintf(stderr, "       --hap-conc-err FLOAT[,FLOAT]\n");
+    fprintf(stderr, "                          read error, SNV[,indel], the off-allele reads of a haplotype must\n");
+    fprintf(stderr, "                          exceed (binomially, at --hap-conc-pval) for HapDiscordant as well\n");
+    fprintf(stderr, "                          as falling below --min-hap-conc [HiFi 0.05,0.12; ONT 0.05,0.08;\n");
+    fprintf(stderr, "                          R9 0.08,0.12]\n");
+    fprintf(stderr, "       --hap-conc-pval FLOAT  [1e-3; 0: the fraction alone decides]\n");
+    fprintf(stderr, "       --hap-conc-allele-qual FLOAT\n");
+    fprintf(stderr, "                          phred an allele call needs to count toward concordance [7]\n");
     fprintf(stderr, "       --legacy-phasing  the previous adjacent-pair phasing, for comparison\n");
     fprintf(stderr, "    --autosome-XY        only call variants on autosomes and sex chromosomes, e.g., (chr){1-22,XY} [default]\n");
     // fprintf(stderr, "                          if not found, all chromosomes/contigs will be processed automatically\n");
@@ -1588,6 +1659,7 @@ int call_var_main_mode(int argc, char *argv[], int paired_cli) {
             case 0: 
                 if (strcmp(call_var_opt[op_idx].name, "hifi") == 0) set_hifi_opt(opt);
                 else if (strcmp(call_var_opt[op_idx].name, "ont") == 0) set_ont_opt(opt);
+                else if (strcmp(call_var_opt[op_idx].name, "ont-r9") == 0) set_ont_r9_opt(opt);
                 break;
         }
     }
@@ -1662,6 +1734,18 @@ int call_var_main_mode(int argc, char *argv[], int paired_cli) {
                     else if (strcmp(call_var_opt[op_idx].name, "min-phase-qual") == 0) opt->min_phase_qual = atof(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "hap-assign-qual") == 0) opt->hap_assign_qual = atof(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "min-phase-mapq") == 0) opt->min_phase_mapq = atoi(optarg);
+                    else if (strcmp(call_var_opt[op_idx].name, "min-hap-conc") == 0) opt->min_hap_conc = atof(optarg);
+                    else if (strcmp(call_var_opt[op_idx].name, "min-hap-conc-dp") == 0) opt->min_hap_conc_dp = atoi(optarg);
+                    else if (strcmp(call_var_opt[op_idx].name, "hap-conc-assign-qual") == 0) opt->hap_conc_assign_qual = atof(optarg);
+                    else if (strcmp(call_var_opt[op_idx].name, "hap-conc-allele-qual") == 0) opt->hap_conc_allele_qual = atof(optarg);
+                    else if (strcmp(call_var_opt[op_idx].name, "hap-conc-err") == 0) {
+                        char *e; opt->hap_conc_err[0] = strtod(optarg, &e);
+                        opt->hap_conc_err[1] = (*e == ',') ? atof(e + 1) : opt->hap_conc_err[0];
+                    }
+                    else if (strcmp(call_var_opt[op_idx].name, "hap-conc-pval") == 0) opt->hap_conc_pval = atof(optarg);
+                    else if (strcmp(call_var_opt[op_idx].name, "max-normal-alt") == 0) opt->max_normal_any_alt = atoi(optarg);
+                    else if (strcmp(call_var_opt[op_idx].name, "max-var-ratio") == 0) opt->max_var_ratio_per_read = atof(optarg);
+                    else if (strcmp(call_var_opt[op_idx].name, "max-noisy-frac") == 0) opt->max_noisy_frac_per_read = atof(optarg);
                     else if (strcmp(call_var_opt[op_idx].name, "legacy-phasing") == 0) opt->legacy_phasing = 1;
                     else if (strcmp(call_var_opt[op_idx].name, "no-out-aln-passthrough") == 0) opt->out_aln_passthrough = 0;
                     else if (strcmp(call_var_opt[op_idx].name, "out-normal-bam") == 0)  { opt->out_naln_fp = open_aln_out_file(optarg, "wb"); opt->out_naln_is_cram = 0; }
@@ -1746,6 +1830,10 @@ int call_var_main_mode(int argc, char *argv[], int paired_cli) {
     // check if hifi and ont are both set
     if (opt->is_pb_hifi && opt->is_ont) _err_error_exit("Cannot set both --hifi and --ont\n");
     // Quality model: per-technology base-quality cap, then the artifact weights.
+    if (opt->hap_conc_err[0] < 0) {
+        opt->hap_conc_err[0] = opt->is_ont_r9 ? 0.08 : 0.05;
+        opt->hap_conc_err[1] = opt->is_ont_r9 ? 0.12 : opt->is_ont ? 0.08 : 0.12;
+    }
     if (opt->vq_bq_cap <= 0) opt->vq_bq_cap = opt->is_ont ? LONGCALLD_VQ_BQ_CAP_ONT : LONGCALLD_VQ_BQ_CAP_HIFI;
     if (opt->vq_default_bq <= 0) opt->vq_default_bq = opt->is_ont ? LONGCALLD_VQ_DEFAULT_BQ_ONT : LONGCALLD_VQ_DEFAULT_BQ_HIFI;
     if (opt->vq_pl_scale <= 0) opt->vq_pl_scale = opt->is_ont ? LONGCALLD_VQ_PL_SCALE_ONT : LONGCALLD_VQ_PL_SCALE_HIFI;

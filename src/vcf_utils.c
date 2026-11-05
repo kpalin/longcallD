@@ -63,11 +63,20 @@ void write_vcf_header(bam_hdr_t *hdr, struct call_var_opt_t *opt) {
         bcf_hdr_append(vcf_hdr, "##FILTER=<ID=HapInconsistent,Description=\"Once the reads are phased they do not agree on which haplotype carries the allele: a sequencing or mapping artifact. Left out of the phasing and written with its unphased genotype\">");
         bcf_hdr_append(vcf_hdr, "##INFO=<ID=PQ,Number=1,Type=Float,Description=\"Phase quality: phred loss in read likelihood from flipping this het alone within its block\">");
         bcf_hdr_append(vcf_hdr, "##INFO=<ID=SQ,Number=1,Type=Float,Description=\"Switch quality: phred loss in read likelihood from a switch between the previous het of the block and this one\">");
+        bcf_hdr_append(vcf_hdr, "##INFO=<ID=PHASING,Number=0,Type=Flag,Description=\"Site used for phasing: a het in the read-backed phasing graph, linked by reads to another het of its block\">");
+        bcf_hdr_append(vcf_hdr, "##INFO=<ID=HC,Number=4,Type=Integer,Description=\"Haplotype concordance: reads of haplotype 1 showing its allele, reads of haplotype 1, then the same for haplotype 2. A read's haplotype is decided on its other sites. Homozygous sites pool every read in the first pair. Paired: normal reads only\">");
+        if (opt->min_hap_conc > 0) {
+            char hd[320];
+            snprintf(hd, sizeof(hd), "##FILTER=<ID=HapDiscordant,Description=\"Germline call whose haplotype reads do not carry its alleles: on a haplotype with at least %d reads, under %.0f%% show the allele the genotype puts there\">",
+                     opt->min_hap_conc_dp, opt->min_hap_conc * 100);
+            bcf_hdr_append(vcf_hdr, hd);
+        }
     }
     if (opt->n_samples > 1) {
         bcf_hdr_append(vcf_hdr, "##FILTER=<ID=NormalOnly,Description=\"Present in the normal but not the tumour; treated as false\">");
         bcf_hdr_append(vcf_hdr, "##FILTER=<ID=LowDP,Description=\"Too little depth in one sample to classify\">");
         bcf_hdr_append(vcf_hdr, "##FILTER=<ID=Ambiguous,Description=\"Evidence fits no tumour/normal class cleanly\">");
+        bcf_hdr_append(vcf_hdr, "##INFO=<ID=NAR,Number=1,Type=Integer,Description=\"Normal reads carrying the alt, over every normal read: phased, unphased, and those skipped from calling. A somatic call allows --max-normal-alt\">");
         bcf_hdr_append(vcf_hdr, "##INFO=<ID=UNPHASED,Number=0,Type=Flag,Description=\"Classified on pooled per-sample counts; no usable haplotype grid at this site\">");
     }
 
@@ -157,6 +166,9 @@ static void append_paired_filter(kstring_t *ks, const struct call_var_opt_t *opt
         default: break; // SOMATIC and GERMLINE pass
     }
     if (v->hap_inconsistent) { if (n++) kputc(';', ks); kputs("HapInconsistent", ks); }
+    if (v->hap_discordant && v->paired_class == LONGCALLD_PAIRED_GERMLINE && opt->min_hap_conc > 0) {
+        if (n++) kputc(';', ks); kputs("HapDiscordant", ks);
+    }
     if (opt->min_qual > 0 && v->QUAL < opt->min_qual) { if (n++) kputc(';', ks); kputs("LowQual", ks); }
     if (n == 0) kputs("PASS", ks);
     // Note: a call made without a usable haplotype grid is reported through
@@ -344,10 +356,12 @@ int write_var_to_vcf(var_t *vars, const struct call_var_opt_t *opt, bam_chunk_t 
             len += snprintf(buffer + len, buf_m - len, "\t%.1f\t%s\t", var.QUAL, fks.s ? fks.s : "PASS");
             ks_free(&fks);
         } else {
-            int low = opt->min_qual > 0 && var.QUAL < opt->min_qual;
-            len += snprintf(buffer + len, buf_m - len, "\t%.1f\t%s\t", var.QUAL,
-                            var.hap_inconsistent ? (low ? "HapInconsistent;LowQual" : "HapInconsistent")
-                                                 : (low ? "LowQual" : "PASS"));
+            kstring_t fks = KS_INITIALIZE;
+            if (var.hap_inconsistent) kputs("HapInconsistent", &fks);
+            if (var.hap_discordant && !var.is_somatic && opt->min_hap_conc > 0) { if (fks.l) kputc(';', &fks); kputs("HapDiscordant", &fks); }
+            if (opt->min_qual > 0 && var.QUAL < opt->min_qual) { if (fks.l) kputc(';', &fks); kputs("LowQual", &fks); }
+            len += snprintf(buffer + len, buf_m - len, "\t%.1f\t%s\t", var.QUAL, fks.l ? fks.s : "PASS");
+            ks_free(&fks);
         }
         if (var.is_clean) len += snprintf(buffer + len, buf_m - len, "CLEAN;");
         if (opt->n_samples > 1) {
@@ -358,11 +372,16 @@ int write_var_to_vcf(var_t *vars, const struct call_var_opt_t *opt, bam_chunk_t 
             if (paired_call_is_unphased(&var)) len += snprintf(buffer + len, buf_m - len, "UNPHASED;");
         } else if (var.is_somatic) len += snprintf(buffer + len, buf_m - len, "SOMATIC;");
         if (var.te_seq_i >= 0) len += snprintf(buffer + len, buf_m - len, "MEI;");
+        if (!opt->legacy_phasing && var.hap_linked) len += snprintf(buffer + len, buf_m - len, "PHASING;");
         len += snprintf(buffer + len, buf_m - len, "END=%" PRId64 "", var.pos + var.ref_len - 1);
         if (!opt->legacy_phasing && var.PS > 0) {
             if (var.PQ >= 0) len += snprintf(buffer + len, buf_m - len, ";PQ=%.1f", var.PQ > 999 ? 999 : var.PQ);
             if (var.SQ >= 0) len += snprintf(buffer + len, buf_m - len, ";SQ=%.1f", var.SQ > 999 ? 999 : var.SQ);
         }
+        if (!opt->legacy_phasing && (var.HC[1] > 0 || var.HC[3] > 0))
+            len += snprintf(buffer + len, buf_m - len, ";HC=%d,%d,%d,%d", var.HC[0], var.HC[1], var.HC[2], var.HC[3]);
+        if (opt->n_samples > 1 && var.normal_any_alt >= 0)
+            len += snprintf(buffer + len, buf_m - len, ";NAR=%d", var.normal_any_alt);
         if (opt->n_samples > 1 && var.paired_class == LONGCALLD_PAIRED_SOMATIC) {
             if (var.som_hap > 0) {
                 len += snprintf(buffer + len, buf_m - len, ";SOMHAP=%d;HAPVAF=%.4f", var.som_hap, var.hap_vaf);

@@ -26,6 +26,10 @@
 // bam_chunk_t.var_hap_flag: the reads, once phased, do not agree on which
 // haplotype carries the allele (FILTER HapInconsistent).
 #define LONGCALLD_HAP_INCONSISTENT 0x01
+// ...in the final phasing graph, tied by reads to another het of its block (INFO PHASING).
+#define LONGCALLD_HAP_LINKED 0x02
+// ...too many reads of one haplotype show the other allele (FILTER HapDiscordant).
+#define LONGCALLD_HAP_DISCORDANT 0x04
 #define LONGCALLD_CAND_GERMLINE_CLEAN_VAR_CATE (LONGCALLD_CLEAN_HET_SNP | LONGCALLD_CLEAN_HET_INDEL | LONGCALLD_CLEAN_HOM_VAR)
 #define LONGCALLD_CAND_HET_VAR_CATE (LONGCALLD_CLEAN_HET_SNP | LONGCALLD_CLEAN_HET_INDEL | LONGCALLD_NOISY_CAND_HET_VAR)
 #define LONGCALLD_NOT_CAND_VAR_CATE (LONGCALLD_NON_VAR | LONGCALLD_LOW_COV_VAR | LONGCALLD_STRAND_BIAS_VAR)

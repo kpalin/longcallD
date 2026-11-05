@@ -161,6 +161,11 @@ typedef struct bam_chunk_t {
     // Haplotype assembly results per candidate (hap_asm.c), set at the stitch:
     // LONGCALLD_HAP_* flags, and phred switch / phase quality, -1 unset.
     uint8_t *var_hap_flag; float *var_sq, *var_pq; // size: n_cand_vars; NULL with --legacy-phasing
+    uint16_t *var_hc; // size: 4 * n_cand_vars: per haplotype, reads showing its allele and reads in all (hap_asm.c)
+    // Paired: alt reads in the normal at each candidate, over EVERY normal read
+    // -- phased, unphased, and skipped from calling -- counted at the end of
+    // step 1 while the digars exist. A somatic call may have none.
+    int *var_normal_any_alt; // size: n_cand_vars; NULL in single-sample mode
     // Read bases at germline SNV candidates where a read has no profile call:
     // reads collect_digars_from_bam() skipped, and sites inside a read's own
     // noisy regions. Gathered while the digars exist. They take no part in

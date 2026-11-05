@@ -42,6 +42,9 @@ typedef struct {
     int8_t ug;              // alt alleles of the genotype before phasing (0..2)
     uint8_t pruned;         // removed from the phasing graph: its reads contradict each other
     uint8_t inconsistent;   // HapInconsistent: pruned, or alt on no haplotype once phased
+    uint8_t linked;         // in the final phasing graph, tied by reads to another het of its block
+    uint8_t discordant;     // HapDiscordant: too many reads of a haplotype show the other allele
+    uint16_t hc[2][2];      // per haplotype: reads showing that haplotype's allele, reads in all
     hts_pos_t ps;           // phase set, 0 if none
     float pq, sq, gq;       // phred: phase quality, switch quality to the previous het, genotype quality; -1 unset
 } ha_var_t;
@@ -54,6 +57,12 @@ typedef struct {
     int geno_smp;           // genotype from this sample's reads only; -1 all
     int max_rounds;         // assembly / genotyping rounds
     int solo_needs_phasable; // an unlinked het may be a block of its own only if phasable (paired anchoring)
+    double min_hap_conc;    // share of a haplotype's reads that must show its allele; 0 off
+    int min_hap_conc_dp;    // reads a haplotype needs before it is held to that
+    double conc_assign_p;   // posterior a read needs, on its other sites, to count toward a haplotype
+    double conc_max_miscall; // a call counts toward concordance only with error below this
+    double conc_err[2];     // [snv, indel] read error the off-allele reads are tested against
+    double conc_pval;       // ...and the binomial tail they must fall below to be called discordant
 } ha_opt_t;
 
 typedef struct {

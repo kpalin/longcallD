@@ -26,6 +26,11 @@ void ha_opt_init(ha_opt_t *o) {
     for (int t = 0; t < 2; ++t) o->prior[t][0] = 1.0 - o->prior[t][1] - o->prior[t][2];
     o->geno_smp = -1;
     o->max_rounds = 10;
+    o->min_hap_conc_dp = 3;
+    o->conc_assign_p = 0.99;
+    o->conc_max_miscall = o->max_miscall;
+    o->conc_err[0] = 0.05; o->conc_err[1] = 0.08;
+    o->conc_pval = 1e-3;
 }
 
 void ha_free(ha_t *h) {
@@ -356,6 +361,90 @@ static int n_linking(ws_t *w, int v) {
     return n;
 }
 
+// Per read: the block it is read against, and ln P(read | H1), ln P(read | H2)
+// over all its calls at that block's graph hets, trusted or not -- the sums the
+// read tags are drawn from, so a read checked here is told its haplotype the
+// way it is tagged.
+static void frag_tag_sums(ws_t *w, int *fb, double *S0, double *S1) {
+    ha_t *h = w->h;
+    for (int f = 0; f < h->n_frag; ++f) {
+        int b = w->fblk[f];
+        if (b < 0) { // a read with no trusted call: the block most of its calls are in
+            int nc = 0;
+            for (int k = h->frag[f].off; k < h->frag[f].off + h->frag[f].n; ++k) {
+                int cb = w->comp[h->call[k].v];
+                if (cb < 0) continue;
+                if (nc == 0) { b = cb; nc = 1; } else if (cb == b) ++nc; else --nc;
+            }
+            if (nc == 0) b = -1;
+        }
+        double s0 = 0, s1 = 0;
+        if (b >= 0)
+            for (int k = h->frag[f].off; k < h->frag[f].off + h->frag[f].n; ++k) {
+                const ha_call_t *c = h->call + k;
+                if (w->comp[c->v] != b) continue;
+                s0 += cterm(c, h->var[c->v].g[0]); s1 += cterm(c, h->var[c->v].g[1]);
+            }
+        fb[f] = b; S0[f] = s0; S1[f] = s1;
+    }
+}
+
+// Haplotype concordance of v: for each haplotype, how many of its reads show
+// the allele the genotype puts there. A read's haplotype is decided on its
+// OTHER calls (leave-one-out), so a site cannot vouch for itself. A homozygous
+// site is held to every read, pooled in hc[0]. Only calls right with
+// probability above the linking floor count: a near-coin-flip base says
+// nothing about which allele the read carries.
+static void hap_concordance(ws_t *w, int v, const int *fb, const double *S0, const double *S1) {
+    ha_t *h = w->h; const ha_opt_t *o = w->o; ha_var_t *x = h->var + v;
+    memset(x->hc, 0, sizeof(x->hc));
+    if (x->geno == 0 || (x->g[0] == 0 && x->g[1] == 0)) return;
+    int hom = !is_het(x), B = hom ? -1 : ref_block(w, v);
+    if (!hom && B < 0) return;
+    for (int i = w->vc_off[v]; i < w->vc_off[v + 1]; ++i) {
+        int k = w->vc_idx[i]; const ha_call_t *c = h->call + k;
+        int f = w->call_frag[k];
+        if (o->geno_smp >= 0 && h->frag[f].smp != o->geno_smp) continue;
+        if (1.0 / (1.0 + exp(c->lm - c->lx)) >= o->conc_max_miscall) continue;
+        int hap = 0;
+        if (hom) hap = 0;
+        else {
+            if (fb[f] != B) continue;
+            double b0 = S0[f], b1 = S1[f];
+            if (w->comp[v] == B) { b0 -= cterm(c, x->g[0]); b1 -= cterm(c, x->g[1]); }
+            double p1 = 1.0 / (1.0 + exp(b1 - b0));
+            if (p1 > o->conc_assign_p) hap = 0;
+            else if (1.0 - p1 > o->conc_assign_p) hap = 1;
+            else continue;
+        }
+        if (x->hc[hap][1] < UINT16_MAX) { x->hc[hap][1]++; x->hc[hap][0] += c->a == x->g[hap]; }
+    }
+}
+
+// P(X >= k), X ~ Binomial(n, e).
+static double binom_upper(int k, int n, double e) {
+    if (k <= 0) return 1.0;
+    double le = log(e), l1e = log1p(-e), s = -INFINITY;
+    for (int x = k; x <= n; ++x)
+        s = lse(s, lgamma(n + 1.0) - lgamma(x + 1.0) - lgamma(n - x + 1.0) + x * le + (n - x) * l1e);
+    return exp(s);
+}
+
+// Not "almost all" of a haplotype's reads show its allele, and more of them
+// show the other one than read error explains. The fraction alone fails a
+// true het on one stray read in nine; on HG002 ONT R10 chr20 that rule cost
+// 256 true SNVs for 4 false ones, while the two together are neutral on F1 and
+// still remove a third of the false SNVs and a tenth of the false indels.
+static int hap_is_discordant(const ha_opt_t *o, const ha_var_t *x) {
+    if (o->min_hap_conc <= 0) return 0;
+    for (int hp = 0; hp < 2; ++hp) {
+        int n = x->hc[hp][1], bad = n - x->hc[hp][0];
+        if (n < o->min_hap_conc_dp || x->hc[hp][0] >= o->min_hap_conc * n) continue;
+        if (o->conc_pval <= 0 || binom_upper(bad, n, o->conc_err[x->is_indel]) < o->conc_pval) return 1;
+    }
+    return 0;
+}
+
 static void assemble(ws_t *w) {
     double prev = -INFINITY;
     for (int round = 0; round < w->o->max_rounds; ++round) {
@@ -383,7 +472,8 @@ void ha_run(const ha_opt_t *o, ha_t *h) {
     // call_genotypes_no_haplotypes). A seeded het keeps its orientation.
     for (int v = 0; v < h->n_var; ++v) {
         ha_var_t *x = h->var + v;
-        x->pq = x->sq = x->gq = -1; x->ps = 0; x->pruned = x->inconsistent = 0;
+        x->pq = x->sq = x->gq = -1; x->ps = 0; x->pruned = x->inconsistent = x->linked = x->discordant = 0;
+        memset(x->hc, 0, sizeof(x->hc));
         if (x->geno == 0) { x->ug = (int8_t)(x->g[0] + x->g[1]); continue; }
         if (x->geno == 1) { x->ug = (int8_t)(x->g[0] + x->g[1]); continue; }
         double ll[3];
@@ -401,14 +491,24 @@ void ha_run(const ha_opt_t *o, ha_t *h) {
         else x->g[0] = x->g[1] = (int8_t)(z == 2);
     }
     assemble(&w);
-    // Prune the hets the reads cannot agree on, then assemble again without them.
+    int nf1 = h->n_frag > 0 ? h->n_frag : 1;
+    int *fb = (int*)_err_malloc(nf1 * sizeof(int));
+    double *S0 = (double*)_err_malloc(nf1 * sizeof(double)), *S1 = (double*)_err_malloc(nf1 * sizeof(double));
+    // Prune the hets the reads cannot agree on, then assemble again without
+    // them. A het whose haplotypes are not carried by almost all of their reads
+    // leaves the graph too: it is no evidence for the phase of anything else.
     for (int cyc = 0; cyc < HA_MAX_PRUNE; ++cyc) {
         int n_pruned = 0;
+        if (o->min_hap_conc > 0) frag_tag_sums(&w, fb, S0, S1);
         for (int v = 0; v < h->n_var; ++v) {
             if (w.comp[v] < 0) continue;
             double pq = -flip_gain(&w, v) * 10.0 / HA_LN10;
             h->var[v].pq = (float)pq;
-            if (pq < o->min_pq && n_linking(&w, v) >= 2) { h->var[v].pruned = 1; ++n_pruned; }
+            if (pq < o->min_pq && n_linking(&w, v) >= 2) { h->var[v].pruned = 1; ++n_pruned; continue; }
+            if (o->min_hap_conc > 0) {
+                hap_concordance(&w, v, fb, S0, S1);
+                if (hap_is_discordant(o, h->var + v)) { h->var[v].phasable = 0; h->var[v].discordant = 1; ++n_pruned; }
+            }
         }
         if (n_pruned == 0) break;
         assemble(&w);
@@ -465,7 +565,18 @@ void ha_run(const ha_opt_t *o, ha_t *h) {
             x->inconsistent = 1; x->ps = 0;
             if (x->ug == 2) x->g[0] = x->g[1] = 1; else { x->g[0] = 0; x->g[1] = 1; }
         }
+        x->linked = w.comp[v] >= 0 && w.bsz[w.comp[v]] >= 2;
     }
+    // Haplotype concordance on the final haplotypes, for every called site:
+    // germline calls have to be carried by almost all of their haplotype's reads.
+    frag_tag_sums(&w, fb, S0, S1);
+    for (int v = 0; v < h->n_var; ++v) {
+        ha_var_t *x = h->var + v;
+        if (x->inconsistent) { memset(x->hc, 0, sizeof(x->hc)); x->discordant = 0; continue; }
+        hap_concordance(&w, v, fb, S0, S1);
+        x->discordant = hap_is_discordant(o, x);
+    }
+    free(fb); free(S0); free(S1);
     // Read haplotypes: the posterior over the read's calls at the phased hets
     // of the block it has most calls in. Every call counts here, trusted or
     // not -- the trust floor decides what may link two variants, not whether
@@ -741,13 +852,20 @@ static void hap_asm_group(const call_var_opt_t *opt, bam_chunk_t *chunks, int be
     ho.hap_assign_p = 1.0 - pow(10.0, -opt->hap_assign_qual / 10.0);
     ho.geno_smp = paired ? LONGCALLD_SAMPLE_NORMAL : -1;
     ho.solo_needs_phasable = paired;
+    ho.min_hap_conc = opt->min_hap_conc;
+    ho.min_hap_conc_dp = opt->min_hap_conc_dp;
+    ho.conc_assign_p = 1.0 - pow(10.0, -opt->hap_conc_assign_qual / 10.0);
+    ho.conc_max_miscall = pow(10.0, -opt->hap_conc_allele_qual / 10.0);
+    ho.conc_err[0] = opt->hap_conc_err[0]; ho.conc_err[1] = opt->hap_conc_err[1];
+    ho.conc_pval = opt->hap_conc_pval;
     ha_run(&ho, &h);
     // Write back: genotypes and blocks onto the candidates, haplotypes onto the reads.
     for (int k = 0; k < n_ch; ++k) {
         bam_chunk_t *c = chunks + beg + k;
         if (c->n_cand_vars > 0) {
-            free(c->var_hap_flag); free(c->var_sq); free(c->var_pq);
+            free(c->var_hap_flag); free(c->var_sq); free(c->var_pq); free(c->var_hc);
             c->var_hap_flag = (uint8_t*)_err_calloc(c->n_cand_vars, 1);
+            c->var_hc = (uint16_t*)_err_calloc(4 * (size_t)c->n_cand_vars, sizeof(uint16_t));
             c->var_sq = (float*)_err_malloc(c->n_cand_vars * sizeof(float));
             c->var_pq = (float*)_err_malloc(c->n_cand_vars * sizeof(float));
         }
@@ -757,7 +875,10 @@ static void hap_asm_group(const call_var_opt_t *opt, bam_chunk_t *chunks, int be
             if (gv < 0) continue;
             const ha_var_t *x = h.var + gv; cand_var_t *cv = c->cand_vars + i;
             cv->phase_set = x->ps > 0 ? x->ps : 0; // the writer prints it only on a het genotype
-            c->var_hap_flag[i] = x->inconsistent ? LONGCALLD_HAP_INCONSISTENT : 0;
+            c->var_hap_flag[i] = (x->inconsistent ? LONGCALLD_HAP_INCONSISTENT : 0) |
+                                 (x->linked ? LONGCALLD_HAP_LINKED : 0) |
+                                 (x->discordant ? LONGCALLD_HAP_DISCORDANT : 0);
+            for (int hp = 0; hp < 2; ++hp) { c->var_hc[4*i + 2*hp] = x->hc[hp][0]; c->var_hc[4*i + 2*hp + 1] = x->hc[hp][1]; }
             c->var_sq[i] = x->sq; c->var_pq[i] = x->pq;
             // A somatic candidate's alleles come from the per-sample slot
             // evidence in make_variants(), not from the germline assembly.

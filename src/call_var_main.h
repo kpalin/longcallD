@@ -95,6 +95,8 @@
 // false positives, so it is doing real work at 0.02.
 #define LONGCALLD_MIN_UNPHASED_READS 2        // reads with no haplotype before the fraction is consulted
 #define LONGCALLD_MAX_HAP_ALT_FRAC 0.20       // alt tolerated in a slot that must be clean
+#define LONGCALLD_MIN_HAP_CONC 0.90           // share of a haplotype's reads that must show its allele
+#define LONGCALLD_MIN_HAP_CONC_DP 3            // reads a haplotype needs before that is asked
 #define LONGCALLD_MIN_SOM_VAF 0.05            // tumour VAF floor, substitutions
 #define LONGCALLD_MIN_SOM_INDEL_VAF 0.15      // tumour VAF floor, indels
 #define LONGCALLD_MIN_SOM_REP_INDEL_VAF 0.30  // tumour VAF floor, indels in a repeat
@@ -235,6 +237,7 @@
 #define LONGCALLD_NOISY_REG_ONT_SLIDE_WIN 25
 #define LONGCALLD_MAX_NOISY_FRAC_PER_READ 0.5 // skip reads with more than 50% bases in noisy region
 #define LONGCALLD_MAX_VAR_RATIO_PER_READ 0.05 // skip reads with n_var / ref_span > 5% 
+#define LONGCALLD_R9_MAX_VAR_RATIO_PER_READ 0.10 // --ont-r9: half of R9 reads exceed 5%
 #define LONGCALLD_MAX_READ_DEPTH 500 // vars with >500 reads will be skipped
 #define LONGCALLD_MAX_NOISY_REG_COV 1000 // regions with >1000 reads will be skipped
 #define LONGCALLD_NOISY_END_CLIP 30 // 100 // >= 100 bp clipping on both ends will be considered as long clipping
@@ -342,6 +345,11 @@ typedef struct var1_t {
     // Haplotype assembly (hap_asm.c): reads disagree on the allele's haplotype;
     // phred phase quality and switch quality to the previous het, -1 unset.
     uint8_t hap_inconsistent; float PQ, SQ;
+    // ...the site links the phasing (INFO PHASING); its haplotypes' reads do
+    // not carry its alleles (FILTER HapDiscordant), from the counts in HC:
+    // per haplotype, reads showing its allele and reads in all.
+    uint8_t hap_linked, hap_discordant; uint16_t HC[4];
+    int normal_any_alt; // paired: normal alt reads over every read, -1 unknown
     // Paired: decided on pooled counts (is_unphased_call), but the reads that
     // carry the alt sit on one haplotype of the site's block, so it is phased.
     uint8_t alt_phased;
@@ -401,6 +409,14 @@ typedef struct call_var_opt_t {
     double min_phase_qual;    // phred below which a het the reads contradict is pruned (HapInconsistent)
     double hap_assign_qual;   // phred posterior a read needs for HP
     int min_phase_mapq;       // mapping quality a read needs to link variants
+    double min_hap_conc;      // share of a haplotype's reads that must show its allele (HapDiscordant); 0 off
+    int min_hap_conc_dp;      // reads a haplotype needs before it is held to min_hap_conc
+    double hap_conc_assign_qual; // phred posterior a read needs, on its other sites, to count toward a haplotype
+    double hap_conc_allele_qual; // phred an allele call needs to count toward concordance
+    double hap_conc_err[2];   // [snv, indel] read error off-allele reads are tested against; <0 preset
+    double hap_conc_pval;     // binomial tail below which they exceed it; 0: the fraction alone decides
+    uint8_t is_ont_r9;        // --ont-r9 preset: is_ont too
+    int max_normal_any_alt;   // paired: alt reads a somatic call tolerates in the normal, over every read; <0 off
     uint8_t legacy_phasing;   // old adjacent-pair blocks and one-vote stitch, for comparison
     // somatic/mosaic variant
     int min_somatic_dis_to_var, min_somatic_dis_to_homopolymer_indel_error, min_somatic_dis_to_seq_error, min_somatic_alt_dp, min_somatic_te_dp, min_somatic_hap_dp;

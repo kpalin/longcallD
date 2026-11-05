@@ -734,6 +734,65 @@ static void collect_paired_somatic_artifact_masks(const call_var_opt_t *opt, bam
     }
 }
 
+// Does this read's alignment carry candidate cv's alt? From the digars, so it
+// answers for reads calling skipped and for sites in a read's own noisy region
+// alike. *gi walks forward with the candidates, which are sorted by position.
+static int digar_shows_alt(const digar_t *d, int *gi, const cand_var_t *cv) {
+    while (*gi < d->n_digar) { // first digar not wholly before pos
+        const digar1_t *g = d->digars + *gi;
+        int span = (g->type == BAM_CEQUAL || g->type == BAM_CDIFF || g->type == BAM_CDEL) ? g->len : 0;
+        if (span > 0 ? g->pos + span - 1 >= cv->pos : g->pos >= cv->pos) break;
+        ++*gi;
+    }
+    for (int j = *gi; j < d->n_digar && d->digars[j].pos <= cv->pos; ++j) {
+        const digar1_t *g = d->digars + j;
+        if (g->type != cv->var_type) continue;
+        if (cv->var_type == BAM_CDIFF) {
+            int off = (int)(cv->pos - g->pos);
+            if (off < g->len && g->alt_seq != NULL && cv->alt_seq != NULL && g->alt_seq[off] == cv->alt_seq[0]) return 1;
+        } else if (g->pos == cv->pos) {
+            if (cv->var_type == BAM_CDEL && g->len == cv->ref_len) return 1;
+            if (cv->var_type == BAM_CINS && g->len == cv->alt_len && g->alt_seq != NULL && cv->alt_seq != NULL &&
+                memcmp(g->alt_seq, cv->alt_seq, g->len) == 0) return 1;
+        }
+    }
+    return 0;
+}
+
+// Paired: alt reads in the normal at every candidate, over every normal read
+// the chunk holds -- phased, unphased, and those calling skipped (noisy, too
+// many differences, WRONG_MAP). The slot grid sees only reads with a profile
+// call, so a normal read carrying the alt inside its own noisy region, or one
+// skipped outright, never counted against a somatic call. A profile call is
+// taken as it stands, low-quality alt (-2) included; where a read has none,
+// its alignment is read.
+static void collect_normal_any_alt(const call_var_opt_t *opt, bam_chunk_t *chunk) {
+    (void)opt;
+    free(chunk->var_normal_any_alt); chunk->var_normal_any_alt = NULL;
+    if (chunk->n_cand_vars <= 0 || chunk->digars == NULL || chunk->read_sample_idx == NULL) return;
+    chunk->var_normal_any_alt = (int*)_err_calloc(chunk->n_cand_vars, sizeof(int));
+    for (int r = 0; r < chunk->n_reads; ++r) {
+        if (chunk->read_sample_idx[r] != LONGCALLD_SAMPLE_NORMAL) continue;
+        const digar_t *d = chunk->digars + r;
+        const read_var_profile_t *p1 = (chunk->is_skipped[r] == 0 && chunk->read_var_profile != NULL)
+                                     ? chunk->read_var_profile + r : NULL;
+        int lo = 0, hi = chunk->n_cand_vars;
+        while (lo < hi) { int mid = (lo + hi) / 2; if (chunk->cand_vars[mid].pos < d->beg) lo = mid + 1; else hi = mid; }
+        int gi = 0;
+        for (int v = lo; v < chunk->n_cand_vars && chunk->cand_vars[v].pos <= d->end; ++v) {
+            int pa = -3;
+            if (p1 != NULL && p1->start_var_idx >= 0 && v >= p1->start_var_idx && v <= p1->end_var_idx &&
+                v - p1->start_var_idx < p1->cap)
+                pa = p1->alleles[v - p1->start_var_idx];
+            int alt;
+            if (pa == 1 || pa == -2) alt = 1;
+            else if (pa == 0) alt = 0;
+            else alt = d->n_digar > 0 && digar_shows_alt(d, &gi, chunk->cand_vars + v);
+            chunk->var_normal_any_alt[v] += alt;
+        }
+    }
+}
+
 // Somatic calls that reached step 2 with no artifact mask for either branch,
 // and were demoted to Ambiguous rather than passed unexamined. Summed over
 // the worker threads and reported at the end of the run.
@@ -788,6 +847,20 @@ static void classify_paired_var1(const call_var_opt_t *opt, var1_t *v);
 void classify_paired_var(const call_var_opt_t *opt, var1_t *v) {
     classify_paired_var1(opt, v);
     if (v->paired_class != LONGCALLD_PAIRED_SOMATIC) return;
+    // A somatic allele is absent from the normal: not in a phased read, not in
+    // an unphased one, not in one calling skipped. The grid branch tests only
+    // the normal's two haplotype slots, at min_alt_dp reads, so up to that many
+    // alt reads per slot plus any number unassigned passed as "clean".
+    {
+        int n_any = smp_alt(&v->slots, LONGCALLD_SAMPLE_NORMAL);
+        if (v->normal_any_alt > n_any) v->normal_any_alt = n_any = v->normal_any_alt;
+        else if (v->normal_any_alt >= 0) v->normal_any_alt = n_any;
+        if (opt->max_normal_any_alt >= 0 && n_any > opt->max_normal_any_alt) {
+            v->paired_class = LONGCALLD_PAIRED_AMBIG;
+            v->som_hap = 0; v->hap_vaf = 0; v->paired_pval = 1.0;
+            return;
+        }
+    }
     // The floor is there for polymerase slippage, which does not make a
     // TSD-flanked, polyA-tailed insertion.
     if (paired_var_is_te_exempt(opt, v)) return;
@@ -2318,6 +2391,10 @@ int make_variants(const call_var_opt_t *opt, bam_chunk_t *chunk, var_t **_var) {
         } else var->vars[i].te_seq_i = -1;
         var->vars[i].PS = cand_vars[cand_i].phase_set;
         var->vars[i].hap_inconsistent = chunk->var_hap_flag != NULL && (chunk->var_hap_flag[cand_i] & LONGCALLD_HAP_INCONSISTENT);
+        var->vars[i].hap_linked = chunk->var_hap_flag != NULL && (chunk->var_hap_flag[cand_i] & LONGCALLD_HAP_LINKED);
+        var->vars[i].hap_discordant = chunk->var_hap_flag != NULL && (chunk->var_hap_flag[cand_i] & LONGCALLD_HAP_DISCORDANT);
+        for (int hc = 0; hc < 4; ++hc) var->vars[i].HC[hc] = chunk->var_hc != NULL ? chunk->var_hc[4*cand_i + hc] : 0;
+        var->vars[i].normal_any_alt = chunk->var_normal_any_alt != NULL ? chunk->var_normal_any_alt[cand_i] : -1;
         var->vars[i].PQ = chunk->var_pq != NULL ? chunk->var_pq[cand_i] : -1;
         var->vars[i].SQ = chunk->var_sq != NULL ? chunk->var_sq[cand_i] : -1;
         var->vars[i].alt_phased = 0;
@@ -3912,6 +3989,8 @@ void collect_var_main(const call_var_pl_t *pl, bam_chunk_t *chunk) {
     // 9. The reads skipped above still get a haplotype tag if they plainly sit
     //    on one; their alleles are read here, the last point the digars exist.
     if (!opt->legacy_phasing && chunk->n_cand_vars > 0) hap_asm_collect_skipped(opt, chunk);
+    // 10. Paired: normal alt reads over every normal read, for the somatic gate.
+    if (chunk->n_samples > 1) collect_normal_any_alt(opt, chunk);
 }
 
 // stitch ii-1 and ii
